@@ -15,6 +15,7 @@ regex = { workspace = true }
 mpatch = { workspace = true }
 ast-grep-core = { workspace = true }
 ast-grep-language = { workspace = true }
+chrono = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

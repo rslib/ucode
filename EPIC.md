@@ -541,7 +541,7 @@ This ensures consistent behavior, no runtime dependency on installed binaries, a
 * If sandbox backend unavailable, user sees explicit warning and fallback behavior documented.
   **Owner:** Tools/Security
 
-### ISSUE 0409 — Outside-project confirmation and boundary enforcement (ucode-tools + ucode-tui)
+### ISSUE 0409 — Outside-project confirmation and boundary enforcement (ucode-tools + ucode-tui) [DONE]
 
 **Goal:** Require explicit consent for out-of-boundary actions with persisted trust decisions.
 **Scope/Notes:**

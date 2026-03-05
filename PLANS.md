@@ -467,7 +467,7 @@ CLI:
 * Effective policy is visible in logs/UI before execution.
 * If sandbox backend unavailable, user sees explicit warning.
 
-### Task 4.7 Outside-project confirmation gates (ucode-tools + ucode-tui)
+### Task 4.7 Outside-project confirmation gates (ucode-tools + ucode-tui) [DONE]
 
 * Explicit confirmation required for:
 

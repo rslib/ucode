@@ -48,6 +48,12 @@ chrono = { version = "0.4", features = ["serde"] }
 # random
 rand = "0.9"
 
+# file-system walking (gitignore-aware)
+ignore = "0.4"
+
+# regex
+regex = "1"
+
 # testing
 tempfile = "3"
 

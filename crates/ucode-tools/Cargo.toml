@@ -10,6 +10,8 @@ thiserror = { workspace = true }
 tokio = { workspace = true }
 ucode-core = { workspace = true }
 ucode-providers = { path = "../ucode-providers" }
+ignore = { workspace = true }
+regex = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

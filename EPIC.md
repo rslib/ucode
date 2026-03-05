@@ -432,7 +432,7 @@ Commands:
 * run_cmd blocked until approved.
   **Owner:** Tools/Security
 
-### ISSUE 0403 — Built-in filesystem tools (ucode-tools)
+### ISSUE 0403 — Built-in filesystem tools (ucode-tools) [DONE]
 
 **Goal:** Implement `read_file`, `list_dir` with gitignore-aware behavior.
 **Acceptance tests:**

@@ -390,7 +390,7 @@ CLI:
 * `ToolHandler: async fn(args)->ToolResult`
 * Permissions gate integrated (per session + per skill)
 
-### Task 4.2 Filesystem/search tools
+### Task 4.2 Filesystem/search tools [IN PROGRESS]
 
 * `read_file`, `list_dir`
 * `ripgrep_search` (or ignore+regex implementation)

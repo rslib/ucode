@@ -1,0 +1,16 @@
+[package]
+name = "ucode-cli"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "ucode"
+path = "src/main.rs"
+
+[dependencies]
+ucode-core = { workspace = true }
+tokio = { workspace = true }
+clap = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }

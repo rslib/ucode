@@ -41,7 +41,7 @@ ucode/
 
 # Phase 0 — Bootstrapping
 
-### Task 0.1: Workspace skeleton
+### Task 0.1: Workspace skeleton [DONE]
 
 * Cargo workspace + crates above
 * CI: fmt/clippy/test on Linux + macOS
@@ -55,7 +55,7 @@ ucode/
 
 # Phase 1 — Canonical runtime + routing/fallback
 
-### Task 1.1: Canonical message + event model (ucode-core)
+### Task 1.1: Canonical message + event model (ucode-core) [DONE]
 
 Types:
 
@@ -78,7 +78,7 @@ Streaming events:
 
 * Tests for serde + a fake provider stream.
 
-### Task 1.2: Router + fallback policy (ucode-core)
+### Task 1.2: Router + fallback policy (ucode-core) [DONE]
 
 * Model groups: `fast`, `strong`, `longctx`
 * Fallback triggers:

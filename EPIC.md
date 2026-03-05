@@ -1,6 +1,6 @@
 ## EPIC 0 — Project bootstrap
 
-### ISSUE 0001 — Create Rust workspace + CI (Linux/macOS)
+### ISSUE 0001 — Create Rust workspace + CI (Linux/macOS) [DONE]
 
 **Goal:** Establish repo skeleton and CI for all crates.
 **Scope/Notes:**
@@ -19,7 +19,7 @@
 
 ## EPIC 1 — Core runtime + routing/fallback
 
-### ISSUE 0101 — Canonical message + tool-call model (ucode-core)
+### ISSUE 0101 — Canonical message + tool-call model (ucode-core) [DONE]
 
 **Goal:** Define internal canonical message representation and tool call types.
 **Scope/Notes:**
@@ -35,7 +35,7 @@
 * Unit test: serialize → deserialize → equals for each type.
   **Owner:** Core
 
-### ISSUE 0102 — Canonical streaming event model (ucode-core)
+### ISSUE 0102 — Canonical streaming event model (ucode-core) [DONE]
 
 **Goal:** Standardize streaming output from providers/tools into one event stream.
 **Scope/Notes:**
@@ -46,7 +46,7 @@
 * Unit test: simulate event stream and ensure consumer can iterate and reconstruct transcript.
   **Owner:** Core
 
-### ISSUE 0103 — Router + fallback policy engine (ucode-core)
+### ISSUE 0103 — Router + fallback policy engine (ucode-core) [DONE]
 
 **Goal:** Implement routing between providers/models and fallback logic.
 **Scope/Notes:**
@@ -63,7 +63,7 @@
 * Unit tests with simulated errors confirm correct fallback order and escalation.
   **Owner:** Core
 
-### ISSUE 0104 — Session state + transcript store (ucode-core)
+### ISSUE 0104 — Session state + transcript store (ucode-core) [DONE]
 
 **Goal:** Persist session transcript and metadata (in-memory + disk).
 **Scope/Notes:**

@@ -205,7 +205,7 @@ Streaming events:
 * Fork creates child session with correct ancestry metadata.
 * Switching between parent/child sessions does not leak runtime state.
 
-### Task 1.9: Token/cost governance controls (ucode-core + ucode-providers + ucode-tui) [P1]
+### Task 1.9: Token/cost governance controls (ucode-core + ucode-providers + ucode-tui) [P1] [DONE]
 
 * Track token and estimated cost per request/session across providers
 * Configurable soft/hard budgets with policy actions (warn, fallback, block)

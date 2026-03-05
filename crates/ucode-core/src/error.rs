@@ -25,6 +25,9 @@ pub enum CoreError {
     #[error("context too large: limit {limit}, actual {actual}")]
     ContextTooLarge { limit: usize, actual: usize },
 
+    #[error("budget exceeded: {message}")]
+    BudgetExceeded { message: String },
+
     #[error("tool '{tool}' failed: {message}")]
     ToolFailed { tool: String, message: String },
 

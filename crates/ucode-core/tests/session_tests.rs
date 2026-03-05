@@ -135,3 +135,34 @@ fn fork_and_save_roundtrip() {
     assert_eq!(loaded_child.transcript.len(), 1);
     assert_eq!(loaded_child.meta.active_model.as_deref(), Some("claude-3"));
 }
+
+#[test]
+fn session_usage_persists_roundtrip() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("session.json");
+
+    let mut session = Session::new(PathBuf::from("/project"));
+    session.record_usage(ucode_core::UsageRecord {
+        timestamp: chrono::Utc::now(),
+        model: "claude-3".into(),
+        input_tokens: 500,
+        output_tokens: 200,
+        estimated_cost_usd: 0.007,
+    });
+    session.record_usage(ucode_core::UsageRecord {
+        timestamp: chrono::Utc::now(),
+        model: "gpt-4o".into(),
+        input_tokens: 300,
+        output_tokens: 100,
+        estimated_cost_usd: 0.004,
+    });
+    session.save(&path).expect("save");
+
+    let loaded = Session::load(&path).expect("load");
+    assert_eq!(loaded.usage.total_input_tokens, 800);
+    assert_eq!(loaded.usage.total_output_tokens, 300);
+    assert!((loaded.usage.total_estimated_cost_usd - 0.011).abs() < 1e-10);
+    assert_eq!(loaded.usage.records.len(), 2);
+    assert_eq!(loaded.usage.records[0].model, "claude-3");
+    assert_eq!(loaded.usage.records[1].model, "gpt-4o");
+}

@@ -34,6 +34,14 @@ pub fn handle_show(store: &SessionStore, id: &str) -> Result<()> {
     println!("Messages: {}", session.transcript.len());
     println!("Tool calls: {}", session.tool_audit.len());
     println!("Compaction steps: {}", session.compaction_log.len());
+    if !session.usage.records.is_empty() {
+        println!(
+            "Usage:   {} requests, {} tokens, ${:.4}",
+            session.usage.records.len(),
+            session.usage.total_tokens(),
+            session.usage.total_estimated_cost_usd
+        );
+    }
     if let Some(ref parent) = m.parent_session_id {
         println!("Parent:  {}", parent);
     }

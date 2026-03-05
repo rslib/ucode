@@ -1,3 +1,4 @@
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::error::CoreError;
@@ -376,6 +377,133 @@ impl BudgetManager {
     }
 }
 
+// ── Cost governance types ────────────────────────────────────────────────────
+
+/// Token and cost usage for a single model request.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UsageRecord {
+    pub timestamp: DateTime<Utc>,
+    pub model: String,
+    pub input_tokens: usize,
+    pub output_tokens: usize,
+    pub estimated_cost_usd: f64,
+}
+
+/// Accumulated usage across a session.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SessionUsage {
+    pub total_input_tokens: usize,
+    pub total_output_tokens: usize,
+    pub total_estimated_cost_usd: f64,
+    pub records: Vec<UsageRecord>,
+}
+
+impl SessionUsage {
+    /// Record a usage entry and update running totals.
+    pub fn record(&mut self, rec: UsageRecord) {
+        self.total_input_tokens += rec.input_tokens;
+        self.total_output_tokens += rec.output_tokens;
+        self.total_estimated_cost_usd += rec.estimated_cost_usd;
+        self.records.push(rec);
+    }
+
+    /// Total tokens (input + output) across all requests.
+    pub fn total_tokens(&self) -> usize {
+        self.total_input_tokens + self.total_output_tokens
+    }
+}
+
+/// Configurable soft/hard budget limits for cost governance.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CostBudget {
+    /// Soft limit in USD — triggers warning.
+    #[serde(default)]
+    pub soft_limit_usd: Option<f64>,
+    /// Hard limit in USD — triggers block.
+    #[serde(default)]
+    pub hard_limit_usd: Option<f64>,
+    /// Soft limit in total tokens — triggers warning.
+    #[serde(default)]
+    pub soft_limit_tokens: Option<usize>,
+    /// Hard limit in total tokens — triggers block.
+    #[serde(default)]
+    pub hard_limit_tokens: Option<usize>,
+}
+
+/// Policy action returned by the cost governor.
+#[derive(Debug, Clone, PartialEq)]
+pub enum BudgetAction {
+    /// Within budget, proceed normally.
+    Allow,
+    /// Soft limit reached — warn but continue.
+    Warn { message: String },
+    /// Hard limit reached — block the request.
+    Block { message: String },
+}
+
+/// Evaluates session usage against a cost budget.
+pub struct CostGovernor {
+    pub budget: CostBudget,
+}
+
+impl CostGovernor {
+    pub fn new(budget: CostBudget) -> Self {
+        Self { budget }
+    }
+
+    /// Check current usage against budget limits.
+    /// Hard limits take precedence over soft limits.
+    pub fn check(&self, usage: &SessionUsage) -> BudgetAction {
+        // Check hard limits first
+        if let Some(hard_usd) = self.budget.hard_limit_usd
+            && usage.total_estimated_cost_usd >= hard_usd
+        {
+            return BudgetAction::Block {
+                message: format!(
+                    "Hard cost limit reached: ${:.4} >= ${:.4}",
+                    usage.total_estimated_cost_usd, hard_usd
+                ),
+            };
+        }
+        if let Some(hard_tokens) = self.budget.hard_limit_tokens
+            && usage.total_tokens() >= hard_tokens
+        {
+            return BudgetAction::Block {
+                message: format!(
+                    "Hard token limit reached: {} >= {}",
+                    usage.total_tokens(),
+                    hard_tokens
+                ),
+            };
+        }
+
+        // Check soft limits
+        if let Some(soft_usd) = self.budget.soft_limit_usd
+            && usage.total_estimated_cost_usd >= soft_usd
+        {
+            return BudgetAction::Warn {
+                message: format!(
+                    "Soft cost limit reached: ${:.4} >= ${:.4}",
+                    usage.total_estimated_cost_usd, soft_usd
+                ),
+            };
+        }
+        if let Some(soft_tokens) = self.budget.soft_limit_tokens
+            && usage.total_tokens() >= soft_tokens
+        {
+            return BudgetAction::Warn {
+                message: format!(
+                    "Soft token limit reached: {} >= {}",
+                    usage.total_tokens(),
+                    soft_tokens
+                ),
+            };
+        }
+
+        BudgetAction::Allow
+    }
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -730,5 +858,169 @@ mod tests {
         // Last 3 messages must be the recent turns
         let tail: Vec<Message> = msgs[msgs.len() - 3..].to_vec();
         assert_eq!(tail, recent);
+    }
+
+    // ── UsageRecord / SessionUsage ────────────────────────────────────────────
+
+    fn make_usage_record(input: usize, output: usize, cost: f64) -> UsageRecord {
+        UsageRecord {
+            timestamp: Utc::now(),
+            model: "test-model".into(),
+            input_tokens: input,
+            output_tokens: output,
+            estimated_cost_usd: cost,
+        }
+    }
+
+    #[test]
+    fn usage_record_serde_roundtrip() {
+        let rec = make_usage_record(100, 50, 0.003);
+        let json = serde_json::to_string(&rec).unwrap();
+        let back: UsageRecord = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.input_tokens, 100);
+        assert_eq!(back.output_tokens, 50);
+        assert!((back.estimated_cost_usd - 0.003).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn session_usage_accumulates() {
+        let mut usage = SessionUsage::default();
+        usage.record(make_usage_record(100, 50, 0.003));
+        usage.record(make_usage_record(200, 100, 0.006));
+
+        assert_eq!(usage.total_input_tokens, 300);
+        assert_eq!(usage.total_output_tokens, 150);
+        assert!((usage.total_estimated_cost_usd - 0.009).abs() < 1e-10);
+        assert_eq!(usage.records.len(), 2);
+    }
+
+    #[test]
+    fn session_usage_total_tokens() {
+        let mut usage = SessionUsage::default();
+        usage.record(make_usage_record(100, 50, 0.0));
+        assert_eq!(usage.total_tokens(), 150);
+    }
+
+    // ── CostBudget / CostGovernor ─────────────────────────────────────────────
+
+    #[test]
+    fn cost_budget_default_is_empty() {
+        let b = CostBudget::default();
+        assert!(b.soft_limit_usd.is_none());
+        assert!(b.hard_limit_usd.is_none());
+        assert!(b.soft_limit_tokens.is_none());
+        assert!(b.hard_limit_tokens.is_none());
+    }
+
+    #[test]
+    fn cost_governor_allow_when_no_limits() {
+        let gov = CostGovernor::new(CostBudget::default());
+        let usage = SessionUsage::default();
+        assert_eq!(gov.check(&usage), BudgetAction::Allow);
+    }
+
+    #[test]
+    fn cost_governor_soft_usd_warns() {
+        let budget = CostBudget {
+            soft_limit_usd: Some(0.01),
+            ..Default::default()
+        };
+        let gov = CostGovernor::new(budget);
+        let mut usage = SessionUsage::default();
+        usage.record(make_usage_record(1000, 500, 0.015));
+
+        match gov.check(&usage) {
+            BudgetAction::Warn { message } => {
+                assert!(message.contains("Soft cost limit"));
+            }
+            other => panic!("expected Warn, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cost_governor_hard_usd_blocks() {
+        let budget = CostBudget {
+            hard_limit_usd: Some(0.01),
+            ..Default::default()
+        };
+        let gov = CostGovernor::new(budget);
+        let mut usage = SessionUsage::default();
+        usage.record(make_usage_record(1000, 500, 0.015));
+
+        match gov.check(&usage) {
+            BudgetAction::Block { message } => {
+                assert!(message.contains("Hard cost limit"));
+            }
+            other => panic!("expected Block, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cost_governor_soft_tokens_warns() {
+        let budget = CostBudget {
+            soft_limit_tokens: Some(1000),
+            ..Default::default()
+        };
+        let gov = CostGovernor::new(budget);
+        let mut usage = SessionUsage::default();
+        usage.record(make_usage_record(800, 300, 0.0));
+
+        match gov.check(&usage) {
+            BudgetAction::Warn { message } => {
+                assert!(message.contains("Soft token limit"));
+            }
+            other => panic!("expected Warn, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cost_governor_hard_tokens_blocks() {
+        let budget = CostBudget {
+            hard_limit_tokens: Some(1000),
+            ..Default::default()
+        };
+        let gov = CostGovernor::new(budget);
+        let mut usage = SessionUsage::default();
+        usage.record(make_usage_record(800, 300, 0.0));
+
+        match gov.check(&usage) {
+            BudgetAction::Block { message } => {
+                assert!(message.contains("Hard token limit"));
+            }
+            other => panic!("expected Block, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cost_governor_hard_takes_precedence_over_soft() {
+        let budget = CostBudget {
+            soft_limit_usd: Some(0.005),
+            hard_limit_usd: Some(0.01),
+            ..Default::default()
+        };
+        let gov = CostGovernor::new(budget);
+        let mut usage = SessionUsage::default();
+        // Exceeds both soft and hard
+        usage.record(make_usage_record(1000, 500, 0.015));
+
+        // Hard should win
+        match gov.check(&usage) {
+            BudgetAction::Block { .. } => {}
+            other => panic!("expected Block, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cost_governor_below_soft_allows() {
+        let budget = CostBudget {
+            soft_limit_usd: Some(1.0),
+            hard_limit_usd: Some(5.0),
+            ..Default::default()
+        };
+        let gov = CostGovernor::new(budget);
+        let mut usage = SessionUsage::default();
+        usage.record(make_usage_record(100, 50, 0.001));
+
+        assert_eq!(gov.check(&usage), BudgetAction::Allow);
     }
 }

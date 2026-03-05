@@ -191,7 +191,7 @@
 * TUI and CLI can switch between parent/child sessions without state bleed.
   **Owner:** Core/CLI/TUI
 
-### ISSUE 0111 — Token/cost governance and budget controls (ucode-core + ucode-providers + ucode-tui) [P1]
+### ISSUE 0111 — Token/cost governance and budget controls (ucode-core + ucode-providers + ucode-tui) [P1] [DONE]
 
 **Goal:** Provide guardrails for token and cost usage per request/session to match agentic-tool operational expectations.
 **Scope/Notes:**

@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::budget::CompactionRecord;
+use crate::budget::{CompactionRecord, SessionUsage, UsageRecord};
 use crate::message::{Part, Role};
 use crate::{CoreError, Message};
 
@@ -69,6 +69,9 @@ pub struct Session {
     /// Compaction/distillation audit trail.
     #[serde(default)]
     pub compaction_log: Vec<CompactionRecord>,
+    /// Accumulated token/cost usage for this session.
+    #[serde(default)]
+    pub usage: SessionUsage,
 }
 
 /// Directory-based session store.
@@ -105,6 +108,7 @@ impl Session {
             transcript: Vec::new(),
             tool_audit: Vec::new(),
             compaction_log: Vec::new(),
+            usage: SessionUsage::default(),
         }
     }
 
@@ -140,6 +144,12 @@ impl Session {
     /// Record compaction/distillation results in the audit trail.
     pub fn record_compaction(&mut self, records: Vec<CompactionRecord>) {
         self.compaction_log.extend(records);
+        self.meta.updated_at = Utc::now();
+    }
+
+    /// Record token/cost usage for a model request.
+    pub fn record_usage(&mut self, record: UsageRecord) {
+        self.usage.record(record);
         self.meta.updated_at = Utc::now();
     }
 
@@ -230,6 +240,7 @@ impl Session {
             transcript: self.transcript[..idx].to_vec(),
             tool_audit: Vec::new(),
             compaction_log: Vec::new(),
+            usage: SessionUsage::default(),
         }
     }
 
@@ -480,6 +491,7 @@ mod tests {
         assert!(session.compaction_log.is_empty());
         assert!(session.meta.parent_session_id.is_none());
         assert!(session.meta.fork_source_index.is_none());
+        assert!(session.usage.records.is_empty());
     }
 
     #[test]

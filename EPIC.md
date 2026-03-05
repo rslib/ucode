@@ -258,7 +258,7 @@
 
 ## EPIC 2 — Auth (API keys + login + subscription login)
 
-### ISSUE 0201 — Secure credential store (keychain) (ucode-auth)
+### ISSUE 0201 — Secure credential store (keychain) (ucode-auth) [DONE]
 
 **Goal:** Provide credential storage for Linux + macOS using OS keychain.
 **Scope/Notes:**

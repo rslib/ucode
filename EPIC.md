@@ -496,14 +496,19 @@ This ensures consistent behavior, no runtime dependency on installed binaries, a
 
 ### ISSUE 0407 — Git helpers (optional) (ucode-tools) [DONE]
 
-**Goal:** Provide `git_status`, `git_diff` as tools using `gix` (pure-Rust git).
+**Goal:** Provide comprehensive git tooling using `gix` (pure-Rust git).
 **Scope/Notes:**
 
 * Rust-native: `gix` crate — no shelling out to `git` CLI
-* `git_status`: staged/unstaged/untracked files
-* `git_diff`: unified diff of working tree changes
+* 17 tools organized in `git/` module directory:
+  * **Read:** `git_status`, `git_diff`, `git_diff_staged`, `git_diff_commits`, `git_log`, `git_show`
+  * **Write:** `git_add`, `git_commit`, `git_tag`, `git_stash`
+  * **Branch:** `git_branch`, `git_checkout`, `git_reset`, `git_restore`
+  * **Merge:** `git_merge`, `git_cherry_pick`, `git_rebase` (full interactive with pick/squash/reword/drop)
+* Conflict handling: returns conflict markers in worktree + conflict file list
+* `register_all_git_tools()` convenience function
   **Acceptance tests:**
-* In a git repo, status/diff returns data.
+* 73 tests covering all 17 tools
   **Owner:** Tools
 
 ### ISSUE 0407b — AST structural search/rewrite tool (ucode-tools) [DONE]

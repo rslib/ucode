@@ -422,7 +422,9 @@ CLI:
 
 ### Task 4.5 Git helpers (optional) [DONE]
 
-* `git_status`, `git_diff` via `gix` (pure-Rust git, no shell)
+* 17 git tools via `gix` (pure-Rust, no shell): status, diff, diff_staged, diff_commits, add, commit, log, show, tag, branch, checkout, reset, restore, stash, merge, cherry_pick, rebase
+* Full interactive rebase (pick/squash/reword/drop), three-way merge with conflict markers
+* `register_all_git_tools()` convenience function
 
 ### Task 4.5b AST structural search/rewrite tool [DONE]
 

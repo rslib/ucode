@@ -179,6 +179,32 @@ Streaming events:
 * Manual rename is durable across reload and protected from auto overwrite.
 * Archive/unarchive and switch operations work in both CLI and TUI.
 
+### Task 1.8: Session resume/fork lineage model (ucode-core + ucode-cli + ucode-tui) [P0]
+
+* Resume sessions by id with full state restoration (model/skill/policy/transcript)
+* Fork sessions into child branches with explicit parent-child lineage metadata
+* Surface lineage in CLI/TUI session switcher views
+* Emit audit events for resume/fork/switch actions
+
+**Acceptance**
+
+* Resume restores full runnable session state.
+* Fork creates child session with correct ancestry metadata.
+* Switching between parent/child sessions does not leak runtime state.
+
+### Task 1.9: Token/cost governance controls (ucode-core + ucode-providers + ucode-tui) [P1]
+
+* Track token and estimated cost per request/session across providers
+* Configurable soft/hard budgets with policy actions (warn, fallback, block)
+* TUI budget alerts and usage visibility in sidebar/status
+* Persist usage summaries in session metadata
+
+**Acceptance**
+
+* Soft threshold emits warning without aborting workflow.
+* Hard threshold enforces configured policy action.
+* Usage summary persists and reloads with session.
+
 ---
 
 # Phase 2 — Auth (API key + login + subscription login)
@@ -280,6 +306,19 @@ CLI:
 ### Task 3.4 Local adapter (Ollama) (optional but recommended)
 
 * Fast fallback / offline mode
+
+### Task 3.5 Prompt/context caching integration (ucode-providers + ucode-core) [P2]
+
+* Add reusable prompt/context cache policy for repeated compatible requests
+* Use provider cache hints when available; local fallback cache strategy otherwise
+* Cache invalidation on provider/model/session policy changes
+* Emit cache hit/miss telemetry
+
+**Acceptance (Task 3.5)**
+
+* Compatible repeated requests demonstrate cache-hit behavior.
+* Invalidation occurs correctly on provider/model change.
+* Cache actions are visible in logs/audit stream.
 
 **Acceptance (Phase 3)**
 
@@ -385,6 +424,44 @@ CLI:
 * Agent A (local-only) has no network; Agent B (research) has constrained network.
 * Policy changes are visible in runtime logs and UI.
 
+### Task 4.9 Workspace checkpoints + rollback controls (ucode-tools + ucode-core + ucode-tui) [P1]
+
+* Create lightweight checkpoints before risky mutating operations (patch apply, mutating commands)
+* Provide rollback API and TUI action to restore prior checkpoint
+* Checkpoint retention policy (count/time based) with UI visibility
+
+**Acceptance**
+
+* Patch apply creates checkpoint and rollback restores prior state.
+* Command-induced mutations can be rolled back.
+* Retention pruning follows configured policy.
+
+### Task 4.10 Background jobs with interactive cancel/kill (ucode-tools + ucode-core + ucode-tui) [P0]
+
+* Add background job runtime: start/list/status/cancel/kill
+* Persist job states: queued/running/completed/failed/cancelled/killed
+* Add TUI background jobs panel with keyboard shortcuts for cancel and force-kill
+* Keep chat responsive while jobs run detached
+
+**Acceptance**
+
+* Long-running job can run detached without blocking chat.
+* User can cancel and force-kill running jobs interactively from TUI.
+* Job lifecycle transitions are auditable and persisted.
+
+### Task 4.11 Structured artifact output/export (ucode-tools + ucode-cli) [P1]
+
+* Standard artifact envelope (`id`, `type`, `source`, `metadata`, `checksum`, `created_at`)
+* Generate/export artifacts for markdown reports, unified diffs, and command/test logs
+* Expose artifact references in machine-readable CLI output
+* Link artifact ids into audit events
+
+**Acceptance**
+
+* Runs can emit and retrieve typed artifacts by id.
+* CLI JSON output includes stable artifact references.
+* Artifact metadata is deterministic and auditable.
+
 **Acceptance (Phase 4)**
 
 * End-to-end: search → propose diff → apply_patch → run_cmd tests.
@@ -440,6 +517,32 @@ CLI:
 * Untrusted server cannot execute tools until approved.
 * Per-server policy is enforced at invocation time.
 * Crash/restart cycle produces clear diagnostics.
+
+### Task 5.5 MCP transport parity (stdio + SSE + HTTP) (ucode-mcp) [P0]
+
+* Support stdio, SSE, and HTTP MCP transports
+* Add auth header/token config for remote transports
+* Reconnect/backoff strategy for transient transport failures
+* Surface transport health in logs/UI
+
+**Acceptance**
+
+* Discovery/invocation works across stdio, SSE, and HTTP servers.
+* Disconnect triggers bounded reconnect with diagnostics.
+* Remote auth failures return actionable errors.
+
+### Task 5.6 MCP resources/prompts integration (ucode-mcp + ucode-tools + ucode-core) [P0]
+
+* Discover/list/invoke MCP resources and prompts (not tools only)
+* Apply normal policy/sandbox/audit checks to resource/prompt access
+* Support prompt argument binding and namespaced identifiers
+* Deterministic collision handling across servers
+
+**Acceptance**
+
+* Resources/prompts are discoverable and invokable.
+* Resource/prompt actions obey policy/audit gates.
+* Identifier collisions resolve deterministically.
 
 **Acceptance**
 
@@ -559,8 +662,10 @@ Events:
 * `on_model_fallback`
 * `on_router_decision`
 * `on_context_shrink`
+* `on_context_distilled`
 * `on_skill_changed`
 * `on_auth_changed`
+* `on_session_title_generated/updated`
 * `on_agent_spawned/completed/failed`
 * `on_agent_message`
 * `on_command_invoked`
@@ -568,6 +673,8 @@ Events:
 * `on_permission_decision`
 * `on_approval_granted/denied`
 * `on_mcp_server_launch/restart/crash`
+* `on_budget_threshold_warning/reached`
+* `on_background_job_state_changed`
 
 Plugins can:
 
@@ -631,7 +738,7 @@ Override classes matrix:
 * Plugin-originated tool call triggers normal approval/sandbox checks.
 * Runtime model and effective permissions visible in logs/UI.
 
-### Task 8.5 External DCP-style plugin support + hook exposure (ucode-plugins + ucode-core)
+### Task 8.5 External DCP-style plugin support + hook exposure (ucode-plugins + ucode-core) [P0]
 
 * Support user-installed DCP-style plugins (for example `opencode-dcp`) via documented public hook contracts
 * Guarantee stable, versioned payload schemas for hooks used by DCP workflows:
@@ -648,6 +755,19 @@ Override classes matrix:
 * Fixture external plugin `opencode-dcp` loads from user plugin path and receives documented hooks.
 * Plugin can react to compaction/distillation and session-title events without private host APIs.
 * Permission escalation attempts are blocked and recorded in audit logs.
+
+### Task 8.6 Remote plugin install/update distribution with trust verification (ucode-plugins + security) [P1]
+
+* Support plugin install/update from git/url/registry sources
+* Verify signatures/fingerprints before activation
+* Maintain trust records and detect update drift requiring re-approval
+* Keep rollback path to previous plugin version on failed update
+
+**Acceptance**
+
+* Trusted signed plugin installs and activates.
+* Signature mismatch or trust failure blocks activation with clear diagnostics.
+* Update drift triggers re-approval and supports rollback.
 
 ---
 
@@ -677,6 +797,19 @@ Override classes matrix:
 * Unsigned/untrusted plugin is blocked by default.
 * Signature mismatch blocks activation with clear diagnostics.
 
+### Task 9.3 Non-interactive headless/CI mode (ucode-cli + ucode-core) [P0]
+
+* Add CLI non-interactive execution mode suitable for automation pipelines
+* Machine-readable JSON output envelope (events, artifacts, usage, terminal status)
+* Deterministic exit-code mapping by result class
+* Support resume-by-session-id in headless flow
+
+**Acceptance**
+
+* CI run completes without interactive prompts.
+* JSON output includes status and artifact references.
+* Exit codes map consistently to success/failure classes.
+
 ---
 
 # Cross-cutting: config, permissions, observability
@@ -689,17 +822,23 @@ Override classes matrix:
 * auth mode preference per provider (key vs login)
 * fallback order
 * compaction/distillation policy (strategy order, pinned-window size, retry limits)
+* cost/token budget policy (soft/hard thresholds, action on breach)
 * MCP servers list
 * plugin list
 * plugin discovery paths (project/user) for external plugins such as DCP adapters
+* remote plugin sources + trust records (git/url/registry)
 * allowlists/denylists for run_cmd + file access scope
 * sandbox policy matrix (global / provider / agent / tool / session)
 * network policy matrix (including web/deep-research enablement per agent)
+* checkpoint retention policy (count/time)
+* background job policy (default detached behavior, kill permissions)
 * MCP server launcher definitions + trust records
+* MCP transport config (stdio/SSE/HTTP) and auth settings
 * subagent profiles (capabilities, sandbox tier, comm policy)
 * command registry paths (user/project/plugin) + parser resolver order
 * plugin API/runtime config (WASM-only runtime, enabled in latest stage)
 * session management config (auto-title on/off, title model preference, archive defaults)
+* cache policy (provider hints, local fallback, invalidation)
 * TUI keybind overrides
 
 ### Observability
@@ -709,6 +848,7 @@ Override classes matrix:
   approvals/denials, effective sandbox tier per action, agent spawn/join lifecycle,
   inter-agent messages, MCP server launch/trust decisions
 * include compaction/distillation events and session title generation/update events in audit stream
+* include background job lifecycle events (start/cancel/kill/complete) and budget-threshold events
 
 ---
 
@@ -717,12 +857,11 @@ Override classes matrix:
 * **Agent A (Core):** Phase 1 router/events/session state + token compaction/distillation + session lifecycle/title generation + subagent orchestration + inter-agent comm + mention/command parser bindings
 * **Agent B (Auth):** Phase 2 keychain + OpenAI login + Anthropic subscription login + CLI/TUI connect flow
 * **Agent C (Providers):** Phase 3 adapters (OpenAI/Anthropic/Ollama)
-* **Agent D (Tools):** Phase 4 built-ins + patch applier + cmd runner + sandbox policy engine + confirmation gates
-* **Agent E (MCP):** Phase 5 MCP client + registry + native launchers + per-server trust/policy
+* **Agent D (Tools):** Phase 4 built-ins + patch applier + cmd runner + sandbox policy engine + confirmation gates + checkpoints + background job control + artifacts
+* **Agent E (MCP):** Phase 5 MCP client + registry + native launchers + transport parity + resources/prompts + per-server trust/policy
 * **Agent F (Skills):** Phase 6 SKILL.md discovery/parsing/execution
 * **Agent G (TUI):** Phase 7 ratatui UI + approvals + palette + visual system + sidebar
-* **Agent H (Plugins):** Phase 8 plugin contracts/hooks + Phase 9 WASM runtime
-* **Agent H (Plugins):** includes external DCP-style plugin compatibility and hook contract validation
+* **Agent H (Plugins):** Phase 8 plugin contracts/hooks + external DCP compatibility + remote install/update trust + Phase 9 WASM runtime
 * **Agent S (Security):** Cross-cutting: threat model, audit verification, sandbox backend integration
 
 ---
@@ -749,7 +888,13 @@ Override classes matrix:
 18. Token exhaustion handling supports deterministic compaction/distillation with auditable artifacts
 19. Session lifecycle supports list/switch/archive/rename with robust model-generated titles and manual override lock
 20. External user-installed DCP-style plugins can load via documented paths and consume public hook contracts safely
+21. Session resume/fork lineage works cleanly across CLI and TUI
+22. Token/cost budgets provide soft/hard guardrails with visible runtime alerts
+23. Prompt/context caching reduces repeat request overhead with auditable cache behavior
+24. Workspace checkpoints/rollback allow fast recovery from risky agent actions
+25. Detached background jobs are manageable from TUI, including interactive cancel and force-kill
+26. MCP supports stdio, SSE, and HTTP transports plus resources/prompts
+27. Headless CI mode provides deterministic JSON outputs and exit codes
+28. Remote plugin install/update supports trust verification and rollback
 
 ---
-
-If you want, I can convert this into a **ready-to-paste issue backlog** (one issue per task with acceptance tests and file/module pointers) so your agentic tool can execute it cleanly.

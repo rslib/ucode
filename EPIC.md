@@ -161,6 +161,36 @@
 * Archive/unarchive and switch flows work in both CLI and TUI.
   **Owner:** Core/CLI/TUI
 
+### ISSUE 0110 — Session resume/fork lineage model (ucode-core + ucode-cli + ucode-tui) [P0]
+
+**Goal:** Support deterministic session resume and branch/fork workflows for parallel exploration without losing transcript lineage.
+**Scope/Notes:**
+
+* Resume by id from CLI/TUI with full state restore (model, skill, policy, transcript)
+* Fork session creates child session with parent pointer and lineage metadata
+* Session list/switch UI exposes parent-child lineage and fork source
+* Audit events for resume/fork/switch actions
+  **Acceptance tests:**
+* `resume(session_id)` restores full runnable state.
+* `fork(session_id)` creates a child session with correct ancestry.
+* TUI and CLI can switch between parent/child sessions without state bleed.
+  **Owner:** Core/CLI/TUI
+
+### ISSUE 0111 — Token/cost governance and budget controls (ucode-core + ucode-providers + ucode-tui) [P1]
+
+**Goal:** Provide guardrails for token and cost usage per request/session to match agentic-tool operational expectations.
+**Scope/Notes:**
+
+* Track per-request and per-session token usage and estimated cost across providers
+* Configurable soft/hard budgets with policy actions (warn, downgrade model group, block)
+* Runtime budget alerts in TUI sidebar/status and log stream
+* Export usage summary in session metadata for post-run analysis
+  **Acceptance tests:**
+* Soft budget threshold emits warning and does not interrupt workflow.
+* Hard budget threshold enforces configured block/fallback behavior.
+* Session usage summary persists and reloads.
+  **Owner:** Core/Providers/TUI
+
 ---
 
 ## EPIC 2 — Auth (API keys + login + subscription login)
@@ -290,6 +320,21 @@ Commands:
 
 * `ucode chat --provider ollama` streams output (requires local ollama running or mock)
   **Owner:** Providers
+
+### ISSUE 0305 — Prompt/context caching integration (ucode-providers + ucode-core) [P2]
+
+**Goal:** Reduce repeated token cost/latency with explicit provider-aware prompt/context cache integration.
+**Scope/Notes:**
+
+* Cache policy for reusable prompt prefixes/system context blocks
+* Provider-specific cache hints when available; local fallback cache strategy when not
+* Cache invalidation based on model/provider/session-policy changes
+* Cache hit/miss telemetry in runtime logs
+  **Acceptance tests:**
+* Repeated compatible requests show measurable cache-hit behavior.
+* Invalidation triggers correctly on provider/model change.
+* Cache behavior remains transparent in logs and audit events.
+  **Owner:** Providers/Core
 
 ---
 
@@ -425,6 +470,50 @@ Commands:
 * Unauthorized network access attempt is blocked and logged.
   **Owner:** Tools/Security
 
+### ISSUE 0411 — Workspace checkpoints + rollback safety controls (ucode-tools + ucode-core + ucode-tui) [P1]
+
+**Goal:** Add lightweight checkpoints before risky actions so users can quickly revert agent-side modifications.
+**Scope/Notes:**
+
+* Create checkpoint snapshots before patch apply and command-run actions that modify workspace
+* Rollback API and TUI actions to restore checkpoint state
+* Checkpoint retention policy (count/time based) with explicit user visibility
+  **Acceptance tests:**
+* Applying a patch creates a checkpoint and rollback restores pre-patch state.
+* Command-induced workspace changes can be reverted to prior checkpoint.
+* Expired checkpoints are pruned according to retention policy.
+  **Owner:** Tools/Core/TUI
+
+### ISSUE 0412 — Background job controller + interactive cancel/kill (ucode-tools + ucode-core + ucode-tui) [P0]
+
+**Goal:** Support detached long-running operations with explicit lifecycle control, including interactive kill from TUI.
+**Scope/Notes:**
+
+* Background job APIs: start/list/status/cancel/kill
+* Job states: queued/running/completed/failed/cancelled/killed
+* TUI background jobs panel with keyboard actions for cancel/kill
+* Clear distinction between graceful cancel and force kill in logs/UI
+  **Acceptance tests:**
+* Long-running job can be detached and monitored while chat remains responsive.
+* User can cancel and force-kill jobs interactively from TUI.
+* Job lifecycle transitions are auditable and persisted to session metadata.
+  **Owner:** Tools/Core/TUI
+
+### ISSUE 0413 — Structured artifact output and export pipeline (ucode-tools + ucode-cli) [P1]
+
+**Goal:** Produce and export structured artifacts (reports, diffs, run logs) for machine and human workflows.
+**Scope/Notes:**
+
+* Standard artifact envelope: id, type, source, metadata, checksum, created_at
+* Export targets: workspace files and machine-readable CLI output references
+* Artifact types include at minimum: markdown report, unified diff, command/test run logs
+* Audit linkage from session/tool events to artifact ids
+  **Acceptance tests:**
+* A run producing diff/report/logs emits tracked artifacts with metadata.
+* Artifacts can be retrieved by id from session history.
+* Exported artifacts are reproducibly referenced in CLI JSON output.
+  **Owner:** Tools/CLI
+
 ---
 
 ## EPIC 5 — MCP client + integration
@@ -487,6 +576,36 @@ Commands:
 * Per-server policy is enforced at invocation time.
 * Crash/restart cycle produces clear diagnostics in logs.
   **Owner:** MCP/Tools/Security
+
+### ISSUE 0505 — MCP transport parity (stdio + SSE + HTTP) (ucode-mcp) [P0]
+
+**Goal:** Match common agentic-tool MCP connectivity by supporting stdio, SSE, and HTTP transports.
+**Scope/Notes:**
+
+* Add configurable MCP transports: stdio, SSE, HTTP
+* Auth header/token config for networked transports
+* Reconnect/backoff strategy for unstable remote transports
+* Transport capability and health visible in logs/TUI
+  **Acceptance tests:**
+* Tool discovery/invocation works across stdio, SSE, and HTTP servers.
+* Transport disconnect triggers bounded reconnect with diagnostics.
+* Auth failures on remote transport surface clear actionable errors.
+  **Owner:** MCP
+
+### ISSUE 0506 — MCP resources/prompts integration (ucode-mcp + ucode-tools + ucode-core) [P0]
+
+**Goal:** Support MCP resources and prompts in addition to MCP tools for compatibility with modern agent ecosystems.
+**Scope/Notes:**
+
+* Discover/list MCP resources and prompts with server namespacing
+* Resolve/read resource payloads through policy/sandbox/audit pipeline
+* Prompt invocation and variable binding flow integrated into command/session context
+* Collision handling across servers for resource/prompt identifiers
+  **Acceptance tests:**
+* Resources and prompts are discoverable and invokable from registered MCP servers.
+* Resource/prompt access obeys policy and audit requirements.
+* Namespace collisions are handled deterministically.
+  **Owner:** MCP/Tools/Core
 
 ---
 
@@ -650,6 +769,8 @@ Search:
 * `on_permission_decision`
 * `on_approval_granted/denied`
 * `on_mcp_server_launch/restart/crash`
+* `on_budget_threshold_warning/reached`
+* `on_background_job_state_changed`
 * Override classes matrix enforced by host policy:
 
 | Class | Examples | Auto-apply | Requires explicit approval |
@@ -709,7 +830,7 @@ Search:
 * Runtime model and effective plugin permissions are visible in logs/UI.
   **Owner:** Plugins/Security
 
-### ISSUE 0806 — External DCP-style plugin compatibility + public hook surface (ucode-plugins + core)
+### ISSUE 0806 — External DCP-style plugin compatibility + public hook surface (ucode-plugins + core) [P0]
 
 **Goal:** Ensure users can ship their own DCP-style plugins (for example `opencode-dcp`) using documented, stable hook contracts.
 **Scope/Notes:**
@@ -726,6 +847,21 @@ Search:
 * Plugin can observe compaction/distillation and session-title events and emit a policy-safe recommendation.
 * Plugin attempt to escalate permissions is blocked and auditable.
   **Owner:** Plugins/Core/Security
+
+### ISSUE 0807 — Plugin install/update distribution with trust verification (ucode-plugins + security) [P1]
+
+**Goal:** Let users install/update external plugins from git/url/registry with signature/trust verification.
+**Scope/Notes:**
+
+* Plugin install/update commands for remote sources (git/url/registry)
+* Signature/fingerprint verification before activation
+* Trust record and drift detection on updates
+* Rollback path for failed or untrusted updates
+  **Acceptance tests:**
+* Signed trusted plugin installs and activates successfully.
+* Signature mismatch or trust failure blocks activation with clear diagnostics.
+* Update drift triggers re-approval and preserves previous working version.
+  **Owner:** Plugins/Security
 
 ---
 
@@ -778,16 +914,29 @@ Search:
 * Audit trail verifiable for: tool approvals, sandbox tier changes, MCP trust decisions, agent spawn/complete.
   **Owner:** Platform/Security
 
+### ISSUE 0905 — Non-interactive headless/CI execution mode (ucode-cli + ucode-core) [P0]
+
+**Goal:** Enable deterministic headless execution for CI/automation with machine-readable outputs and strict exit codes.
+**Scope/Notes:**
+
+* CLI non-interactive mode for scripted runs with no TUI prompts
+* JSON output envelope with events, artifacts, usage, and final status
+* Deterministic exit codes by terminal result class (success, policy deny, tool failure, timeout)
+* Support resume-by-session-id in non-interactive flows
+  **Acceptance tests:**
+* CI runner command executes end-to-end without interactive input.
+* JSON output includes terminal status + artifact references.
+* Exit codes map correctly to failure/success classes.
+  **Owner:** CLI/Core
+
 ---
 
 # Suggested initial milestone ordering (so agents don't block each other)
 
-**Milestone M1 (MVP CLI):** 0001, 0101–0105, 0108–0109, 0201–0202, 0301–0302 (one provider), 0401, 0403–0406, 0408–0409, 0107
+**Milestone M1 (MVP CLI):** 0001, 0101–0105, 0108–0111, 0201–0202, 0301–0302 (one provider), 0401, 0403–0406, 0408–0409, 0107
 **Milestone M2 (MVP TUI):** 0701–0704, 0706, 0707
-**Milestone M3 (Compatibility + MCP):** 0601–0603, 0501–0504
-**Milestone M4 (Plugins contracts + auth upgrades + subagents):** 0801–0803, 0203–0205, 0705, 0106, 0410
-**Milestone M5 (Polish + security + WASM runtime):** 0901–0904, 0804–0805
+**Milestone M3 (Compatibility + MCP):** 0601–0603, 0501–0506, 0305
+**Milestone M4 (Plugins contracts + auth upgrades + subagents):** 0801–0803, 0203–0205, 0705, 0106, 0410–0413
+**Milestone M5 (Polish + security + WASM runtime):** 0901–0905, 0804–0807
 
 ---
-
-If you tell me whether you want **GitHub Issues**, **Linear**, or **a single Markdown backlog file**, I can reformat this into exactly what your agentic tool expects (including labels like `epic:auth`, `area:tui`, `priority:p0`, etc.).

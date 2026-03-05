@@ -406,7 +406,7 @@ CLI:
 * `search` — `ignore` crate (gitignore-aware walking) + `regex` crate (matching)
 * All Rust-native, no CLI shelling
 
-### Task 4.3 Patch tool (core feature)
+### Task 4.3 Patch tool (core feature) [DONE]
 
 * Replace hand-rolled parser with `mpatch` crate
 * `mpatch::parse_auto()` — handles raw unified diffs AND markdown-embedded diffs

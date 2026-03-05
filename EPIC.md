@@ -467,7 +467,7 @@ This ensures consistent behavior, no runtime dependency on installed binaries, a
 * Search finds expected match; respects .gitignore.
   **Owner:** Tools
 
-### ISSUE 0405 — Patch apply tool (unified diff) (ucode-tools)
+### ISSUE 0405 — Patch apply tool (unified diff) (ucode-tools) [DONE]
 
 **Goal:** Implement `apply_patch(diff)` robustly using `mpatch` crate.
 **Scope/Notes:**

@@ -6,7 +6,7 @@
 * Multi-model routing + fallback (fast/strong/longctx)
 * Async subagent orchestration with inter-agent communication
 * Mention-driven orchestration (`@agent`) + user-defined slash commands (`/command`)
-* Built-in tools (fs/search/patch/cmd/git)
+* Built-in tools (fs/search/patch/cmd/git/ast-grep) — all Rust-native, no CLI shelling
 * Fine-grained sandbox policy (per-tool, per-agent, per-provider)
 * MCP client (external tool servers) with native launcher support (`uvx`/`npx`/`bunx`)
 * Skills compatibility: load `SKILL.md` (Claude Code + OpenCode)
@@ -384,35 +384,53 @@ CLI:
 
 # Phase 4 — Built-in tools (must-have)
 
+**Design principle:** All user-facing tools are baked-in Rust libraries. No shelling out to external CLIs.
+
+| Capability | Rust crate | Why |
+|---|---|---|
+| File search | `ignore` + `regex` | ripgrep ecosystem; gitignore-aware |
+| Patch apply | `mpatch` | Fuzzy matching for AI-generated diffs |
+| AST search/rewrite | `ast-grep-core` + `ast-grep-language` | Tree-sitter structural patterns |
+| Git operations | `gix` | Pure-Rust git |
+| Command execution | `tokio::process` | Async with timeout/caps |
+
 ### Task 4.1 Tool registry (ucode-tools) [DONE]
 
 * `ToolSpec { name, schema, description }`
 * `ToolHandler: async fn(args)->ToolResult`
 * Permissions gate integrated (per session + per skill)
 
-### Task 4.2 Filesystem/search tools [IN PROGRESS]
+### Task 4.2 Filesystem/search tools [DONE]
 
-* `read_file`, `list_dir`
-* `ripgrep_search` (or ignore+regex implementation)
-* Respect `.gitignore` via `ignore`
+* `read_file`, `list_dir` — `tokio::fs` async file I/O
+* `search` — `ignore` crate (gitignore-aware walking) + `regex` crate (matching)
+* All Rust-native, no CLI shelling
 
 ### Task 4.3 Patch tool (core feature)
 
-* `apply_patch(unified_diff)` robust applier
-* Context-anchor matching + bounded offset scanning for shifted hunks
-* Fast path for exact matches; fallback matcher for nearby offsets
-* Support LF/CRLF normalization and deterministic reject reasons
-* Return rejects + reasons on failure
+* Replace hand-rolled parser with `mpatch` crate
+* `mpatch::parse_auto()` — handles raw unified diffs AND markdown-embedded diffs
+* `mpatch::apply_patches_to_dir()` — fuzzy context matching, smart indentation
+* Built-in path traversal protection
+* Return applied/files_changed/rejects with reasons
 
 ### Task 4.4 Command runner tool
 
 * `run_cmd(cmd, cwd, timeout, env)`
-* output cap + timeout
+* `tokio::process::Command` — async with timeout/output caps
 * require user approval (TUI prompt) unless allowlisted
 
 ### Task 4.5 Git helpers (optional)
 
-* `git_status`, `git_diff` via `gix` or shell `git`
+* `git_status`, `git_diff` via `gix` (pure-Rust git, no shell)
+
+### Task 4.5b AST structural search/rewrite tool
+
+* `ast_search(pattern, path, lang)` — find code matching AST patterns
+* `ast_rewrite(pattern, replacement, path, lang)` — structural find-and-replace
+* `ast-grep-core` + `ast-grep-language` crates (tree-sitter based)
+* Pattern syntax: `$VAR` wildcards (e.g., `console.log($MSG)`)
+* Language grammars: Rust, Python, TypeScript, JavaScript, Go, C, C++
 
 ### Task 4.6 Fine-grained sandbox policy engine (ucode-tools)
 

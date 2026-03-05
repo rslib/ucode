@@ -403,6 +403,21 @@ Commands:
 
 ---
 
+## Design principle: Rust-native tooling
+
+All user-facing tools must be implemented as baked-in Rust libraries — no shelling out to external CLIs.
+This ensures consistent behavior, no runtime dependency on installed binaries, and full control over error handling.
+
+| Capability | Rust library | Notes |
+|---|---|---|
+| File search (ripgrep-like) | `ignore` + `regex` | `ignore` is from the ripgrep ecosystem; gitignore-aware walking |
+| Patch apply (unified diff) | `mpatch` | Fuzzy context matching, designed for AI-generated diffs |
+| AST structural search/rewrite | `ast-grep-core` + `ast-grep-language` | Tree-sitter based; pattern matching on syntax trees |
+| Git operations | `gix` | Pure-Rust git implementation |
+| Command execution | `tokio::process` | Async process spawning with timeout/output caps |
+
+---
+
 ## EPIC 4 — Built-in tools + permissions
 
 ### ISSUE 0401 — Tool registry + invocation runtime (ucode-tools) [DONE]
@@ -440,30 +455,34 @@ Commands:
 * Read a file inside repo succeeds; outside repo fails by policy.
   **Owner:** Tools
 
-### ISSUE 0404 — Built-in search tool (ripgrep-like) (ucode-tools)
+### ISSUE 0404 — Built-in search tool (ripgrep-like) (ucode-tools) [DONE]
 
 **Goal:** Implement `ripgrep_search(query, paths?, max_results?)`.
 **Scope/Notes:**
 
-* Use `ignore` crate traversal; optionally shell out to `rg` if installed (configurable).
+* Rust-native: `ignore` crate (gitignore-aware walking) + `regex` crate (matching)
+* No CLI shelling — all baked-in Rust
+* Supports max_results cap, include_glob filter, context_lines
   **Acceptance tests:**
-* Search finds expected match; respects ignore.
+* Search finds expected match; respects .gitignore.
   **Owner:** Tools
 
 ### ISSUE 0405 — Patch apply tool (unified diff) (ucode-tools)
 
-**Goal:** Implement `apply_patch(diff)` robustly.
+**Goal:** Implement `apply_patch(diff)` robustly using `mpatch` crate.
 **Scope/Notes:**
 
+* Rust-native: `mpatch` crate — fuzzy context matching designed for AI-generated diffs
+* No CLI shelling — all baked-in Rust
+* `mpatch::parse_auto()` handles both raw unified diffs and markdown-embedded diffs
+* `mpatch::apply_patches_to_dir()` applies patches with fuzzy matching + smart indentation
+* Built-in path traversal protection
 * Return `applied`, `files_changed`, `rejects` with reasons
-* Context-anchor matching with bounded offset scanning for shifted hunks
-* Fast path for exact context matches; fallback matcher for nearby offsets
-* LF/CRLF normalization and deterministic reject reasons
   **Acceptance tests:**
 * Apply patch to sample file; verify content changed.
 * Invalid patch returns rejects with reason.
-* Shifted-hunk patch applies correctly using offset search.
-* Large patch apply stays within documented performance budget.
+* Shifted/fuzzy-context patch applies correctly.
+* Markdown-embedded diff block parsed and applied.
   **Owner:** Tools
 
 ### ISSUE 0406 — Command runner tool (ucode-tools)
@@ -477,10 +496,31 @@ Commands:
 
 ### ISSUE 0407 — Git helpers (optional) (ucode-tools)
 
-**Goal:** Provide `git_status`, `git_diff` as tools (gix or shell).
-**Acceptance tests:**
+**Goal:** Provide `git_status`, `git_diff` as tools using `gix` (pure-Rust git).
+**Scope/Notes:**
 
+* Rust-native: `gix` crate — no shelling out to `git` CLI
+* `git_status`: staged/unstaged/untracked files
+* `git_diff`: unified diff of working tree changes
+  **Acceptance tests:**
 * In a git repo, status/diff returns data.
+  **Owner:** Tools
+
+### ISSUE 0407b — AST structural search/rewrite tool (ucode-tools)
+
+**Goal:** Provide AST-aware code search and rewrite using `ast-grep-core`.
+**Scope/Notes:**
+
+* Rust-native: `ast-grep-core` + `ast-grep-language` crates (tree-sitter based)
+* No CLI shelling — all baked-in Rust
+* `ast_search(pattern, path, lang)`: find code matching an AST pattern
+* `ast_rewrite(pattern, replacement, path, lang)`: structural find-and-replace
+* Supports major languages via tree-sitter grammars: Rust, Python, TypeScript, JavaScript, Go, C, C++
+* Pattern syntax: write code patterns with `$VAR` wildcards (e.g., `console.log($MSG)`)
+  **Acceptance tests:**
+* AST search finds structural matches that regex would miss (e.g., ignoring whitespace/comments).
+* AST rewrite correctly transforms matched code.
+* Language detection works for common file extensions.
   **Owner:** Tools
 
 ### ISSUE 0408 — Fine-grained hierarchical sandbox policy engine (ucode-tools)
@@ -1009,7 +1049,7 @@ Search:
 
 # Suggested initial milestone ordering (so agents don't block each other)
 
-**Milestone M1 (MVP CLI):** 0001, 0101–0105, 0108–0111, 0201–0202, 0301–0302 (one provider), 0401, 0403–0406, 0408–0409, 0107
+**Milestone M1 (MVP CLI):** 0001, 0101–0105, 0108–0111, 0201–0202, 0301–0302 (one provider), 0401, 0403–0407b, 0408–0409, 0107
 **Milestone M2 (MVP TUI):** 0701–0704, 0706, 0707
 **Milestone M3 (Compatibility + MCP):** 0601–0603, 0501–0506, 0305
 **Milestone M4 (Plugins contracts + auth upgrades + subagents):** 0801–0803, 0203–0205, 0705, 0106, 0410–0413

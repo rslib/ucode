@@ -341,7 +341,7 @@ Commands:
 
 ## EPIC 3 — Provider adapters (streaming + tool calls)
 
-### ISSUE 0301 — Provider trait + capability model (ucode-providers)
+### ISSUE 0301 — Provider trait + capability model (ucode-providers) [DONE]
 
 **Goal:** Define provider interface that returns canonical `Event` stream.
 **Scope/Notes:**

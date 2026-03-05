@@ -1,1 +1,7 @@
-//! ucode-providers: OpenAI, Anthropic, Ollama provider adapters
+//! ucode-providers: Provider trait, capability model, and adapters (OpenAI, Anthropic, Ollama).
+
+pub mod mock;
+pub mod provider;
+
+pub use mock::MockProvider;
+pub use provider::{Capabilities, ChatRequest, Provider, ProviderFuture, ToolDef};

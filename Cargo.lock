@@ -1080,8 +1080,13 @@ dependencies = [
 name = "ucode-providers"
 version = "0.1.0"
 dependencies = [
+ "futures-core",
+ "futures-util",
  "serde",
+ "serde_json",
  "thiserror",
+ "tokio",
+ "ucode-core",
 ]
 
 [[package]]

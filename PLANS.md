@@ -341,7 +341,7 @@ CLI:
 
 # Phase 3 — Provider adapters (streaming + tool translation)
 
-### Task 3.1 Provider trait (ucode-providers)
+### Task 3.1 Provider trait (ucode-providers) [DONE]
 
 * `Provider::stream_chat(req) -> Stream<Event>`
 * `capabilities()` (tools, json mode, max context, max output, token counting support)

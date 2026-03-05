@@ -10,12 +10,13 @@ use ucode_tools::git::staging::{GitAddTool, GitResetTool, GitRestoreTool};
 use ucode_tools::git::stash::GitStashTool;
 use ucode_tools::git::status::GitStatusTool;
 use ucode_tools::{
-    ToolHandler, ToolRegistry, register_git_add_tool, register_git_branch_tool,
-    register_git_checkout_tool, register_git_cherry_pick_tool, register_git_commit_tool,
-    register_git_diff_commits_tool, register_git_diff_staged_tool, register_git_diff_tool,
-    register_git_log_tool, register_git_merge_tool, register_git_rebase_tool,
-    register_git_reset_tool, register_git_restore_tool, register_git_show_tool,
-    register_git_stash_tool, register_git_status_tool, register_git_tag_tool,
+    ToolHandler, ToolRegistry, register_all_git_tools, register_git_add_tool,
+    register_git_branch_tool, register_git_checkout_tool, register_git_cherry_pick_tool,
+    register_git_commit_tool, register_git_diff_commits_tool, register_git_diff_staged_tool,
+    register_git_diff_tool, register_git_log_tool, register_git_merge_tool,
+    register_git_rebase_tool, register_git_reset_tool, register_git_restore_tool,
+    register_git_show_tool, register_git_stash_tool, register_git_status_tool,
+    register_git_tag_tool,
 };
 
 // ── test helpers ──────────────────────────────────────────────────────────────
@@ -2166,6 +2167,38 @@ fn registry_merge_tools_register() {
     register_git_rebase_tool(&mut registry);
 
     for name in &["git_merge", "git_cherry_pick", "git_rebase"] {
+        assert!(registry.get(name).is_some(), "{name} not found in registry");
+    }
+}
+
+/// register_all_git_tools registers all 17 tools.
+#[test]
+fn register_all_git_tools_registers_17() {
+    let mut registry = ToolRegistry::new();
+    register_all_git_tools(&mut registry);
+
+    let expected = [
+        "git_status",
+        "git_diff",
+        "git_diff_staged",
+        "git_diff_commits",
+        "git_add",
+        "git_commit",
+        "git_log",
+        "git_show",
+        "git_tag",
+        "git_branch",
+        "git_checkout",
+        "git_reset",
+        "git_restore",
+        "git_stash",
+        "git_merge",
+        "git_cherry_pick",
+        "git_rebase",
+    ];
+
+    assert_eq!(registry.list().len(), expected.len());
+    for name in &expected {
         assert!(registry.get(name).is_some(), "{name} not found in registry");
     }
 }

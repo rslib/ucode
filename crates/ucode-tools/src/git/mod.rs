@@ -42,3 +42,26 @@ pub use merge::{register_git_cherry_pick_tool, register_git_merge_tool, register
 pub use staging::{register_git_add_tool, register_git_reset_tool, register_git_restore_tool};
 pub use stash::register_git_stash_tool;
 pub use status::register_git_status_tool;
+
+use crate::registry::ToolRegistry;
+
+/// Register all 17 git tools into the given registry.
+pub fn register_all_git_tools(registry: &mut ToolRegistry) {
+    register_git_status_tool(registry);
+    register_git_diff_tool(registry);
+    register_git_diff_staged_tool(registry);
+    register_git_diff_commits_tool(registry);
+    register_git_add_tool(registry);
+    register_git_commit_tool(registry);
+    register_git_log_tool(registry);
+    register_git_show_tool(registry);
+    register_git_tag_tool(registry);
+    register_git_branch_tool(registry);
+    register_git_checkout_tool(registry);
+    register_git_reset_tool(registry);
+    register_git_restore_tool(registry);
+    register_git_stash_tool(registry);
+    register_git_merge_tool(registry);
+    register_git_cherry_pick_tool(registry);
+    register_git_rebase_tool(registry);
+}

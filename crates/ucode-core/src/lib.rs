@@ -25,4 +25,4 @@ pub use logging::{
 };
 pub use message::{Message, Part, Role, ToolCall, ToolResult};
 pub use router::{FallbackReason, ModelEndpoint, ModelGroup, RouteDecision, Router, RouterConfig};
-pub use session::{Session, SessionId, SessionMeta, ToolAuditEntry};
+pub use session::{Session, SessionId, SessionMeta, SessionStore, TitleSource, ToolAuditEntry};

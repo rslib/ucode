@@ -177,7 +177,7 @@ Streaming events:
 * Provider-count unavailable path uses local estimate + safety margin and remains stable.
 * Rule-based compaction path succeeds without summarizer model; model-assisted path remains optional.
 
-### Task 1.7: Session lifecycle + model-generated session titles (ucode-core + ucode-cli + ucode-tui)
+### Task 1.7: Session lifecycle + model-generated session titles (ucode-core + ucode-cli + ucode-tui) [DONE]
 
 * Extend session metadata: `title`, `title_source(auto|manual)`, `created_at`, `last_active_at`, `archived`
 * Generate initial session title from early conversation turns using active model

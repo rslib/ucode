@@ -1,5 +1,7 @@
 mod auth_handler;
 mod cmd_auth;
+mod cmd_session;
+mod session_handler;
 
 use std::path::PathBuf;
 
@@ -9,6 +11,7 @@ use ucode_auth::KeyringStore;
 use ucode_core::logging::{LogConfig, LogLevel, default_log_dir, init_logging};
 
 use cmd_auth::AuthCommand;
+use cmd_session::SessionCommand;
 
 #[derive(Debug, Parser)]
 #[command(name = "ucode", about = "ucode agentic tool")]
@@ -43,6 +46,12 @@ enum Command {
     Auth {
         #[command(subcommand)]
         subcommand: AuthCommand,
+    },
+
+    /// Manage sessions.
+    Session {
+        #[command(subcommand)]
+        subcommand: SessionCommand,
     },
 }
 
@@ -125,6 +134,9 @@ async fn main() -> Result<()> {
 
     let store = KeyringStore::new();
 
+    let session_dir = ucode_core::logging::default_config_home().join("sessions");
+    let session_store = ucode_core::SessionStore::new(session_dir)?;
+
     match cli.command {
         None => {
             println!("ucode v{}", env!("CARGO_PKG_VERSION"));
@@ -138,6 +150,17 @@ async fn main() -> Result<()> {
                 device,
                 subscription,
             } => auth_handler::handle_login(&store, provider, device, subscription)?,
+        },
+        Some(Command::Session { subcommand }) => match subcommand {
+            SessionCommand::List { all } => session_handler::handle_list(&session_store, all)?,
+            SessionCommand::Show { id } => session_handler::handle_show(&session_store, &id)?,
+            SessionCommand::Rename { id, title } => {
+                session_handler::handle_rename(&session_store, &id, title)?
+            }
+            SessionCommand::Archive { id } => session_handler::handle_archive(&session_store, &id)?,
+            SessionCommand::Unarchive { id } => {
+                session_handler::handle_unarchive(&session_store, &id)?
+            }
         },
     }
 

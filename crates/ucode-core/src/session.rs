@@ -5,10 +5,20 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::budget::CompactionRecord;
+use crate::message::{Part, Role};
 use crate::{CoreError, Message};
 
 /// Unique session identifier.
 pub type SessionId = String;
+
+/// How a session title was set.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TitleSource {
+    #[default]
+    Auto,
+    Manual,
+}
 
 /// Metadata about the active session.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -19,6 +29,18 @@ pub struct SessionMeta {
     pub active_model: Option<String>,
     pub active_skill: Option<String>,
     pub working_dir: PathBuf,
+
+    /// Session title (None = untitled).
+    #[serde(default)]
+    pub title: Option<String>,
+
+    /// How the title was set.
+    #[serde(default)]
+    pub title_source: TitleSource,
+
+    /// Whether this session is archived.
+    #[serde(default)]
+    pub archived: bool,
 }
 
 /// A recorded tool invocation for the audit trail.
@@ -41,6 +63,11 @@ pub struct Session {
     pub compaction_log: Vec<CompactionRecord>,
 }
 
+/// Directory-based session store.
+pub struct SessionStore {
+    dir: PathBuf,
+}
+
 fn generate_session_id() -> SessionId {
     format!(
         "ses_{}_{}",
@@ -61,6 +88,9 @@ impl Session {
                 active_model: None,
                 active_skill: None,
                 working_dir,
+                title: None,
+                title_source: TitleSource::Auto,
+                archived: false,
             },
             transcript: Vec::new(),
             tool_audit: Vec::new(),
@@ -103,6 +133,68 @@ impl Session {
         self.meta.updated_at = Utc::now();
     }
 
+    /// Set title from auto-generation (only if not manually locked).
+    pub fn set_auto_title(&mut self, title: String) {
+        if self.meta.title_source != TitleSource::Manual {
+            self.meta.title = Some(title);
+            self.meta.title_source = TitleSource::Auto;
+            self.meta.updated_at = Utc::now();
+        }
+    }
+
+    /// Manually rename the session (locks title from auto-overwrite).
+    pub fn rename(&mut self, title: String) {
+        self.meta.title = Some(title);
+        self.meta.title_source = TitleSource::Manual;
+        self.meta.updated_at = Utc::now();
+    }
+
+    /// Archive the session.
+    pub fn archive(&mut self) {
+        self.meta.archived = true;
+        self.meta.updated_at = Utc::now();
+    }
+
+    /// Unarchive the session.
+    pub fn unarchive(&mut self) {
+        self.meta.archived = false;
+        self.meta.updated_at = Utc::now();
+    }
+
+    /// Generate a fallback title from the first user message in the transcript.
+    /// Truncates to 50 chars. Returns None if no user messages exist.
+    pub fn generate_fallback_title(&self) -> Option<String> {
+        for msg in &self.transcript {
+            if msg.role == Role::User {
+                for part in &msg.parts {
+                    if let Part::Text(text) = part {
+                        let trimmed = text.trim();
+                        if !trimmed.is_empty() {
+                            let title: String = trimmed.chars().take(50).collect();
+                            let title = if trimmed.chars().count() > 50 {
+                                format!("{title}...")
+                            } else {
+                                title
+                            };
+                            return Some(title);
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// Apply auto-title if no title is set yet and transcript has user messages.
+    pub fn auto_title_if_needed(&mut self) {
+        if self.meta.title.is_none()
+            && self.meta.title_source != TitleSource::Manual
+            && let Some(title) = self.generate_fallback_title()
+        {
+            self.set_auto_title(title);
+        }
+    }
+
     /// Serialize to JSON and write to the given path.
     pub fn save(&self, path: &Path) -> Result<(), CoreError> {
         let json = serde_json::to_string_pretty(self).map_err(|e| CoreError::Internal {
@@ -121,5 +213,223 @@ impl Session {
         serde_json::from_str(&data).map_err(|e| CoreError::Internal {
             message: format!("deserialize session from {}: {e}", path.display()),
         })
+    }
+}
+
+impl SessionStore {
+    /// Create a new store backed by the given directory.
+    /// Creates the directory if it doesn't exist.
+    pub fn new(dir: PathBuf) -> Result<Self, CoreError> {
+        fs::create_dir_all(&dir).map_err(|e| CoreError::Internal {
+            message: format!("create session dir {}: {e}", dir.display()),
+        })?;
+        Ok(Self { dir })
+    }
+
+    fn session_path(&self, id: &str) -> PathBuf {
+        self.dir.join(format!("{id}.json"))
+    }
+
+    /// Create and persist a new session.
+    pub fn create(&self, working_dir: PathBuf) -> Result<Session, CoreError> {
+        let session = Session::new(working_dir);
+        session.save(&self.session_path(&session.meta.id))?;
+        Ok(session)
+    }
+
+    /// Load a session by ID.
+    pub fn load(&self, id: &str) -> Result<Session, CoreError> {
+        Session::load(&self.session_path(id))
+    }
+
+    /// Save an existing session.
+    pub fn save(&self, session: &Session) -> Result<(), CoreError> {
+        session.save(&self.session_path(&session.meta.id))
+    }
+
+    /// List all sessions (metadata only, sorted by updated_at descending).
+    /// If `include_archived` is false, archived sessions are excluded.
+    pub fn list(&self, include_archived: bool) -> Result<Vec<SessionMeta>, CoreError> {
+        let mut metas = Vec::new();
+        let entries = fs::read_dir(&self.dir).map_err(|e| CoreError::Internal {
+            message: format!("read session dir {}: {e}", self.dir.display()),
+        })?;
+        for entry in entries {
+            let entry = entry.map_err(|e| CoreError::Internal {
+                message: format!("read dir entry: {e}"),
+            })?;
+            let path = entry.path();
+            if path.extension().is_some_and(|ext| ext == "json") {
+                match Session::load(&path) {
+                    Ok(session) => {
+                        if include_archived || !session.meta.archived {
+                            metas.push(session.meta);
+                        }
+                    }
+                    Err(_) => continue, // skip corrupt files
+                }
+            }
+        }
+        metas.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        Ok(metas)
+    }
+
+    /// Delete a session file.
+    pub fn delete(&self, id: &str) -> Result<(), CoreError> {
+        let path = self.session_path(id);
+        fs::remove_file(&path).map_err(|e| CoreError::Internal {
+            message: format!("delete session {}: {e}", path.display()),
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn title_source_default_is_auto() {
+        assert_eq!(TitleSource::default(), TitleSource::Auto);
+    }
+
+    #[test]
+    fn set_auto_title() {
+        let mut s = Session::new(PathBuf::from("/tmp"));
+        s.set_auto_title("Test title".into());
+        assert_eq!(s.meta.title.as_deref(), Some("Test title"));
+        assert_eq!(s.meta.title_source, TitleSource::Auto);
+    }
+
+    #[test]
+    fn manual_rename_locks_title() {
+        let mut s = Session::new(PathBuf::from("/tmp"));
+        s.rename("My title".into());
+        assert_eq!(s.meta.title_source, TitleSource::Manual);
+        // Auto-title should NOT overwrite manual title
+        s.set_auto_title("Auto title".into());
+        assert_eq!(s.meta.title.as_deref(), Some("My title"));
+    }
+
+    #[test]
+    fn archive_unarchive() {
+        let mut s = Session::new(PathBuf::from("/tmp"));
+        assert!(!s.meta.archived);
+        s.archive();
+        assert!(s.meta.archived);
+        s.unarchive();
+        assert!(!s.meta.archived);
+    }
+
+    #[test]
+    fn generate_fallback_title_from_user_message() {
+        let mut s = Session::new(PathBuf::from("/tmp"));
+        s.push_message(Message::system("You are helpful."));
+        s.push_message(Message::user("Help me write a Rust HTTP server"));
+        let title = s.generate_fallback_title();
+        assert_eq!(title.as_deref(), Some("Help me write a Rust HTTP server"));
+    }
+
+    #[test]
+    fn generate_fallback_title_truncates_long() {
+        let mut s = Session::new(PathBuf::from("/tmp"));
+        let long_msg = "a".repeat(100);
+        s.push_message(Message::user(&long_msg));
+        let title = s.generate_fallback_title().unwrap();
+        assert!(title.len() <= 54); // 50 chars + "..."
+        assert!(title.ends_with("..."));
+    }
+
+    #[test]
+    fn generate_fallback_title_none_when_empty() {
+        let s = Session::new(PathBuf::from("/tmp"));
+        assert!(s.generate_fallback_title().is_none());
+    }
+
+    #[test]
+    fn auto_title_if_needed_sets_title() {
+        let mut s = Session::new(PathBuf::from("/tmp"));
+        s.push_message(Message::user("Build a CLI tool"));
+        s.auto_title_if_needed();
+        assert_eq!(s.meta.title.as_deref(), Some("Build a CLI tool"));
+        assert_eq!(s.meta.title_source, TitleSource::Auto);
+    }
+
+    #[test]
+    fn auto_title_if_needed_skips_manual() {
+        let mut s = Session::new(PathBuf::from("/tmp"));
+        s.push_message(Message::user("Build a CLI tool"));
+        s.rename("Custom name".into());
+        s.auto_title_if_needed();
+        assert_eq!(s.meta.title.as_deref(), Some("Custom name"));
+    }
+
+    #[test]
+    fn session_store_create_and_list() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SessionStore::new(dir.path().to_path_buf()).unwrap();
+        let s1 = store.create(PathBuf::from("/tmp")).unwrap();
+        let s2 = store.create(PathBuf::from("/tmp")).unwrap();
+        let list = store.list(false).unwrap();
+        assert_eq!(list.len(), 2);
+        let ids: Vec<_> = list.iter().map(|m| m.id.as_str()).collect();
+        assert!(ids.contains(&s1.meta.id.as_str()));
+        assert!(ids.contains(&s2.meta.id.as_str()));
+    }
+
+    #[test]
+    fn session_store_list_excludes_archived() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SessionStore::new(dir.path().to_path_buf()).unwrap();
+        let mut s = store.create(PathBuf::from("/tmp")).unwrap();
+        s.archive();
+        store.save(&s).unwrap();
+        let _ = store.create(PathBuf::from("/tmp")).unwrap();
+        let active = store.list(false).unwrap();
+        assert_eq!(active.len(), 1);
+        let all = store.list(true).unwrap();
+        assert_eq!(all.len(), 2);
+    }
+
+    #[test]
+    fn session_store_load_and_save() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SessionStore::new(dir.path().to_path_buf()).unwrap();
+        let mut s = store.create(PathBuf::from("/tmp")).unwrap();
+        s.rename("Test session".into());
+        store.save(&s).unwrap();
+        let loaded = store.load(&s.meta.id).unwrap();
+        assert_eq!(loaded.meta.title.as_deref(), Some("Test session"));
+        assert_eq!(loaded.meta.title_source, TitleSource::Manual);
+    }
+
+    #[test]
+    fn session_store_delete() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SessionStore::new(dir.path().to_path_buf()).unwrap();
+        let s = store.create(PathBuf::from("/tmp")).unwrap();
+        store.delete(&s.meta.id).unwrap();
+        assert!(store.load(&s.meta.id).is_err());
+    }
+
+    #[test]
+    fn backward_compat_no_title_fields() {
+        // Old-format session JSON without title/title_source/archived
+        let json = r#"{
+            "meta": {
+                "id": "ses_old",
+                "created_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:00:00Z",
+                "active_model": null,
+                "active_skill": null,
+                "working_dir": "/tmp"
+            },
+            "transcript": [],
+            "tool_audit": []
+        }"#;
+        let session: Session = serde_json::from_str(json).unwrap();
+        assert!(session.meta.title.is_none());
+        assert_eq!(session.meta.title_source, TitleSource::Auto);
+        assert!(!session.meta.archived);
+        assert!(session.compaction_log.is_empty());
     }
 }

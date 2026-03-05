@@ -4,6 +4,7 @@ pub mod approval;
 pub mod ast_tool;
 pub mod cmd_tool;
 pub mod fs_tools;
+pub mod git_tool;
 pub mod patch_tool;
 pub mod policy;
 pub mod registry;
@@ -15,6 +16,7 @@ pub use approval::{
 pub use ast_tool::{register_ast_rewrite_tool, register_ast_search_tool};
 pub use cmd_tool::register_cmd_tool;
 pub use fs_tools::register_fs_tools;
+pub use git_tool::{register_git_diff_tool, register_git_status_tool};
 pub use patch_tool::register_patch_tool;
 pub use policy::{
     Capabilities, EffectivePolicy, PolicyLayer, PolicyStack, SandboxTier,

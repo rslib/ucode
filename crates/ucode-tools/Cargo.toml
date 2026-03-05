@@ -16,6 +16,7 @@ mpatch = { workspace = true }
 ast-grep-core = { workspace = true }
 ast-grep-language = { workspace = true }
 chrono = { workspace = true }
+gix = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

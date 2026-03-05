@@ -67,6 +67,9 @@ tempfile = "3"
 # keychain
 keyring = { version = "3", features = ["apple-native", "linux-native"] }
 
+# git (pure Rust)
+gix = { version = "0.80", default-features = false, features = ["status", "blob-diff", "index"] }
+
 # intra-workspace
 ucode-core = { path = "crates/ucode-core" }
 ucode-auth = { path = "crates/ucode-auth" }

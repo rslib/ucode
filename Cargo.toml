@@ -50,5 +50,8 @@ rand = "0.9"
 # testing
 tempfile = "3"
 
+# keychain
+keyring = { version = "3", features = ["apple-native", "linux-native"] }
+
 # intra-workspace
 ucode-core = { path = "crates/ucode-core" }

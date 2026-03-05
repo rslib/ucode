@@ -7,8 +7,10 @@ edition.workspace = true
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+tokio = { workspace = true }
 ucode-core = { workspace = true }
 ucode-providers = { path = "../ucode-providers" }
 
 [dev-dependencies]
+tempfile = { workspace = true }
 tokio = { workspace = true }

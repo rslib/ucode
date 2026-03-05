@@ -384,7 +384,7 @@ CLI:
 
 # Phase 4 — Built-in tools (must-have)
 
-### Task 4.1 Tool registry (ucode-tools)
+### Task 4.1 Tool registry (ucode-tools) [DONE]
 
 * `ToolSpec { name, schema, description }`
 * `ToolHandler: async fn(args)->ToolResult`

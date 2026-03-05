@@ -405,7 +405,7 @@ Commands:
 
 ## EPIC 4 — Built-in tools + permissions
 
-### ISSUE 0401 — Tool registry + invocation runtime (ucode-tools)
+### ISSUE 0401 — Tool registry + invocation runtime (ucode-tools) [DONE]
 
 **Goal:** Create unified tool registry for built-in + MCP + plugins.
 **Scope/Notes:**

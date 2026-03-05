@@ -2,7 +2,8 @@ use std::process::Command;
 
 use serde_json::json;
 use tempfile::TempDir;
-use ucode_tools::git_tool::{GitDiffTool, GitStatusTool};
+use ucode_tools::git::diff::GitDiffTool;
+use ucode_tools::git::status::GitStatusTool;
 use ucode_tools::{ToolHandler, ToolRegistry, register_git_diff_tool, register_git_status_tool};
 
 // ── test helpers ──────────────────────────────────────────────────────────────

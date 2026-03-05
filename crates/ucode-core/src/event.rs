@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 
+use crate::budget::CompactionRecord;
 use crate::error::CoreError;
 use crate::message::{ToolCall, ToolResult};
 
@@ -19,6 +20,8 @@ pub enum Event {
     Log(String),
     /// A terminal error.
     Error(CoreError),
+    /// A compaction/distillation step was applied.
+    Compaction(CompactionRecord),
     /// Signals the end of the stream.
     Done,
 }

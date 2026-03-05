@@ -122,7 +122,7 @@
 * Ambiguous token handling follows resolver rules with clear error output.
   **Owner:** Core
 
-### ISSUE 0108 — Token budget manager + context compaction/distillation pipeline (ucode-core)
+### ISSUE 0108 — Token budget manager + context compaction/distillation pipeline (ucode-core) [DONE]
 
 **Goal:** Keep conversations reliable when nearing model context limits by applying deterministic compaction/distillation before hard failure.
 **Scope/Notes:**

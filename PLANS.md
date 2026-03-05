@@ -144,7 +144,7 @@ Streaming events:
 * `/command-name` resolves to user/project/plugin command definition.
 * Ambiguous `@token` cases follow resolver order and produce clear diagnostics.
 
-### Task 1.6: Token budget manager + context compaction/distillation (ucode-core)
+### Task 1.6: Token budget manager + context compaction/distillation (ucode-core) [DONE]
 
 * Add per provider/model token budget estimator (input + reserved output budget)
 * Run context-fit preflight before every model request

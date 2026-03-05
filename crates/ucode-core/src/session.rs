@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+use crate::budget::CompactionRecord;
 use crate::{CoreError, Message};
 
 /// Unique session identifier.
@@ -35,6 +36,9 @@ pub struct Session {
     pub meta: SessionMeta,
     pub transcript: Vec<Message>,
     pub tool_audit: Vec<ToolAuditEntry>,
+    /// Compaction/distillation audit trail.
+    #[serde(default)]
+    pub compaction_log: Vec<CompactionRecord>,
 }
 
 fn generate_session_id() -> SessionId {
@@ -60,6 +64,7 @@ impl Session {
             },
             transcript: Vec::new(),
             tool_audit: Vec::new(),
+            compaction_log: Vec::new(),
         }
     }
 
@@ -89,6 +94,12 @@ impl Session {
     /// Set the active skill.
     pub fn set_active_skill(&mut self, skill: Option<String>) {
         self.meta.active_skill = skill;
+        self.meta.updated_at = Utc::now();
+    }
+
+    /// Record compaction/distillation results in the audit trail.
+    pub fn record_compaction(&mut self, records: Vec<CompactionRecord>) {
+        self.compaction_log.extend(records);
         self.meta.updated_at = Utc::now();
     }
 

@@ -129,6 +129,16 @@
 
 * Per provider/model token budget estimator (input + reserved output budget)
 * Preflight context-fit check before each provider request
+* Counting strategy order:
+
+  * use provider-native token counting when adapter supports it
+  * otherwise use local tokenizer-based estimator + conservative safety margin
+* Budget envelope fields tracked per request: `max_context`, reserved output, available input
+* Hybrid compaction modes:
+
+  * rule-based/no-model compaction path (trim + deterministic packing)
+  * optional model-assisted summarization path (same model or smaller summarizer model)
+  * system must not require a smaller model to compact successfully
 * Progressive recovery pipeline (deterministic order):
 
   * trim low-value context artifacts (verbose logs/tool chatter)
@@ -138,10 +148,13 @@
 * Retry policy: compact/distill and retry until within budget or explicit terminal error
 * Persist compaction/distillation artifacts in session store with provenance/audit linkage
 * Emit routing/runtime logs for each compaction step and final token budget used
+* Persist count source (`provider_count` vs `local_estimate`) for observability/debugging
   **Acceptance tests:**
 * Oversized transcript triggers compaction/distillation and request succeeds without user intervention.
 * Pinned recent turns and unresolved tool context remain intact after compaction.
 * Distilled artifacts reload with session and remain auditable.
+* When provider count API is unavailable, local estimate path is used and guarded by safety margin.
+* Rule-based path works without any summarizer model; model-assisted path is optional and policy-gated.
   **Owner:** Core
 
 ### ISSUE 0109 — Session lifecycle + model-generated session titles (ucode-core + ucode-cli + ucode-tui)
@@ -190,6 +203,54 @@
 * Hard budget threshold enforces configured block/fallback behavior.
 * Session usage summary persists and reloads.
   **Owner:** Core/Providers/TUI
+
+### ISSUE 0112 — Structured logging subsystem (stderr + file, session + rolling) (ucode-core + ucode-cli + ucode-tui) [DONE]
+
+**Goal:** Provide production-grade diagnostics with explicit log levels and sinks, while keeping noisy levels disabled by default.
+**Scope/Notes:**
+
+* Log levels: `ERROR`, `WARN`, `INFO`, `DEBUG`, `TRACE`
+* Defaults: `INFO` by default; `DEBUG`/`TRACE` enabled only via explicit user config/flag
+* Runtime control surfaces:
+
+  * env vars (for example `UCODE_LOG_LEVEL`, `UCODE_LOG_STDERR`, `UCODE_LOG_FILE`, `UCODE_LOG_DIR`, `UCODE_LOG_ROLLING`)
+  * CLI flags (for example `--log-level`, `--log-file`, `--log-dir`, `--log-stderr`, `--trace`)
+* Env var semantics:
+
+  * `UCODE_LOG_LEVEL`: `error|warn|info|debug|trace`
+  * `UCODE_LOG_STDERR`: boolean sink toggle (`1/0`, `true/false`)
+  * `UCODE_LOG_FILE`: file path override for log sink
+  * `UCODE_LOG_DIR`: directory override for session and rolling log files
+  * `UCODE_LOG_ROLLING`: boolean toggle for global rolling log
+* Precedence for logging controls: CLI flags > env vars > config file > built-in defaults
+* Multi-sink output:
+
+  * stderr sink for interactive visibility
+  * file sink for persistence and post-mortem analysis
+* Stdout policy: reserve stdout for command/model result payloads and machine-readable output; logs go to stderr/file by default
+* Retention strategy (hybrid):
+
+  * per-session file as primary user-facing log (`session-<id>.log`)
+  * optional rolling global log for cross-session diagnostics
+* XDG-compliant log path defaults:
+
+  * default log dir: `${XDG_STATE_HOME:-~/.local/state}/ucode/logs`
+  * if `UCODE_LOG_DIR` or `--log-dir` is set, use that path explicitly
+* Config root override for testability/integration:
+
+  * `UCODE_HOME` defaults to `${XDG_CONFIG_HOME:-~/.config}/ucode`
+  * canonical config file path: `${UCODE_HOME}/ucode.toml`
+* Structured fields on each event: timestamp, level, session_id, agent_id, provider/model, tool_name, event_type
+* Redaction guardrails to avoid secrets in logs
+  **Acceptance tests:**
+* Default run emits `INFO+` to stderr and per-session file.
+* Default run keeps stdout clean for normal output/JSON mode consumers.
+* `DEBUG` and `TRACE` are silent unless explicitly enabled.
+* CLI and env var overrides apply deterministically using documented precedence.
+* Per-session logs are easily attributable to a single session; rolling log rotates by size/time policy.
+* With no explicit override, logs are written under XDG state log path.
+* Sensitive values are redacted in both sinks.
+  **Owner:** Core/CLI/TUI/Security
 
 ---
 
@@ -284,9 +345,11 @@ Commands:
 **Scope/Notes:**
 
 * `Provider::stream_chat(req) -> EventStream`
-* `Provider::capabilities() -> Capabilities { tool_calls, json_mode, max_context, streaming }`
+* `Provider::capabilities() -> Capabilities { tool_calls, json_mode, max_context, max_output, streaming, token_counting }`
+* Optional `count_tokens(req)` adapter method for provider-native counting
   **Acceptance tests:**
 * Mock provider compiles and streams tokens + done.
+* Capability matrix correctly reports token-count availability.
   **Owner:** Providers
 
 ### ISSUE 0302 — OpenAI adapter (streaming + tools) (ucode-providers)
@@ -884,9 +947,20 @@ Search:
 ### ISSUE 0902 — Config file + docs
 
 **Goal:** Document config keys and default behaviors.
+**Scope/Notes:**
+
+* Canonical runtime configuration format: TOML (`~/.config/ucode/ucode.toml`)
+* Config root env override: `UCODE_HOME` (default `${XDG_CONFIG_HOME:-~/.config}/ucode`)
+* Canonical config path: `${UCODE_HOME}/ucode.toml`
+* YAML/JSON are out of scope; configuration is TOML-only
+* Document precedence: defaults < global config < project config < session overrides
+* Include per-tool configuration model (timeouts, output caps, approval mode, allowlists/denylists) with safe bounds
+* Publish config schema versioning/migration notes for backward compatibility
 **Acceptance tests:**
 
 * `docs/config.md` exists + example config.
+* Example includes per-tool overrides and precedence behavior.
+* Docs include `UCODE_HOME` example for integration testing.
   **Owner:** Platform/Docs
 
 ### ISSUE 0903 — Packaging + distribution (Linux/macOS)

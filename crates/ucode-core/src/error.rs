@@ -33,4 +33,7 @@ pub enum CoreError {
 
     #[error("internal error: {message}")]
     Internal { message: String },
+
+    #[error("logging initialization failed: {message}")]
+    LogInit { message: String },
 }

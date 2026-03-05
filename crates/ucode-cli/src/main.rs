@@ -1,15 +1,38 @@
 mod auth_handler;
 mod cmd_auth;
 
+use std::path::PathBuf;
+
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use ucode_auth::KeyringStore;
+use ucode_core::logging::{LogConfig, LogLevel, default_log_dir, init_logging};
 
 use cmd_auth::AuthCommand;
 
 #[derive(Debug, Parser)]
 #[command(name = "ucode", about = "ucode agentic tool")]
 struct Cli {
+    /// Log level: error, warn, info, debug, trace.
+    #[arg(long, value_name = "LEVEL", global = true)]
+    log_level: Option<LogLevel>,
+
+    /// Write logs to this file path.
+    #[arg(long, value_name = "PATH", global = true)]
+    log_file: Option<PathBuf>,
+
+    /// Override the log directory.
+    #[arg(long, value_name = "DIR", global = true)]
+    log_dir: Option<PathBuf>,
+
+    /// Enable or disable stderr logging. Bare flag means true.
+    #[arg(long, num_args = 0..=1, default_missing_value = "true", global = true)]
+    log_stderr: Option<bool>,
+
+    /// Shorthand for --log-level trace.
+    #[arg(long, global = true)]
+    trace: bool,
+
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -23,9 +46,83 @@ enum Command {
     },
 }
 
+/// Build a [`LogConfig`] honouring CLI flags > env vars > defaults.
+fn resolve_log_config(cli: &Cli) -> LogConfig {
+    // --- level ---
+    let level = if cli.trace {
+        LogLevel::Trace
+    } else if let Some(l) = cli.log_level {
+        l
+    } else {
+        std::env::var("UCODE_LOG_LEVEL")
+            .ok()
+            .and_then(|s| s.parse::<LogLevel>().ok())
+            .unwrap_or_default()
+    };
+
+    // --- stderr ---
+    let stderr = if let Some(v) = cli.log_stderr {
+        v
+    } else {
+        std::env::var("UCODE_LOG_STDERR")
+            .ok()
+            .and_then(|s| parse_bool_env(&s))
+            .unwrap_or(true)
+    };
+
+    // --- log file ---
+    let log_file = cli.log_file.clone().or_else(|| {
+        std::env::var("UCODE_LOG_FILE")
+            .ok()
+            .filter(|s| !s.is_empty())
+            .map(PathBuf::from)
+    });
+
+    // --- log dir ---
+    let log_dir = cli.log_dir.clone().unwrap_or_else(|| {
+        std::env::var("UCODE_LOG_DIR")
+            .ok()
+            .filter(|s| !s.is_empty())
+            .map(PathBuf::from)
+            .unwrap_or_else(default_log_dir)
+    });
+
+    // --- rolling (env only, no CLI flag) ---
+    let rolling = std::env::var("UCODE_LOG_ROLLING")
+        .ok()
+        .and_then(|s| parse_bool_env(&s))
+        .unwrap_or(false);
+
+    let mut config = LogConfig::default()
+        .with_level(level)
+        .with_stderr(stderr)
+        .with_log_dir(log_dir)
+        .with_rolling(rolling);
+
+    if let Some(path) = log_file {
+        config = config.with_log_file(path);
+    }
+
+    config
+}
+
+/// Parse "1"/"true"/"yes" → `Some(true)`, "0"/"false"/"no" → `Some(false)`, else `None`.
+fn parse_bool_env(s: &str) -> Option<bool> {
+    match s.to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" => Some(true),
+        "0" | "false" | "no" => Some(false),
+        _ => None,
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+
+    let config = resolve_log_config(&cli);
+    let _log_guard = init_logging(&config)?;
+    tracing::debug!("logging initialised");
+
     let store = KeyringStore::new();
 
     match cli.command {
@@ -45,4 +142,177 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::*;
+
+    fn test_cli() -> Cli {
+        Cli {
+            log_level: None,
+            log_file: None,
+            log_dir: None,
+            log_stderr: None,
+            trace: false,
+            command: None,
+        }
+    }
+
+    /// Save an env var's current value and remove it, returning a guard that
+    /// restores (or removes) it on drop.
+    struct EnvGuard {
+        key: &'static str,
+        saved: Option<String>,
+    }
+
+    impl EnvGuard {
+        fn remove(key: &'static str) -> Self {
+            let saved = std::env::var(key).ok();
+            unsafe { std::env::remove_var(key) };
+            Self { key, saved }
+        }
+
+        fn set(key: &'static str, value: &str) -> Self {
+            let saved = std::env::var(key).ok();
+            unsafe { std::env::set_var(key, value) };
+            Self { key, saved }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match &self.saved {
+                Some(v) => unsafe { std::env::set_var(self.key, v) },
+                None => unsafe { std::env::remove_var(self.key) },
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // parse_bool_env
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn parse_bool_env_true_values() {
+        for s in ["1", "true", "yes", "TRUE", "Yes"] {
+            assert_eq!(
+                parse_bool_env(s),
+                Some(true),
+                "expected Some(true) for {s:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_bool_env_false_values() {
+        for s in ["0", "false", "no", "FALSE", "No"] {
+            assert_eq!(
+                parse_bool_env(s),
+                Some(false),
+                "expected Some(false) for {s:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_bool_env_invalid() {
+        for s in ["maybe", "", "2"] {
+            assert_eq!(parse_bool_env(s), None, "expected None for {s:?}");
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // resolve_log_config
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn resolve_defaults() {
+        let _l = EnvGuard::remove("UCODE_LOG_LEVEL");
+        let _s = EnvGuard::remove("UCODE_LOG_STDERR");
+        let _f = EnvGuard::remove("UCODE_LOG_FILE");
+        let _d = EnvGuard::remove("UCODE_LOG_DIR");
+        let _r = EnvGuard::remove("UCODE_LOG_ROLLING");
+
+        let cfg = resolve_log_config(&test_cli());
+
+        assert_eq!(cfg.level, LogLevel::Info);
+        assert!(cfg.stderr);
+        assert!(!cfg.rolling);
+        assert!(cfg.log_file.is_none());
+        assert!(
+            cfg.log_dir.ends_with("ucode/logs"),
+            "log_dir={}",
+            cfg.log_dir.display()
+        );
+    }
+
+    #[test]
+    fn resolve_cli_trace_flag() {
+        let cli = Cli {
+            trace: true,
+            ..test_cli()
+        };
+        let cfg = resolve_log_config(&cli);
+        assert_eq!(cfg.level, LogLevel::Trace);
+    }
+
+    #[test]
+    fn resolve_cli_log_level_overrides_env() {
+        let _guard = EnvGuard::set("UCODE_LOG_LEVEL", "debug");
+        let cli = Cli {
+            log_level: Some(LogLevel::Error),
+            ..test_cli()
+        };
+        let cfg = resolve_log_config(&cli);
+        assert_eq!(cfg.level, LogLevel::Error);
+    }
+
+    #[test]
+    fn resolve_env_log_level_when_no_cli() {
+        let _guard = EnvGuard::set("UCODE_LOG_LEVEL", "debug");
+        let cfg = resolve_log_config(&test_cli());
+        assert_eq!(cfg.level, LogLevel::Debug);
+    }
+
+    #[test]
+    fn resolve_trace_beats_log_level() {
+        let cli = Cli {
+            trace: true,
+            log_level: Some(LogLevel::Error),
+            ..test_cli()
+        };
+        let cfg = resolve_log_config(&cli);
+        assert_eq!(cfg.level, LogLevel::Trace);
+    }
+
+    #[test]
+    fn resolve_cli_log_dir() {
+        let cli = Cli {
+            log_dir: Some(PathBuf::from("/tmp/test-logs")),
+            ..test_cli()
+        };
+        let cfg = resolve_log_config(&cli);
+        assert_eq!(cfg.log_dir, PathBuf::from("/tmp/test-logs"));
+    }
+
+    #[test]
+    fn resolve_env_stderr_false() {
+        let _guard = EnvGuard::set("UCODE_LOG_STDERR", "0");
+        let cfg = resolve_log_config(&test_cli());
+        assert!(!cfg.stderr);
+    }
+
+    #[test]
+    fn resolve_cli_stderr_overrides_env() {
+        let _guard = EnvGuard::set("UCODE_LOG_STDERR", "0");
+        let cli = Cli {
+            log_stderr: Some(true),
+            ..test_cli()
+        };
+        let cfg = resolve_log_config(&cli);
+        assert!(cfg.stderr);
+    }
 }

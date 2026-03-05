@@ -148,6 +148,16 @@ Streaming events:
 
 * Add per provider/model token budget estimator (input + reserved output budget)
 * Run context-fit preflight before every model request
+* Counting strategy order:
+
+  * use provider-native token counting when available
+  * fallback to local tokenizer-based estimation with conservative safety margin
+* Track per-request budget envelope: `max_context`, reserved output, available input
+* Hybrid compaction modes:
+
+  * rule-based/no-model compaction first (trim + deterministic packing)
+  * optional model-assisted summarization (same model or smaller summarizer)
+  * compaction must not depend on availability of a smaller model
 * Add deterministic recovery chain when over budget:
 
   * trim low-value artifacts (verbose logs/tool chatter)
@@ -157,12 +167,15 @@ Streaming events:
 
 * Persist compaction/distillation artifacts in session store with provenance links
 * Emit runtime logs for each compaction/distillation decision
+* Persist count source (`provider_count` vs `local_estimate`) for diagnostics
 
 **Acceptance**
 
 * Oversized transcript auto-compacts/distills and request succeeds without manual intervention.
 * Pinned recent turns and unresolved tool context are preserved.
 * Distilled artifacts reload correctly with session state.
+* Provider-count unavailable path uses local estimate + safety margin and remains stable.
+* Rule-based compaction path succeeds without summarizer model; model-assisted path remains optional.
 
 ### Task 1.7: Session lifecycle + model-generated session titles (ucode-core + ucode-cli + ucode-tui)
 
@@ -204,6 +217,48 @@ Streaming events:
 * Soft threshold emits warning without aborting workflow.
 * Hard threshold enforces configured policy action.
 * Usage summary persists and reloads with session.
+
+### Task 1.10: Structured logging subsystem (stderr + file, session + rolling) (ucode-core + ucode-cli + ucode-tui) [DONE]
+
+* Implement levels: `ERROR`, `WARN`, `INFO`, `DEBUG`, `TRACE`
+* Default runtime level is `INFO`; `DEBUG`/`TRACE` require explicit opt-in
+* Runtime control surfaces:
+
+  * env vars: `UCODE_LOG_LEVEL`, `UCODE_LOG_STDERR`, `UCODE_LOG_FILE`, `UCODE_LOG_DIR`, `UCODE_LOG_ROLLING`
+  * CLI flags: `--log-level`, `--log-file`, `--log-dir`, `--log-stderr`, `--trace`
+* Logging precedence: CLI flags > env vars > config file > defaults
+* Env var semantics:
+
+  * `UCODE_LOG_LEVEL`: `error|warn|info|debug|trace`
+  * `UCODE_LOG_STDERR`: boolean sink toggle (`1/0`, `true/false`)
+  * `UCODE_LOG_FILE`: file path override
+  * `UCODE_LOG_DIR`: directory override for session/rolling logs
+  * `UCODE_LOG_ROLLING`: boolean toggle for global rolling log
+* Support dual sinks:
+
+  * stderr for interactive runs
+  * file sink for persistent diagnostics
+* Stdout policy: keep stdout reserved for command/model output and machine-readable responses; do not emit logs to stdout by default
+* Hybrid retention strategy:
+
+  * per-session log files as primary (`session-<id>.log`)
+  * optional rolling global log (size/time rotation)
+* XDG-compliant defaults for log storage:
+
+  * `${XDG_STATE_HOME:-~/.local/state}/ucode/logs`
+  * explicit `--log-dir` / `UCODE_LOG_DIR` overrides default location
+* Emit structured log fields: timestamp, level, session_id, provider/model, tool_name, event_type
+* Add sensitive-data redaction rules for all sinks
+
+**Acceptance**
+
+* Default run logs `INFO+` to stderr + per-session file.
+* Default run keeps stdout clean for output piping/JSON consumers.
+* `DEBUG` and `TRACE` produce output only when explicitly enabled.
+* Per-session logs map cleanly to one session id.
+* Rolling log rotates correctly and does not break session log attribution.
+* Default log path resolves to XDG state directory when no override is set.
+* Secret values are redacted in stderr and file logs.
 
 ---
 
@@ -289,7 +344,8 @@ CLI:
 ### Task 3.1 Provider trait (ucode-providers)
 
 * `Provider::stream_chat(req) -> Stream<Event>`
-* `capabilities()` (tools, json mode, max context)
+* `capabilities()` (tools, json mode, max context, max output, token counting support)
+* optional adapter `count_tokens(req)` for provider-native counting
 
 ### Task 3.2 OpenAI adapter
 
@@ -816,18 +872,26 @@ Override classes matrix:
 
 ### Config file
 
-`~/.config/ucode/config.toml`:
+`UCODE_HOME` defaults to `${XDG_CONFIG_HOME:-~/.config}/ucode`.
+
+Canonical runtime format: `${UCODE_HOME}/ucode.toml` (TOML only).
+
+Precedence order: built-in defaults < user global config < project-local config < session overrides.
+
+`${UCODE_HOME}/ucode.toml`:
 
 * providers + model groups
 * auth mode preference per provider (key vs login)
 * fallback order
 * compaction/distillation policy (strategy order, pinned-window size, retry limits)
 * cost/token budget policy (soft/hard thresholds, action on breach)
+* logging config: level, sink toggles (stderr/file), per-session file path, rolling policy (size/time, max files)
 * MCP servers list
 * plugin list
 * plugin discovery paths (project/user) for external plugins such as DCP adapters
 * remote plugin sources + trust records (git/url/registry)
 * allowlists/denylists for run_cmd + file access scope
+* per-tool settings (timeouts, output caps, approval mode, allowlists/denylists) with policy-safe limits
 * sandbox policy matrix (global / provider / agent / tool / session)
 * network policy matrix (including web/deep-research enablement per agent)
 * checkpoint retention policy (count/time)
@@ -841,6 +905,12 @@ Override classes matrix:
 * cache policy (provider hints, local fallback, invalidation)
 * TUI keybind overrides
 
+### Configuration acceptance notes
+
+* Config docs must include a complete TOML example and precedence walkthrough.
+* Per-tool overrides must not bypass stricter parent policy layers.
+* Schema version and migration behavior must be documented.
+
 ### Observability
 
 * `tracing` logs to file + in-TUI log pane
@@ -849,12 +919,13 @@ Override classes matrix:
   inter-agent messages, MCP server launch/trust decisions
 * include compaction/distillation events and session title generation/update events in audit stream
 * include background job lifecycle events (start/cancel/kill/complete) and budget-threshold events
+* include explicit logging configuration snapshot at session start (effective level/sinks/redaction mode)
 
 ---
 
 ## Delegation map (agents)
 
-* **Agent A (Core):** Phase 1 router/events/session state + token compaction/distillation + session lifecycle/title generation + subagent orchestration + inter-agent comm + mention/command parser bindings
+* **Agent A (Core):** Phase 1 router/events/session state + token compaction/distillation + session lifecycle/title generation + structured logging + subagent orchestration + inter-agent comm + mention/command parser bindings
 * **Agent B (Auth):** Phase 2 keychain + OpenAI login + Anthropic subscription login + CLI/TUI connect flow
 * **Agent C (Providers):** Phase 3 adapters (OpenAI/Anthropic/Ollama)
 * **Agent D (Tools):** Phase 4 built-ins + patch applier + cmd runner + sandbox policy engine + confirmation gates + checkpoints + background job control + artifacts
@@ -896,5 +967,6 @@ Override classes matrix:
 26. MCP supports stdio, SSE, and HTTP transports plus resources/prompts
 27. Headless CI mode provides deterministic JSON outputs and exit codes
 28. Remote plugin install/update supports trust verification and rollback
+29. Logging supports level-gated diagnostics with stderr + file sinks and per-session plus rolling retention
 
 ---

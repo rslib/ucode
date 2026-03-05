@@ -161,6 +161,11 @@ async fn main() -> Result<()> {
             SessionCommand::Unarchive { id } => {
                 session_handler::handle_unarchive(&session_store, &id)?
             }
+            SessionCommand::Fork { id, at_turn } => {
+                session_handler::handle_fork(&session_store, &id, at_turn)?
+            }
+            SessionCommand::Resume { id } => session_handler::handle_resume(&session_store, &id)?,
+            SessionCommand::Continue => session_handler::handle_continue(&session_store)?,
         },
     }
 

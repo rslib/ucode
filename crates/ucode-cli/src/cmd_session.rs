@@ -34,4 +34,22 @@ pub enum SessionCommand {
         /// Session ID.
         id: String,
     },
+
+    /// Fork a session, creating a child with shared transcript history.
+    Fork {
+        /// Parent session ID to fork from.
+        id: String,
+        /// Fork at this transcript turn index (default: end of transcript).
+        #[arg(long)]
+        at_turn: Option<usize>,
+    },
+
+    /// Resume a session by ID (print its details for now).
+    Resume {
+        /// Session ID to resume.
+        id: String,
+    },
+
+    /// Continue the most recently updated non-archived session.
+    Continue,
 }

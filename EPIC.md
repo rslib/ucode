@@ -174,18 +174,20 @@
 * Archive/unarchive and switch flows work in both CLI and TUI.
   **Owner:** Core/CLI/TUI
 
-### ISSUE 0110 — Session resume/fork lineage model (ucode-core + ucode-cli + ucode-tui) [P0]
+### ISSUE 0110 — Session resume/fork lineage model (ucode-core + ucode-cli + ucode-tui) [P0] [DONE]
 
 **Goal:** Support deterministic session resume and branch/fork workflows for parallel exploration without losing transcript lineage.
 **Scope/Notes:**
 
 * Resume by id from CLI/TUI with full state restore (model, skill, policy, transcript)
+* `session continue` resumes the most recently updated non-archived session (convenience shortcut)
 * Fork session creates child session with parent pointer and lineage metadata
 * Session list/switch UI exposes parent-child lineage and fork source
 * Audit events for resume/fork/switch actions
   **Acceptance tests:**
 * `resume(session_id)` restores full runnable state.
 * `fork(session_id)` creates a child session with correct ancestry.
+* `session continue` resolves to the most recent active session.
 * TUI and CLI can switch between parent/child sessions without state bleed.
   **Owner:** Core/CLI/TUI
 

@@ -192,7 +192,7 @@ Streaming events:
 * Manual rename is durable across reload and protected from auto overwrite.
 * Archive/unarchive and switch operations work in both CLI and TUI.
 
-### Task 1.8: Session resume/fork lineage model (ucode-core + ucode-cli + ucode-tui) [P0]
+### Task 1.8: Session resume/fork lineage model (ucode-core + ucode-cli + ucode-tui) [P0] [DONE]
 
 * Resume sessions by id with full state restoration (model/skill/policy/transcript)
 * Fork sessions into child branches with explicit parent-child lineage metadata

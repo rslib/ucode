@@ -110,3 +110,28 @@ fn load_nonexistent_file_errors() {
     let result = Session::load(std::path::Path::new("/nonexistent/path/session.json"));
     assert!(result.is_err());
 }
+
+#[test]
+fn fork_and_save_roundtrip() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let parent_path = dir.path().join("parent.json");
+    let child_path = dir.path().join("child.json");
+
+    let mut parent = Session::new(PathBuf::from("/project"));
+    parent.push_message(Message::user("hello"));
+    parent.push_message(Message::assistant("world"));
+    parent.set_active_model(Some("claude-3".into()));
+    parent.save(&parent_path).expect("save parent");
+
+    let child = parent.fork(Some(1));
+    child.save(&child_path).expect("save child");
+
+    let loaded_child = Session::load(&child_path).expect("load child");
+    assert_eq!(
+        loaded_child.meta.parent_session_id.as_deref(),
+        Some(parent.meta.id.as_str())
+    );
+    assert_eq!(loaded_child.meta.fork_source_index, Some(1));
+    assert_eq!(loaded_child.transcript.len(), 1);
+    assert_eq!(loaded_child.meta.active_model.as_deref(), Some("claude-3"));
+}

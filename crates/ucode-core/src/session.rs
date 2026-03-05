@@ -41,6 +41,14 @@ pub struct SessionMeta {
     /// Whether this session is archived.
     #[serde(default)]
     pub archived: bool,
+
+    /// Parent session ID (set when this session was forked from another).
+    #[serde(default)]
+    pub parent_session_id: Option<SessionId>,
+
+    /// Transcript index in the parent where this fork occurred.
+    #[serde(default)]
+    pub fork_source_index: Option<usize>,
 }
 
 /// A recorded tool invocation for the audit trail.
@@ -91,6 +99,8 @@ impl Session {
                 title: None,
                 title_source: TitleSource::Auto,
                 archived: false,
+                parent_session_id: None,
+                fork_source_index: None,
             },
             transcript: Vec::new(),
             tool_audit: Vec::new(),
@@ -195,6 +205,34 @@ impl Session {
         }
     }
 
+    /// Fork this session at the given transcript index, creating a new child session.
+    /// The child gets a new ID, copies transcript up to `at_index` (exclusive),
+    /// inherits model/skill/working_dir, and records lineage metadata.
+    /// Returns the new child session (not yet persisted).
+    pub fn fork(&self, at_index: Option<usize>) -> Self {
+        let idx = at_index.unwrap_or(self.transcript.len());
+        let idx = idx.min(self.transcript.len());
+        let now = Utc::now();
+        Self {
+            meta: SessionMeta {
+                id: generate_session_id(),
+                created_at: now,
+                updated_at: now,
+                active_model: self.meta.active_model.clone(),
+                active_skill: self.meta.active_skill.clone(),
+                working_dir: self.meta.working_dir.clone(),
+                title: None,
+                title_source: TitleSource::Auto,
+                archived: false,
+                parent_session_id: Some(self.meta.id.clone()),
+                fork_source_index: Some(idx),
+            },
+            transcript: self.transcript[..idx].to_vec(),
+            tool_audit: Vec::new(),
+            compaction_log: Vec::new(),
+        }
+    }
+
     /// Serialize to JSON and write to the given path.
     pub fn save(&self, path: &Path) -> Result<(), CoreError> {
         let json = serde_json::to_string_pretty(self).map_err(|e| CoreError::Internal {
@@ -280,6 +318,15 @@ impl SessionStore {
         fs::remove_file(&path).map_err(|e| CoreError::Internal {
             message: format!("delete session {}: {e}", path.display()),
         })
+    }
+
+    /// Fork an existing session at the given transcript index.
+    /// Creates and persists the child session, returns it.
+    pub fn fork(&self, parent_id: &str, at_index: Option<usize>) -> Result<Session, CoreError> {
+        let parent = self.load(parent_id)?;
+        let child = parent.fork(at_index);
+        self.save(&child)?;
+        Ok(child)
     }
 }
 
@@ -431,5 +478,93 @@ mod tests {
         assert_eq!(session.meta.title_source, TitleSource::Auto);
         assert!(!session.meta.archived);
         assert!(session.compaction_log.is_empty());
+        assert!(session.meta.parent_session_id.is_none());
+        assert!(session.meta.fork_source_index.is_none());
+    }
+
+    #[test]
+    fn fork_creates_child_with_lineage() {
+        let mut parent = Session::new(PathBuf::from("/project"));
+        parent.set_active_model(Some("claude-3".into()));
+        parent.set_active_skill(Some("tdd".into()));
+        parent.push_message(Message::user("hello"));
+        parent.push_message(Message::assistant("hi"));
+        parent.push_message(Message::user("next"));
+
+        let child = parent.fork(Some(2));
+
+        assert_ne!(child.meta.id, parent.meta.id);
+        assert_eq!(
+            child.meta.parent_session_id.as_deref(),
+            Some(parent.meta.id.as_str())
+        );
+        assert_eq!(child.meta.fork_source_index, Some(2));
+        assert_eq!(child.transcript.len(), 2);
+        assert_eq!(child.meta.active_model.as_deref(), Some("claude-3"));
+        assert_eq!(child.meta.active_skill.as_deref(), Some("tdd"));
+        assert_eq!(child.meta.working_dir, parent.meta.working_dir);
+        assert!(child.tool_audit.is_empty());
+        assert!(child.compaction_log.is_empty());
+        assert!(child.meta.title.is_none());
+    }
+
+    #[test]
+    fn fork_none_index_copies_full_transcript() {
+        let mut parent = Session::new(PathBuf::from("/tmp"));
+        parent.push_message(Message::user("a"));
+        parent.push_message(Message::assistant("b"));
+
+        let child = parent.fork(None);
+        assert_eq!(child.transcript.len(), 2);
+        assert_eq!(child.meta.fork_source_index, Some(2));
+    }
+
+    #[test]
+    fn fork_index_clamped_to_transcript_len() {
+        let mut parent = Session::new(PathBuf::from("/tmp"));
+        parent.push_message(Message::user("a"));
+
+        let child = parent.fork(Some(999));
+        assert_eq!(child.transcript.len(), 1);
+        assert_eq!(child.meta.fork_source_index, Some(1));
+    }
+
+    #[test]
+    fn fork_no_state_bleed() {
+        let mut parent = Session::new(PathBuf::from("/tmp"));
+        parent.push_message(Message::user("hello"));
+        let mut child = parent.fork(None);
+
+        // Mutate child — parent must not change
+        child.push_message(Message::user("child msg"));
+        child.set_active_model(Some("gpt-4".into()));
+
+        assert_eq!(parent.transcript.len(), 1);
+        assert_eq!(child.transcript.len(), 2);
+        assert!(parent.meta.active_model.is_none());
+    }
+
+    #[test]
+    fn session_store_fork() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SessionStore::new(dir.path().to_path_buf()).unwrap();
+        let mut parent = store.create(PathBuf::from("/tmp")).unwrap();
+        parent.push_message(Message::user("hello"));
+        parent.push_message(Message::assistant("world"));
+        store.save(&parent).unwrap();
+
+        let child = store.fork(&parent.meta.id, Some(1)).unwrap();
+        assert_eq!(
+            child.meta.parent_session_id.as_deref(),
+            Some(parent.meta.id.as_str())
+        );
+        assert_eq!(child.transcript.len(), 1);
+
+        // Verify child is persisted
+        let loaded = store.load(&child.meta.id).unwrap();
+        assert_eq!(
+            loaded.meta.parent_session_id.as_deref(),
+            Some(parent.meta.id.as_str())
+        );
     }
 }

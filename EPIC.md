@@ -494,7 +494,7 @@ This ensures consistent behavior, no runtime dependency on installed binaries, a
 * `run_cmd("sleep 10", timeout=1)` times out cleanly.
   **Owner:** Tools
 
-### ISSUE 0407 — Git helpers (optional) (ucode-tools)
+### ISSUE 0407 — Git helpers (optional) (ucode-tools) [DONE]
 
 **Goal:** Provide `git_status`, `git_diff` as tools using `gix` (pure-Rust git).
 **Scope/Notes:**

@@ -420,7 +420,7 @@ CLI:
 * `tokio::process::Command` — async with timeout/output caps
 * require user approval (TUI prompt) unless allowlisted
 
-### Task 4.5 Git helpers (optional)
+### Task 4.5 Git helpers (optional) [DONE]
 
 * `git_status`, `git_diff` via `gix` (pure-Rust git, no shell)
 

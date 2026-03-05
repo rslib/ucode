@@ -6,7 +6,9 @@
 pub mod branch;
 pub mod commit;
 pub mod diff;
+pub mod merge;
 pub mod staging;
+pub mod stash;
 pub mod status;
 
 use std::path::{Path, PathBuf};
@@ -36,5 +38,7 @@ pub use commit::{
 pub use diff::{
     register_git_diff_commits_tool, register_git_diff_staged_tool, register_git_diff_tool,
 };
+pub use merge::{register_git_cherry_pick_tool, register_git_merge_tool, register_git_rebase_tool};
 pub use staging::{register_git_add_tool, register_git_reset_tool, register_git_restore_tool};
+pub use stash::register_git_stash_tool;
 pub use status::register_git_status_tool;

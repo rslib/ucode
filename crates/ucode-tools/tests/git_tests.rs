@@ -5,14 +5,17 @@ use tempfile::TempDir;
 use ucode_tools::git::branch::{GitBranchTool, GitCheckoutTool};
 use ucode_tools::git::commit::{GitCommitTool, GitLogTool, GitShowTool, GitTagTool};
 use ucode_tools::git::diff::{GitDiffCommitsTool, GitDiffStagedTool, GitDiffTool};
+use ucode_tools::git::merge::{GitCherryPickTool, GitMergeTool, GitRebaseTool};
 use ucode_tools::git::staging::{GitAddTool, GitResetTool, GitRestoreTool};
+use ucode_tools::git::stash::GitStashTool;
 use ucode_tools::git::status::GitStatusTool;
 use ucode_tools::{
     ToolHandler, ToolRegistry, register_git_add_tool, register_git_branch_tool,
-    register_git_checkout_tool, register_git_commit_tool, register_git_diff_commits_tool,
-    register_git_diff_staged_tool, register_git_diff_tool, register_git_log_tool,
+    register_git_checkout_tool, register_git_cherry_pick_tool, register_git_commit_tool,
+    register_git_diff_commits_tool, register_git_diff_staged_tool, register_git_diff_tool,
+    register_git_log_tool, register_git_merge_tool, register_git_rebase_tool,
     register_git_reset_tool, register_git_restore_tool, register_git_show_tool,
-    register_git_status_tool, register_git_tag_tool,
+    register_git_stash_tool, register_git_status_tool, register_git_tag_tool,
 };
 
 // ── test helpers ──────────────────────────────────────────────────────────────
@@ -1357,6 +1360,812 @@ fn registry_batch2_tools_register() {
     register_git_restore_tool(&mut registry);
 
     for name in &["git_branch", "git_checkout", "git_reset", "git_restore"] {
+        assert!(registry.get(name).is_some(), "{name} not found in registry");
+    }
+}
+
+// ── git_stash tests ───────────────────────────────────────────────────────────
+
+/// Push stashes changes; worktree is clean and stash appears in list.
+#[tokio::test]
+async fn stash_push_and_list() {
+    let dir = TempDir::new().unwrap();
+    let repo = init_repo(&dir);
+    write_file(&repo, "file.txt", "original\n");
+    run_git(&repo, &["add", "file.txt"]);
+    run_git(&repo, &["commit", "-m", "initial"]);
+
+    // Modify the tracked file.
+    write_file(&repo, "file.txt", "modified\n");
+    run_git(&repo, &["add", "file.txt"]);
+
+    let push_result = GitStashTool
+        .invoke(json!({
+            "path": repo.to_str().unwrap(),
+            "action": "push",
+            "message": "my stash",
+        }))
+        .await
+        .unwrap();
+
+    assert!(push_result["stashed"].as_bool().unwrap());
+    assert_eq!(push_result["message"].as_str().unwrap(), "my stash");
+
+    // Worktree should be back to HEAD content.
+    let content = std::fs::read_to_string(repo.join("file.txt")).unwrap();
+    assert_eq!(
+        content, "original\n",
+        "worktree should be clean after stash push"
+    );
+
+    // Stash should appear in list.
+    let list_result = GitStashTool
+        .invoke(json!({ "path": repo.to_str().unwrap(), "action": "list" }))
+        .await
+        .unwrap();
+
+    let stashes = list_result["stashes"].as_array().unwrap();
+    assert_eq!(stashes.len(), 1);
+    assert_eq!(stashes[0]["index"].as_u64().unwrap(), 0);
+    assert_eq!(stashes[0]["message"].as_str().unwrap(), "my stash");
+}
+
+/// Pop restores stashed changes to the worktree.
+#[tokio::test]
+async fn stash_pop() {
+    let dir = TempDir::new().unwrap();
+    let repo = init_repo(&dir);
+    write_file(&repo, "file.txt", "original\n");
+    run_git(&repo, &["add", "file.txt"]);
+    run_git(&repo, &["commit", "-m", "initial"]);
+
+    write_file(&repo, "file.txt", "stashed change\n");
+    run_git(&repo, &["add", "file.txt"]);
+
+    GitStashTool
+        .invoke(json!({ "path": repo.to_str().unwrap(), "action": "push" }))
+        .await
+        .unwrap();
+
+    // Confirm worktree is clean.
+    let before = std::fs::read_to_string(repo.join("file.txt")).unwrap();
+    assert_eq!(before, "original\n");
+
+    let pop_result = GitStashTool
+        .invoke(json!({ "path": repo.to_str().unwrap(), "action": "pop" }))
+        .await
+        .unwrap();
+
+    assert!(pop_result["restored"].as_bool().unwrap());
+
+    // Stashed content should be back.
+    let after = std::fs::read_to_string(repo.join("file.txt")).unwrap();
+    assert_eq!(
+        after, "stashed change\n",
+        "pop should restore stashed content"
+    );
+
+    // Stash list should now be empty.
+    let list = GitStashTool
+        .invoke(json!({ "path": repo.to_str().unwrap(), "action": "list" }))
+        .await
+        .unwrap();
+    assert_eq!(list["stashes"].as_array().unwrap().len(), 0);
+}
+
+/// Drop removes the stash entry without restoring.
+#[tokio::test]
+async fn stash_drop() {
+    let dir = TempDir::new().unwrap();
+    let repo = init_repo(&dir);
+    write_file(&repo, "file.txt", "original\n");
+    run_git(&repo, &["add", "file.txt"]);
+    run_git(&repo, &["commit", "-m", "initial"]);
+
+    write_file(&repo, "file.txt", "to be dropped\n");
+    run_git(&repo, &["add", "file.txt"]);
+
+    GitStashTool
+        .invoke(json!({ "path": repo.to_str().unwrap(), "action": "push" }))
+        .await
+        .unwrap();
+
+    let drop_result = GitStashTool
+        .invoke(json!({ "path": repo.to_str().unwrap(), "action": "drop" }))
+        .await
+        .unwrap();
+
+    assert!(drop_result["dropped"].as_bool().unwrap());
+    assert_eq!(drop_result["index"].as_u64().unwrap(), 0);
+
+    // List should be empty.
+    let list = GitStashTool
+        .invoke(json!({ "path": repo.to_str().unwrap(), "action": "list" }))
+        .await
+        .unwrap();
+    assert_eq!(list["stashes"].as_array().unwrap().len(), 0);
+
+    // Worktree should still have HEAD content (drop does not restore).
+    let content = std::fs::read_to_string(repo.join("file.txt")).unwrap();
+    assert_eq!(content, "original\n", "drop should not restore worktree");
+}
+
+/// Pop with no stash entries returns an error.
+#[tokio::test]
+async fn stash_empty_error() {
+    let dir = TempDir::new().unwrap();
+    let repo = init_repo(&dir);
+    write_file(&repo, "file.txt", "content\n");
+    run_git(&repo, &["add", "file.txt"]);
+    run_git(&repo, &["commit", "-m", "initial"]);
+
+    let result = GitStashTool
+        .invoke(json!({ "path": repo.to_str().unwrap(), "action": "pop" }))
+        .await;
+
+    assert!(result.is_err(), "expected error when popping empty stash");
+}
+
+/// git_stash registers successfully.
+#[test]
+fn registry_stash_registers() {
+    let mut registry = ToolRegistry::new();
+    register_git_stash_tool(&mut registry);
+    assert!(
+        registry.get("git_stash").is_some(),
+        "git_stash not found in registry"
+    );
+}
+
+// ── git_merge tests ───────────────────────────────────────────────────────────
+
+/// Fast-forward merge: HEAD is ancestor of branch, just moves HEAD.
+#[tokio::test]
+async fn merge_fast_forward() {
+    let dir = TempDir::new().unwrap();
+    let repo = init_repo(&dir);
+    write_file(&repo, "file.txt", "v1\n");
+    run_git(&repo, &["add", "file.txt"]);
+    run_git(&repo, &["commit", "-m", "initial"]);
+
+    // Create a branch and add a commit on it.
+    run_git(&repo, &["checkout", "-b", "feature"]);
+    write_file(&repo, "file.txt", "v2\n");
+    run_git(&repo, &["add", "file.txt"]);
+    run_git(&repo, &["commit", "-m", "feature commit"]);
+
+    // Switch back to main and merge feature (fast-forward).
+    run_git(&repo, &["checkout", "-"]);
+
+    let result = GitMergeTool
+        .invoke(json!({ "path": repo.to_str().unwrap(), "branch": "feature" }))
+        .await
+        .unwrap();
+
+    assert!(
+        result["fast_forward"].as_bool().unwrap_or(false),
+        "expected fast_forward: {result}"
+    );
+    assert_eq!(result["conflicts"].as_array().unwrap().len(), 0);
+
+    // Worktree should have v2.
+    let content = std::fs::read_to_string(repo.join("file.txt")).unwrap();
+    assert_eq!(
+        content, "v2\n",
+        "worktree should have feature content after ff merge"
+    );
+}
+
+/// Clean three-way merge: diverged branches with non-overlapping changes.
+#[tokio::test]
+async fn merge_clean() {
+    let dir = TempDir::new().unwrap();
+    let repo = init_repo(&dir);
+    write_file(&repo, "a.txt", "aaa\n");
+    write_file(&repo, "b.txt", "bbb\n");
+    run_git(&repo, &["add", "."]);
+    run_git(&repo, &["commit", "-m", "initial"]);
+
+    // Create feature branch and modify b.txt.
+    run_git(&repo, &["checkout", "-b", "feature"]);
+    write_file(&repo, "b.txt", "bbb modified\n");
+    run_git(&repo, &["add", "b.txt"]);
+    run_git(&repo, &["commit", "-m", "feature: modify b"]);
+
+    // Switch to main and modify a.txt.
+    run_git(&repo, &["checkout", "-"]);
+    write_file(&repo, "a.txt", "aaa modified\n");
+    run_git(&repo, &["add", "a.txt"]);
+    run_git(&repo, &["commit", "-m", "main: modify a"]);
+
+    let result = GitMergeTool
+        .invoke(json!({ "path": repo.to_str().unwrap(), "branch": "feature" }))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        result["conflicts"].as_array().unwrap().len(),
+        0,
+        "expected clean merge: {result}"
+    );
+    assert!(
+        result["hash"].as_str().is_some(),
+        "expected merge commit hash"
+    );
+
+    // Both files should have their respective changes.
+    let a = std::fs::read_to_string(repo.join("a.txt")).unwrap();
+    let b = std::fs::read_to_string(repo.join("b.txt")).unwrap();
+    assert_eq!(a, "aaa modified\n");
+    assert_eq!(b, "bbb modified\n");
+}
+
+/// Conflict merge: both branches modify the same file differently.
+#[tokio::test]
+async fn merge_conflict() {
+    let dir = TempDir::new().unwrap();
+    let repo = init_repo(&dir);
+    write_file(&repo, "file.txt", "original\n");
+    run_git(&repo, &["add", "file.txt"]);
+    run_git(&repo, &["commit", "-m", "initial"]);
+
+    // Feature branch changes file.txt.
+    run_git(&repo, &["checkout", "-b", "feature"]);
+    write_file(&repo, "file.txt", "feature version\n");
+    run_git(&repo, &["add", "file.txt"]);
+    run_git(&repo, &["commit", "-m", "feature change"]);
+
+    // Main also changes file.txt.
+    run_git(&repo, &["checkout", "-"]);
+    write_file(&repo, "file.txt", "main version\n");
+    run_git(&repo, &["add", "file.txt"]);
+    run_git(&repo, &["commit", "-m", "main change"]);
+
+    let result = GitMergeTool
+        .invoke(json!({ "path": repo.to_str().unwrap(), "branch": "feature" }))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        result["status"].as_str().unwrap(),
+        "conflict",
+        "expected conflict status: {result}"
+    );
+    let conflicts = result["conflicts"].as_array().unwrap();
+    assert!(
+        conflicts.iter().any(|c| c.as_str().unwrap() == "file.txt"),
+        "expected file.txt in conflicts: {result}"
+    );
+
+    // Conflict markers should be in the worktree file.
+    let content = std::fs::read_to_string(repo.join("file.txt")).unwrap();
+    assert!(
+        content.contains("<<<<<<< HEAD"),
+        "expected conflict markers: {content}"
+    );
+    assert!(
+        content.contains("======="),
+        "expected conflict markers: {content}"
+    );
+    assert!(
+        content.contains(">>>>>>>"),
+        "expected conflict markers: {content}"
+    );
+}
+
+/// Merging a non-existent branch returns an error.
+#[tokio::test]
+async fn merge_invalid_branch_error() {
+    let dir = TempDir::new().unwrap();
+    let repo = init_repo(&dir);
+    write_file(&repo, "file.txt", "content\n");
+    run_git(&repo, &["add", "file.txt"]);
+    run_git(&repo, &["commit", "-m", "initial"]);
+
+    let result = GitMergeTool
+        .invoke(json!({ "path": repo.to_str().unwrap(), "branch": "nonexistent" }))
+        .await;
+
+    assert!(result.is_err(), "expected error for non-existent branch");
+}
+
+// ── git_cherry_pick tests ─────────────────────────────────────────────────────
+
+/// Cherry-pick a commit from another branch cleanly.
+#[tokio::test]
+async fn cherry_pick_clean() {
+    let dir = TempDir::new().unwrap();
+    let repo = init_repo(&dir);
+    write_file(&repo, "a.txt", "aaa\n");
+    run_git(&repo, &["add", "a.txt"]);
+    run_git(&repo, &["commit", "-m", "initial"]);
+
+    // Create a branch and add a new file.
+    run_git(&repo, &["checkout", "-b", "feature"]);
+    write_file(&repo, "b.txt", "bbb\n");
+    run_git(&repo, &["add", "b.txt"]);
+    run_git(&repo, &["commit", "-m", "add b.txt"]);
+
+    // Get the commit hash.
+    let pick_hash = String::from_utf8(
+        Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(&repo)
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap()
+    .trim()
+    .to_string();
+
+    // Switch back to main and cherry-pick.
+    run_git(&repo, &["checkout", "-"]);
+
+    let result = GitCherryPickTool
+        .invoke(json!({ "path": repo.to_str().unwrap(), "commit": pick_hash }))
+        .await
+        .unwrap();
+
+    assert!(result["hash"].as_str().is_some(), "expected hash: {result}");
+    assert_eq!(result["conflicts"].as_array().unwrap().len(), 0);
+
+    // b.txt should now exist on main.
+    assert!(
+        repo.join("b.txt").exists(),
+        "b.txt should exist after cherry-pick"
+    );
+    let content = std::fs::read_to_string(repo.join("b.txt")).unwrap();
+    assert_eq!(content, "bbb\n");
+}
+
+/// Cherry-pick a conflicting commit returns conflict status.
+#[tokio::test]
+async fn cherry_pick_conflict() {
+    let dir = TempDir::new().unwrap();
+    let repo = init_repo(&dir);
+    write_file(&repo, "file.txt", "original\n");
+    run_git(&repo, &["add", "file.txt"]);
+    run_git(&repo, &["commit", "-m", "initial"]);
+
+    // Create a branch and modify file.txt.
+    run_git(&repo, &["checkout", "-b", "feature"]);
+    write_file(&repo, "file.txt", "feature version\n");
+    run_git(&repo, &["add", "file.txt"]);
+    run_git(&repo, &["commit", "-m", "feature change"]);
+
+    let pick_hash = String::from_utf8(
+        Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(&repo)
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap()
+    .trim()
+    .to_string();
+
+    // Switch to main and also modify file.txt differently.
+    run_git(&repo, &["checkout", "-"]);
+    write_file(&repo, "file.txt", "main version\n");
+    run_git(&repo, &["add", "file.txt"]);
+    run_git(&repo, &["commit", "-m", "main change"]);
+
+    let result = GitCherryPickTool
+        .invoke(json!({ "path": repo.to_str().unwrap(), "commit": pick_hash }))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        result["status"].as_str().unwrap(),
+        "conflict",
+        "expected conflict: {result}"
+    );
+    let conflicts = result["conflicts"].as_array().unwrap();
+    assert!(
+        conflicts.iter().any(|c| c.as_str().unwrap() == "file.txt"),
+        "expected file.txt in conflicts: {result}"
+    );
+}
+
+/// Cherry-pick with an invalid ref returns an error.
+#[tokio::test]
+async fn cherry_pick_invalid_ref_error() {
+    let dir = TempDir::new().unwrap();
+    let repo = init_repo(&dir);
+    write_file(&repo, "file.txt", "content\n");
+    run_git(&repo, &["add", "file.txt"]);
+    run_git(&repo, &["commit", "-m", "initial"]);
+
+    let result = GitCherryPickTool
+        .invoke(json!({ "path": repo.to_str().unwrap(), "commit": "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef" }))
+        .await;
+
+    assert!(result.is_err(), "expected error for invalid ref");
+}
+
+// ── git_rebase tests ──────────────────────────────────────────────────────────
+
+/// Simple rebase: replay branch commits onto updated main.
+#[tokio::test]
+async fn rebase_simple() {
+    let dir = TempDir::new().unwrap();
+    let repo = init_repo(&dir);
+    write_file(&repo, "a.txt", "aaa\n");
+    run_git(&repo, &["add", "a.txt"]);
+    run_git(&repo, &["commit", "-m", "initial"]);
+
+    // Create feature branch with one commit.
+    run_git(&repo, &["checkout", "-b", "feature"]);
+    write_file(&repo, "b.txt", "bbb\n");
+    run_git(&repo, &["add", "b.txt"]);
+    run_git(&repo, &["commit", "-m", "feature: add b"]);
+
+    // Add a commit to main.
+    run_git(&repo, &["checkout", "-"]);
+    write_file(&repo, "c.txt", "ccc\n");
+    run_git(&repo, &["add", "c.txt"]);
+    run_git(&repo, &["commit", "-m", "main: add c"]);
+
+    let onto_hash = String::from_utf8(
+        Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(&repo)
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap()
+    .trim()
+    .to_string();
+
+    // Switch to feature and rebase onto main.
+    run_git(&repo, &["checkout", "feature"]);
+
+    let result = GitRebaseTool
+        .invoke(json!({ "path": repo.to_str().unwrap(), "onto": onto_hash }))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        result["status"].as_str().unwrap(),
+        "ok",
+        "expected ok: {result}"
+    );
+    assert_eq!(result["rebased_commits"].as_u64().unwrap(), 1);
+
+    // Both b.txt and c.txt should exist.
+    assert!(
+        repo.join("b.txt").exists(),
+        "b.txt should exist after rebase"
+    );
+    assert!(
+        repo.join("c.txt").exists(),
+        "c.txt should exist after rebase"
+    );
+}
+
+/// Rebase conflict: conflict during rebase saves state.
+#[tokio::test]
+async fn rebase_conflict() {
+    let dir = TempDir::new().unwrap();
+    let repo = init_repo(&dir);
+    write_file(&repo, "file.txt", "original\n");
+    run_git(&repo, &["add", "file.txt"]);
+    run_git(&repo, &["commit", "-m", "initial"]);
+
+    // Feature branch modifies file.txt.
+    run_git(&repo, &["checkout", "-b", "feature"]);
+    write_file(&repo, "file.txt", "feature version\n");
+    run_git(&repo, &["add", "file.txt"]);
+    run_git(&repo, &["commit", "-m", "feature change"]);
+
+    // Main also modifies file.txt.
+    run_git(&repo, &["checkout", "-"]);
+    write_file(&repo, "file.txt", "main version\n");
+    run_git(&repo, &["add", "file.txt"]);
+    run_git(&repo, &["commit", "-m", "main change"]);
+
+    let onto_hash = String::from_utf8(
+        Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(&repo)
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap()
+    .trim()
+    .to_string();
+
+    run_git(&repo, &["checkout", "feature"]);
+
+    let result = GitRebaseTool
+        .invoke(json!({ "path": repo.to_str().unwrap(), "onto": onto_hash }))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        result["status"].as_str().unwrap(),
+        "conflict",
+        "expected conflict: {result}"
+    );
+    assert!(
+        result["conflicts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c.as_str().unwrap() == "file.txt"),
+        "expected file.txt in conflicts: {result}"
+    );
+
+    // Rebase state file should exist.
+    let state_path = repo.join(".git").join("ucode-rebase-state");
+    assert!(state_path.exists(), "rebase state file should exist");
+}
+
+/// Interactive rebase: squash two commits into one.
+#[tokio::test]
+async fn rebase_interactive_squash() {
+    let dir = TempDir::new().unwrap();
+    let repo = init_repo(&dir);
+    write_file(&repo, "file.txt", "v1\n");
+    run_git(&repo, &["add", "file.txt"]);
+    run_git(&repo, &["commit", "-m", "initial"]);
+
+    let base_hash = String::from_utf8(
+        Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(&repo)
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap()
+    .trim()
+    .to_string();
+
+    // Two commits to squash.
+    write_file(&repo, "file.txt", "v2\n");
+    run_git(&repo, &["add", "file.txt"]);
+    run_git(&repo, &["commit", "-m", "second"]);
+
+    let second_hash = String::from_utf8(
+        Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(&repo)
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap()
+    .trim()
+    .to_string();
+
+    write_file(&repo, "file.txt", "v3\n");
+    run_git(&repo, &["add", "file.txt"]);
+    run_git(&repo, &["commit", "-m", "third"]);
+
+    let third_hash = String::from_utf8(
+        Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(&repo)
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap()
+    .trim()
+    .to_string();
+
+    let result = GitRebaseTool
+        .invoke(json!({
+            "path": repo.to_str().unwrap(),
+            "onto": base_hash,
+            "interactive": true,
+            "actions": [
+                { "action": "pick", "commit": second_hash },
+                { "action": "squash", "commit": third_hash },
+            ]
+        }))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        result["status"].as_str().unwrap(),
+        "ok",
+        "expected ok: {result}"
+    );
+
+    // Should have 2 rebased (pick + squash both count).
+    assert!(result["rebased_commits"].as_u64().unwrap() >= 1);
+
+    // File should have v3 content.
+    let content = std::fs::read_to_string(repo.join("file.txt")).unwrap();
+    assert_eq!(content, "v3\n", "file should have final squashed content");
+}
+
+/// Interactive rebase: drop a commit.
+#[tokio::test]
+async fn rebase_interactive_drop() {
+    let dir = TempDir::new().unwrap();
+    let repo = init_repo(&dir);
+    write_file(&repo, "a.txt", "aaa\n");
+    run_git(&repo, &["add", "a.txt"]);
+    run_git(&repo, &["commit", "-m", "initial"]);
+
+    let base_hash = String::from_utf8(
+        Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(&repo)
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap()
+    .trim()
+    .to_string();
+
+    // Commit to keep.
+    write_file(&repo, "b.txt", "bbb\n");
+    run_git(&repo, &["add", "b.txt"]);
+    run_git(&repo, &["commit", "-m", "add b"]);
+
+    let keep_hash = String::from_utf8(
+        Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(&repo)
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap()
+    .trim()
+    .to_string();
+
+    // Commit to drop.
+    write_file(&repo, "c.txt", "ccc\n");
+    run_git(&repo, &["add", "c.txt"]);
+    run_git(&repo, &["commit", "-m", "add c (to drop)"]);
+
+    let drop_hash = String::from_utf8(
+        Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(&repo)
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap()
+    .trim()
+    .to_string();
+
+    let result = GitRebaseTool
+        .invoke(json!({
+            "path": repo.to_str().unwrap(),
+            "onto": base_hash,
+            "interactive": true,
+            "actions": [
+                { "action": "pick", "commit": keep_hash },
+                { "action": "drop", "commit": drop_hash },
+            ]
+        }))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        result["status"].as_str().unwrap(),
+        "ok",
+        "expected ok: {result}"
+    );
+    assert_eq!(
+        result["rebased_commits"].as_u64().unwrap(),
+        1,
+        "only 1 commit picked"
+    );
+
+    // b.txt should exist, c.txt should not.
+    assert!(repo.join("b.txt").exists(), "b.txt should exist");
+    assert!(!repo.join("c.txt").exists(), "c.txt should be dropped");
+}
+
+/// Rebase abort: restores original HEAD state.
+#[tokio::test]
+async fn rebase_abort() {
+    let dir = TempDir::new().unwrap();
+    let repo = init_repo(&dir);
+    write_file(&repo, "file.txt", "original\n");
+    run_git(&repo, &["add", "file.txt"]);
+    run_git(&repo, &["commit", "-m", "initial"]);
+
+    // Feature branch modifies file.txt.
+    run_git(&repo, &["checkout", "-b", "feature"]);
+    write_file(&repo, "file.txt", "feature version\n");
+    run_git(&repo, &["add", "file.txt"]);
+    run_git(&repo, &["commit", "-m", "feature change"]);
+
+    let feature_head = String::from_utf8(
+        Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(&repo)
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap()
+    .trim()
+    .to_string();
+
+    // Main also modifies file.txt (to force conflict).
+    run_git(&repo, &["checkout", "-"]);
+    write_file(&repo, "file.txt", "main version\n");
+    run_git(&repo, &["add", "file.txt"]);
+    run_git(&repo, &["commit", "-m", "main change"]);
+
+    let onto_hash = String::from_utf8(
+        Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(&repo)
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap()
+    .trim()
+    .to_string();
+
+    run_git(&repo, &["checkout", "feature"]);
+
+    // Start rebase (will conflict).
+    let conflict_result = GitRebaseTool
+        .invoke(json!({ "path": repo.to_str().unwrap(), "onto": onto_hash }))
+        .await
+        .unwrap();
+    assert_eq!(conflict_result["status"].as_str().unwrap(), "conflict");
+
+    // Abort the rebase.
+    let abort_result = GitRebaseTool
+        .invoke(json!({ "path": repo.to_str().unwrap(), "abort": true }))
+        .await
+        .unwrap();
+
+    assert_eq!(abort_result["status"].as_str().unwrap(), "aborted");
+
+    // HEAD should be back to the feature branch commit.
+    let head_hash = String::from_utf8(
+        Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(&repo)
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap()
+    .trim()
+    .to_string();
+    assert_eq!(
+        head_hash, feature_head,
+        "HEAD should be restored to original feature commit"
+    );
+
+    // Rebase state file should be gone.
+    let state_path = repo.join(".git").join("ucode-rebase-state");
+    assert!(
+        !state_path.exists(),
+        "rebase state file should be removed after abort"
+    );
+}
+
+/// All 3 merge tools register successfully.
+#[test]
+fn registry_merge_tools_register() {
+    let mut registry = ToolRegistry::new();
+    register_git_merge_tool(&mut registry);
+    register_git_cherry_pick_tool(&mut registry);
+    register_git_rebase_tool(&mut registry);
+
+    for name in &["git_merge", "git_cherry_pick", "git_rebase"] {
         assert!(registry.get(name).is_some(), "{name} not found in registry");
     }
 }

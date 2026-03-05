@@ -432,7 +432,7 @@ CLI:
 * Pattern syntax: `$VAR` wildcards (e.g., `console.log($MSG)`)
 * Language grammars: Rust, Python, TypeScript, JavaScript, Go, C, C++
 
-### Task 4.6 Fine-grained sandbox policy engine (ucode-tools)
+### Task 4.6 Fine-grained sandbox policy engine (ucode-tools) [DONE]
 
 * Policy hierarchy (most restrictive wins by default):
 

@@ -523,7 +523,7 @@ This ensures consistent behavior, no runtime dependency on installed binaries, a
 * Language detection works for common file extensions.
   **Owner:** Tools
 
-### ISSUE 0408 — Fine-grained hierarchical sandbox policy engine (ucode-tools)
+### ISSUE 0408 — Fine-grained hierarchical sandbox policy engine (ucode-tools) [DONE]
 
 **Goal:** Provide configurable sandbox tiers with per-tool/per-agent/per-provider control.
 **Scope/Notes:**

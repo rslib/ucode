@@ -354,7 +354,7 @@ Commands:
 * Capability matrix correctly reports token-count availability.
   **Owner:** Providers
 
-### ISSUE 0302 — OpenAI adapter (streaming + tools) (ucode-providers)
+### ISSUE 0302 — OpenAI adapter (streaming + tools) (ucode-providers) [DONE]
 
 **Goal:** Implement OpenAI-compatible chat adapter with streaming and tool calls.
 **Scope/Notes:**

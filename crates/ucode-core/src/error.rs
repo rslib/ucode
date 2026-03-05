@@ -39,4 +39,7 @@ pub enum CoreError {
 
     #[error("logging initialization failed: {message}")]
     LogInit { message: String },
+
+    #[error("tool error: {0}")]
+    Tool(String),
 }

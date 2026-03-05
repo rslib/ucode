@@ -5,4 +5,10 @@ edition.workspace = true
 
 [dependencies]
 serde = { workspace = true }
+serde_json = { workspace = true }
 thiserror = { workspace = true }
+ucode-core = { workspace = true }
+ucode-providers = { path = "../ucode-providers" }
+
+[dev-dependencies]
+tokio = { workspace = true }

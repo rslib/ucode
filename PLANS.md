@@ -347,7 +347,7 @@ CLI:
 * `capabilities()` (tools, json mode, max context, max output, token counting support)
 * optional adapter `count_tokens(req)` for provider-native counting
 
-### Task 3.2 OpenAI adapter
+### Task 3.2 OpenAI adapter [DONE]
 
 * Streaming tokens
 * Tool/function calls → canonical ToolCall

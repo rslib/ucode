@@ -485,7 +485,7 @@ This ensures consistent behavior, no runtime dependency on installed binaries, a
 * Markdown-embedded diff block parsed and applied.
   **Owner:** Tools
 
-### ISSUE 0406 — Command runner tool (ucode-tools)
+### ISSUE 0406 — Command runner tool (ucode-tools) [DONE]
 
 **Goal:** Implement `run_cmd` with timeouts/output caps and approval gating.
 **Acceptance tests:**
@@ -506,7 +506,7 @@ This ensures consistent behavior, no runtime dependency on installed binaries, a
 * In a git repo, status/diff returns data.
   **Owner:** Tools
 
-### ISSUE 0407b — AST structural search/rewrite tool (ucode-tools)
+### ISSUE 0407b — AST structural search/rewrite tool (ucode-tools) [DONE]
 
 **Goal:** Provide AST-aware code search and rewrite using `ast-grep-core`.
 **Scope/Notes:**

@@ -51,6 +51,10 @@ rand = "0.9"
 # file-system walking (gitignore-aware)
 ignore = "0.4"
 
+# AST structural search/rewrite
+ast-grep-core = "0.41"
+ast-grep-language = "0.41"
+
 # patch application with fuzzy context matching
 mpatch = "1"
 

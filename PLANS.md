@@ -414,7 +414,7 @@ CLI:
 * Built-in path traversal protection
 * Return applied/files_changed/rejects with reasons
 
-### Task 4.4 Command runner tool
+### Task 4.4 Command runner tool [DONE]
 
 * `run_cmd(cmd, cwd, timeout, env)`
 * `tokio::process::Command` — async with timeout/output caps
@@ -424,7 +424,7 @@ CLI:
 
 * `git_status`, `git_diff` via `gix` (pure-Rust git, no shell)
 
-### Task 4.5b AST structural search/rewrite tool
+### Task 4.5b AST structural search/rewrite tool [DONE]
 
 * `ast_search(pattern, path, lang)` — find code matching AST patterns
 * `ast_rewrite(pattern, replacement, path, lang)` — structural find-and-replace

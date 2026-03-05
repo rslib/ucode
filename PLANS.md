@@ -92,7 +92,7 @@ Streaming events:
 
 * Deterministic unit tests for routing and fallback.
 
-### Task 1.3: Async subagent orchestration (ucode-core)
+### Task 1.3: Async subagent orchestration (ucode-core) [DONE]
 
 * `spawn_agent(spec) -> AgentHandle` (non-blocking)
 * `wait_agent(handle, timeout?) -> AgentResult`
@@ -126,7 +126,7 @@ Streaming events:
 * Shared board sync works for fan-out/fan-in workflow.
 * Policy can disable inter-agent messaging and system still functions normally.
 
-### Task 1.5: Mention/command parser + orchestrator bindings (ucode-core)
+### Task 1.5: Mention/command parser + orchestrator bindings (ucode-core) [DONE]
 
 * Parse user directives from input text:
 
@@ -143,6 +143,41 @@ Streaming events:
 * `@agent-name` spawns the targeted registered agent.
 * `/command-name` resolves to user/project/plugin command definition.
 * Ambiguous `@token` cases follow resolver order and produce clear diagnostics.
+
+### Task 1.6: Token budget manager + context compaction/distillation (ucode-core)
+
+* Add per provider/model token budget estimator (input + reserved output budget)
+* Run context-fit preflight before every model request
+* Add deterministic recovery chain when over budget:
+
+  * trim low-value artifacts (verbose logs/tool chatter)
+  * compact older turns into concise summaries
+  * distill long tool outputs into structured memory records
+  * keep recent turns + unresolved tool context pinned
+
+* Persist compaction/distillation artifacts in session store with provenance links
+* Emit runtime logs for each compaction/distillation decision
+
+**Acceptance**
+
+* Oversized transcript auto-compacts/distills and request succeeds without manual intervention.
+* Pinned recent turns and unresolved tool context are preserved.
+* Distilled artifacts reload correctly with session state.
+
+### Task 1.7: Session lifecycle + model-generated session titles (ucode-core + ucode-cli + ucode-tui)
+
+* Extend session metadata: `title`, `title_source(auto|manual)`, `created_at`, `last_active_at`, `archived`
+* Generate initial session title from early conversation turns using active model
+* Add deterministic fallback title path if model title generation fails/unavailable
+* Add manual rename + title lock so manual titles are never overwritten
+* Add lifecycle operations: create/list/switch/archive/unarchive/rename in CLI and TUI
+* Persist and surface title/session metadata in session selectors
+
+**Acceptance**
+
+* New sessions get auto titles; fallback title used when title generation is unavailable.
+* Manual rename is durable across reload and protected from auto overwrite.
+* Archive/unarchive and switch operations work in both CLI and TUI.
 
 ---
 
@@ -596,6 +631,24 @@ Override classes matrix:
 * Plugin-originated tool call triggers normal approval/sandbox checks.
 * Runtime model and effective permissions visible in logs/UI.
 
+### Task 8.5 External DCP-style plugin support + hook exposure (ucode-plugins + ucode-core)
+
+* Support user-installed DCP-style plugins (for example `opencode-dcp`) via documented public hook contracts
+* Guarantee stable, versioned payload schemas for hooks used by DCP workflows:
+
+  * `on_context_shrink`, `on_context_distilled`
+  * `on_session_title_generated/updated`
+  * `on_session_start/end`, `before/after_tool_call`
+
+* Ensure user and project plugin discovery paths are documented and tested
+* Keep capability model strict: external DCP plugins cannot bypass effective sandbox/network/filesystem policy
+
+**Acceptance**
+
+* Fixture external plugin `opencode-dcp` loads from user plugin path and receives documented hooks.
+* Plugin can react to compaction/distillation and session-title events without private host APIs.
+* Permission escalation attempts are blocked and recorded in audit logs.
+
 ---
 
 # Phase 9 — WASM plugin runtime (latest stage)
@@ -635,8 +688,10 @@ Override classes matrix:
 * providers + model groups
 * auth mode preference per provider (key vs login)
 * fallback order
+* compaction/distillation policy (strategy order, pinned-window size, retry limits)
 * MCP servers list
 * plugin list
+* plugin discovery paths (project/user) for external plugins such as DCP adapters
 * allowlists/denylists for run_cmd + file access scope
 * sandbox policy matrix (global / provider / agent / tool / session)
 * network policy matrix (including web/deep-research enablement per agent)
@@ -644,6 +699,7 @@ Override classes matrix:
 * subagent profiles (capabilities, sandbox tier, comm policy)
 * command registry paths (user/project/plugin) + parser resolver order
 * plugin API/runtime config (WASM-only runtime, enabled in latest stage)
+* session management config (auto-title on/off, title model preference, archive defaults)
 * TUI keybind overrides
 
 ### Observability
@@ -652,12 +708,13 @@ Override classes matrix:
 * audit trail: tool calls, command runs, patches, fallbacks, auth transitions,
   approvals/denials, effective sandbox tier per action, agent spawn/join lifecycle,
   inter-agent messages, MCP server launch/trust decisions
+* include compaction/distillation events and session title generation/update events in audit stream
 
 ---
 
 ## Delegation map (agents)
 
-* **Agent A (Core):** Phase 1 router/events/session state + subagent orchestration + inter-agent comm + mention/command parser bindings
+* **Agent A (Core):** Phase 1 router/events/session state + token compaction/distillation + session lifecycle/title generation + subagent orchestration + inter-agent comm + mention/command parser bindings
 * **Agent B (Auth):** Phase 2 keychain + OpenAI login + Anthropic subscription login + CLI/TUI connect flow
 * **Agent C (Providers):** Phase 3 adapters (OpenAI/Anthropic/Ollama)
 * **Agent D (Tools):** Phase 4 built-ins + patch applier + cmd runner + sandbox policy engine + confirmation gates
@@ -665,6 +722,7 @@ Override classes matrix:
 * **Agent F (Skills):** Phase 6 SKILL.md discovery/parsing/execution
 * **Agent G (TUI):** Phase 7 ratatui UI + approvals + palette + visual system + sidebar
 * **Agent H (Plugins):** Phase 8 plugin contracts/hooks + Phase 9 WASM runtime
+* **Agent H (Plugins):** includes external DCP-style plugin compatibility and hook contract validation
 * **Agent S (Security):** Cross-cutting: threat model, audit verification, sandbox backend integration
 
 ---
@@ -688,6 +746,9 @@ Override classes matrix:
 15. Plugin API is versioned (WIT/component model), with Rust SDK and safety-governed behavior overrides
 16. WASM plugin runtime is delivered in latest stage with trust/signature checks
 17. Threat model documented and audit trail covers all high-risk transitions
+18. Token exhaustion handling supports deterministic compaction/distillation with auditable artifacts
+19. Session lifecycle supports list/switch/archive/rename with robust model-generated titles and manual override lock
+20. External user-installed DCP-style plugins can load via documented paths and consume public hook contracts safely
 
 ---
 

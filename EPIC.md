@@ -208,7 +208,7 @@
 * Verify config file contains no secret material.
   **Owner:** Auth
 
-### ISSUE 0202 — Auth CLI commands (ucode-cli + ucode-auth)
+### ISSUE 0202 — Auth CLI commands (ucode-cli + ucode-auth) [DONE]
 
 **Goal:** Implement CLI UX for auth.
 **Scope/Notes:**

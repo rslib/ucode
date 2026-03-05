@@ -209,7 +209,7 @@ Streaming events:
 
 # Phase 2 — Auth (API key + login + subscription login)
 
-## 2.1 Credential storage (ucode-auth)
+## 2.1 Credential storage (ucode-auth) [DONE]
 
 * OS keychain via `keyring` (macOS Keychain + Linux Secret Service)
 * Minimal metadata in config only (no plaintext secrets)

@@ -51,6 +51,9 @@ rand = "0.9"
 # file-system walking (gitignore-aware)
 ignore = "0.4"
 
+# patch application with fuzzy context matching
+mpatch = "1"
+
 # regex
 regex = "1"
 

@@ -12,6 +12,7 @@ ucode-core = { workspace = true }
 ucode-providers = { path = "../ucode-providers" }
 ignore = { workspace = true }
 regex = { workspace = true }
+mpatch = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

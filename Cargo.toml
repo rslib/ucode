@@ -41,5 +41,14 @@ clap = { version = "4", features = ["derive"] }
 futures-core = "0.3"
 futures-util = "0.3"
 
+# time
+chrono = { version = "0.4", features = ["serde"] }
+
+# random
+rand = "0.9"
+
+# testing
+tempfile = "3"
+
 # intra-workspace
 ucode-core = { path = "crates/ucode-core" }

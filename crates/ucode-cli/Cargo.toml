@@ -9,6 +9,7 @@ path = "src/main.rs"
 
 [dependencies]
 ucode-core = { workspace = true }
+ucode-auth = { workspace = true }
 tokio = { workspace = true }
 clap = { workspace = true }
 tracing = { workspace = true }

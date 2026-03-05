@@ -55,3 +55,4 @@ keyring = { version = "3", features = ["apple-native", "linux-native"] }
 
 # intra-workspace
 ucode-core = { path = "crates/ucode-core" }
+ucode-auth = { path = "crates/ucode-auth" }

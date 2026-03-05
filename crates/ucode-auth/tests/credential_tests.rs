@@ -1,3 +1,5 @@
+use std::str::FromStr;
+
 use ucode_auth::{
     AuthError, AuthMaterial, CredentialStatus, CredentialStore, InMemoryStore, ProviderId, redact,
 };
@@ -162,4 +164,26 @@ fn provider_id_display() {
     assert_eq!(ProviderId::OpenAi.to_string(), "openai");
     assert_eq!(ProviderId::Anthropic.to_string(), "anthropic");
     assert_eq!(ProviderId::Ollama.to_string(), "ollama");
+}
+
+#[test]
+fn provider_id_from_str_valid() {
+    assert_eq!(ProviderId::from_str("openai").unwrap(), ProviderId::OpenAi);
+    assert_eq!(
+        ProviderId::from_str("anthropic").unwrap(),
+        ProviderId::Anthropic
+    );
+    assert_eq!(ProviderId::from_str("ollama").unwrap(), ProviderId::Ollama);
+    // case-insensitive
+    assert_eq!(ProviderId::from_str("OpenAI").unwrap(), ProviderId::OpenAi);
+    assert_eq!(
+        ProviderId::from_str("ANTHROPIC").unwrap(),
+        ProviderId::Anthropic
+    );
+    assert_eq!(ProviderId::from_str("Ollama").unwrap(), ProviderId::Ollama);
+}
+
+#[test]
+fn provider_id_from_str_invalid() {
+    assert!(ProviderId::from_str("unknown").is_err());
 }

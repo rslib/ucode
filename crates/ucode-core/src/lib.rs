@@ -1,6 +1,7 @@
 //! ucode-core: canonical messages, events, router, session state, subagent orchestration
 
 pub mod agent;
+pub mod directive;
 pub mod error;
 pub mod event;
 pub mod message;
@@ -10,6 +11,7 @@ pub mod session;
 pub use agent::{
     AgentHandle, AgentId, AgentInfo, AgentResult, AgentSpec, AgentState, Orchestrator,
 };
+pub use directive::{Directive, ParsedInput, Span, parse_input};
 pub use error::{AuthErrorKind, CoreError};
 pub use event::{Event, EventStream};
 pub use message::{Message, Part, Role, ToolCall, ToolResult};

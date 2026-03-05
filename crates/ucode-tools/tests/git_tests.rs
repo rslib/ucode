@@ -2,14 +2,17 @@ use std::process::Command;
 
 use serde_json::json;
 use tempfile::TempDir;
+use ucode_tools::git::branch::{GitBranchTool, GitCheckoutTool};
 use ucode_tools::git::commit::{GitCommitTool, GitLogTool, GitShowTool, GitTagTool};
 use ucode_tools::git::diff::{GitDiffCommitsTool, GitDiffStagedTool, GitDiffTool};
-use ucode_tools::git::staging::GitAddTool;
+use ucode_tools::git::staging::{GitAddTool, GitResetTool, GitRestoreTool};
 use ucode_tools::git::status::GitStatusTool;
 use ucode_tools::{
-    ToolHandler, ToolRegistry, register_git_add_tool, register_git_commit_tool,
-    register_git_diff_commits_tool, register_git_diff_staged_tool, register_git_diff_tool,
-    register_git_log_tool, register_git_show_tool, register_git_status_tool, register_git_tag_tool,
+    ToolHandler, ToolRegistry, register_git_add_tool, register_git_branch_tool,
+    register_git_checkout_tool, register_git_commit_tool, register_git_diff_commits_tool,
+    register_git_diff_staged_tool, register_git_diff_tool, register_git_log_tool,
+    register_git_reset_tool, register_git_restore_tool, register_git_show_tool,
+    register_git_status_tool, register_git_tag_tool,
 };
 
 // ── test helpers ──────────────────────────────────────────────────────────────
@@ -766,6 +769,594 @@ fn registry_new_tools_register() {
         "git_diff_staged",
         "git_diff_commits",
     ] {
+        assert!(registry.get(name).is_some(), "{name} not found in registry");
+    }
+}
+
+// ── git_branch tests ──────────────────────────────────────────────────────────
+
+/// List shows the current branch after init.
+#[tokio::test]
+async fn branch_list() {
+    let dir = TempDir::new().unwrap();
+    let repo = init_repo(&dir);
+    write_file(&repo, "file.txt", "content\n");
+    run_git(&repo, &["add", "file.txt"]);
+    run_git(&repo, &["commit", "-m", "initial"]);
+
+    let result = GitBranchTool
+        .invoke(json!({ "path": repo.to_str().unwrap() }))
+        .await
+        .unwrap();
+
+    let branches = result["branches"].as_array().unwrap();
+    assert!(!branches.is_empty(), "expected at least one branch");
+    let current = result["current"].as_str().unwrap();
+    assert!(!current.is_empty(), "expected non-empty current branch");
+}
+
+/// Creating a branch returns `created` and it appears in the list.
+#[tokio::test]
+async fn branch_create() {
+    let dir = TempDir::new().unwrap();
+    let repo = init_repo(&dir);
+    write_file(&repo, "file.txt", "content\n");
+    run_git(&repo, &["add", "file.txt"]);
+    run_git(&repo, &["commit", "-m", "initial"]);
+
+    let result = GitBranchTool
+        .invoke(json!({ "path": repo.to_str().unwrap(), "name": "feature" }))
+        .await
+        .unwrap();
+
+    assert_eq!(result["created"].as_str().unwrap(), "feature");
+
+    // Verify it appears in the list.
+    let list = GitBranchTool
+        .invoke(json!({ "path": repo.to_str().unwrap() }))
+        .await
+        .unwrap();
+    let branches = list["branches"].as_array().unwrap();
+    assert!(
+        branches.iter().any(|b| b.as_str().unwrap() == "feature"),
+        "feature branch not in list: {list}"
+    );
+}
+
+/// Creating a branch from a specific commit points to that commit.
+#[tokio::test]
+async fn branch_create_from_commit() {
+    let dir = TempDir::new().unwrap();
+    let repo = init_repo(&dir);
+    write_file(&repo, "file.txt", "v1\n");
+    run_git(&repo, &["add", "file.txt"]);
+    run_git(&repo, &["commit", "-m", "first"]);
+
+    let first_hash = String::from_utf8(
+        Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(&repo)
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap()
+    .trim()
+    .to_string();
+
+    write_file(&repo, "file.txt", "v2\n");
+    run_git(&repo, &["add", "file.txt"]);
+    run_git(&repo, &["commit", "-m", "second"]);
+
+    let result = GitBranchTool
+        .invoke(json!({
+            "path": repo.to_str().unwrap(),
+            "name": "at-first",
+            "start_point": first_hash,
+        }))
+        .await
+        .unwrap();
+
+    assert_eq!(result["created"].as_str().unwrap(), "at-first");
+}
+
+/// Deleting a non-current branch returns `deleted`.
+#[tokio::test]
+async fn branch_delete() {
+    let dir = TempDir::new().unwrap();
+    let repo = init_repo(&dir);
+    write_file(&repo, "file.txt", "content\n");
+    run_git(&repo, &["add", "file.txt"]);
+    run_git(&repo, &["commit", "-m", "initial"]);
+
+    // Create a branch to delete.
+    GitBranchTool
+        .invoke(json!({ "path": repo.to_str().unwrap(), "name": "to-delete" }))
+        .await
+        .unwrap();
+
+    let result = GitBranchTool
+        .invoke(json!({ "path": repo.to_str().unwrap(), "name": "to-delete", "delete": true }))
+        .await
+        .unwrap();
+
+    assert_eq!(result["deleted"].as_str().unwrap(), "to-delete");
+}
+
+/// Deleting the currently checked-out branch returns an error.
+#[tokio::test]
+async fn branch_delete_current_error() {
+    let dir = TempDir::new().unwrap();
+    let repo = init_repo(&dir);
+    write_file(&repo, "file.txt", "content\n");
+    run_git(&repo, &["add", "file.txt"]);
+    run_git(&repo, &["commit", "-m", "initial"]);
+
+    // Get the current branch name.
+    let current = String::from_utf8(
+        Command::new("git")
+            .args(["rev-parse", "--abbrev-ref", "HEAD"])
+            .current_dir(&repo)
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap()
+    .trim()
+    .to_string();
+
+    let result = GitBranchTool
+        .invoke(json!({ "path": repo.to_str().unwrap(), "name": current, "delete": true }))
+        .await;
+
+    assert!(result.is_err(), "expected error deleting current branch");
+}
+
+// ── git_checkout tests ────────────────────────────────────────────────────────
+
+/// Switching to an existing branch updates HEAD.
+#[tokio::test]
+async fn checkout_branch() {
+    let dir = TempDir::new().unwrap();
+    let repo = init_repo(&dir);
+    write_file(&repo, "file.txt", "content\n");
+    run_git(&repo, &["add", "file.txt"]);
+    run_git(&repo, &["commit", "-m", "initial"]);
+
+    // Create a second branch via git CLI.
+    run_git(&repo, &["branch", "other"]);
+
+    let result = GitCheckoutTool
+        .invoke(json!({ "path": repo.to_str().unwrap(), "branch": "other" }))
+        .await
+        .unwrap();
+
+    assert_eq!(result["switched_to"].as_str().unwrap(), "other");
+
+    // Verify HEAD now points to `other`.
+    let head = String::from_utf8(
+        Command::new("git")
+            .args(["rev-parse", "--abbrev-ref", "HEAD"])
+            .current_dir(&repo)
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap()
+    .trim()
+    .to_string();
+    assert_eq!(head, "other");
+}
+
+/// create=true creates the branch and switches to it.
+#[tokio::test]
+async fn checkout_create_branch() {
+    let dir = TempDir::new().unwrap();
+    let repo = init_repo(&dir);
+    write_file(&repo, "file.txt", "content\n");
+    run_git(&repo, &["add", "file.txt"]);
+    run_git(&repo, &["commit", "-m", "initial"]);
+
+    let result = GitCheckoutTool
+        .invoke(json!({ "path": repo.to_str().unwrap(), "branch": "new-branch", "create": true }))
+        .await
+        .unwrap();
+
+    assert_eq!(result["switched_to"].as_str().unwrap(), "new-branch");
+
+    let head = String::from_utf8(
+        Command::new("git")
+            .args(["rev-parse", "--abbrev-ref", "HEAD"])
+            .current_dir(&repo)
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap()
+    .trim()
+    .to_string();
+    assert_eq!(head, "new-branch");
+}
+
+/// Switching to a non-existent branch returns an error.
+#[tokio::test]
+async fn checkout_nonexistent_error() {
+    let dir = TempDir::new().unwrap();
+    let repo = init_repo(&dir);
+    write_file(&repo, "file.txt", "content\n");
+    run_git(&repo, &["add", "file.txt"]);
+    run_git(&repo, &["commit", "-m", "initial"]);
+
+    let result = GitCheckoutTool
+        .invoke(json!({ "path": repo.to_str().unwrap(), "branch": "ghost" }))
+        .await;
+
+    assert!(result.is_err(), "expected error for non-existent branch");
+}
+
+/// Restoring specific files from HEAD overwrites worktree changes.
+#[tokio::test]
+async fn checkout_restore_files() {
+    let dir = TempDir::new().unwrap();
+    let repo = init_repo(&dir);
+    write_file(&repo, "file.txt", "original\n");
+    run_git(&repo, &["add", "file.txt"]);
+    run_git(&repo, &["commit", "-m", "initial"]);
+
+    // Modify the file without staging.
+    write_file(&repo, "file.txt", "modified\n");
+
+    let result = GitCheckoutTool
+        .invoke(json!({ "path": repo.to_str().unwrap(), "files": ["file.txt"] }))
+        .await
+        .unwrap();
+
+    let restored = result["restored"].as_array().unwrap();
+    assert_eq!(restored.len(), 1);
+
+    let content = std::fs::read_to_string(repo.join("file.txt")).unwrap();
+    assert_eq!(
+        content, "original\n",
+        "file should be restored to HEAD content"
+    );
+}
+
+// ── git_reset tests ───────────────────────────────────────────────────────────
+
+/// Staging a file then resetting it removes it from staged.
+#[tokio::test]
+async fn reset_unstage_file() {
+    let dir = TempDir::new().unwrap();
+    let repo = init_repo(&dir);
+    write_file(&repo, "file.txt", "content\n");
+    run_git(&repo, &["add", "file.txt"]);
+    run_git(&repo, &["commit", "-m", "initial"]);
+
+    // Modify and stage.
+    write_file(&repo, "file.txt", "modified\n");
+    run_git(&repo, &["add", "file.txt"]);
+
+    // Verify it's staged.
+    let status_before = GitStatusTool
+        .invoke(json!({ "path": repo.to_str().unwrap() }))
+        .await
+        .unwrap();
+    assert!(
+        status_before["staged"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["path"].as_str().unwrap() == "file.txt"),
+        "file.txt should be staged before reset"
+    );
+
+    // Reset the specific file.
+    let result = GitResetTool
+        .invoke(json!({ "path": repo.to_str().unwrap(), "files": ["file.txt"] }))
+        .await
+        .unwrap();
+
+    let unstaged = result["unstaged"].as_array().unwrap();
+    assert!(
+        unstaged.iter().any(|f| f.as_str().unwrap() == "file.txt"),
+        "file.txt should be in unstaged list"
+    );
+
+    // Verify it's no longer staged.
+    let status_after = GitStatusTool
+        .invoke(json!({ "path": repo.to_str().unwrap() }))
+        .await
+        .unwrap();
+    assert!(
+        !status_after["staged"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["path"].as_str().unwrap() == "file.txt"),
+        "file.txt should not be staged after reset"
+    );
+}
+
+/// Mixed reset moves HEAD and resets index but keeps worktree.
+#[tokio::test]
+async fn reset_mixed() {
+    let dir = TempDir::new().unwrap();
+    let repo = init_repo(&dir);
+    write_file(&repo, "file.txt", "v1\n");
+    run_git(&repo, &["add", "file.txt"]);
+    run_git(&repo, &["commit", "-m", "first"]);
+
+    let first_hash = String::from_utf8(
+        Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(&repo)
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap()
+    .trim()
+    .to_string();
+
+    write_file(&repo, "file.txt", "v2\n");
+    run_git(&repo, &["add", "file.txt"]);
+    run_git(&repo, &["commit", "-m", "second"]);
+
+    let result = GitResetTool
+        .invoke(json!({
+            "path": repo.to_str().unwrap(),
+            "mode": "mixed",
+            "commit": first_hash,
+        }))
+        .await
+        .unwrap();
+
+    assert_eq!(result["reset_to"].as_str().unwrap(), first_hash);
+
+    // HEAD should now point to first commit.
+    let head_hash = String::from_utf8(
+        Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(&repo)
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap()
+    .trim()
+    .to_string();
+    assert_eq!(head_hash, first_hash);
+
+    // Worktree should still have v2 content.
+    let content = std::fs::read_to_string(repo.join("file.txt")).unwrap();
+    assert_eq!(
+        content, "v2\n",
+        "worktree should be unchanged after mixed reset"
+    );
+}
+
+/// Soft reset moves HEAD only; index is unchanged.
+#[tokio::test]
+async fn reset_soft() {
+    let dir = TempDir::new().unwrap();
+    let repo = init_repo(&dir);
+    write_file(&repo, "file.txt", "v1\n");
+    run_git(&repo, &["add", "file.txt"]);
+    run_git(&repo, &["commit", "-m", "first"]);
+
+    let first_hash = String::from_utf8(
+        Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(&repo)
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap()
+    .trim()
+    .to_string();
+
+    write_file(&repo, "file.txt", "v2\n");
+    run_git(&repo, &["add", "file.txt"]);
+    run_git(&repo, &["commit", "-m", "second"]);
+
+    let result = GitResetTool
+        .invoke(json!({
+            "path": repo.to_str().unwrap(),
+            "mode": "soft",
+            "commit": first_hash,
+        }))
+        .await
+        .unwrap();
+
+    assert_eq!(result["reset_to"].as_str().unwrap(), first_hash);
+
+    // HEAD should point to first commit.
+    let head_hash = String::from_utf8(
+        Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(&repo)
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap()
+    .trim()
+    .to_string();
+    assert_eq!(head_hash, first_hash);
+
+    // Worktree still has v2.
+    let content = std::fs::read_to_string(repo.join("file.txt")).unwrap();
+    assert_eq!(content, "v2\n");
+}
+
+/// Hard reset moves HEAD, index, and worktree to match the target commit.
+#[tokio::test]
+async fn reset_hard() {
+    let dir = TempDir::new().unwrap();
+    let repo = init_repo(&dir);
+    write_file(&repo, "file.txt", "v1\n");
+    run_git(&repo, &["add", "file.txt"]);
+    run_git(&repo, &["commit", "-m", "first"]);
+
+    let first_hash = String::from_utf8(
+        Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(&repo)
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap()
+    .trim()
+    .to_string();
+
+    write_file(&repo, "file.txt", "v2\n");
+    run_git(&repo, &["add", "file.txt"]);
+    run_git(&repo, &["commit", "-m", "second"]);
+
+    let result = GitResetTool
+        .invoke(json!({
+            "path": repo.to_str().unwrap(),
+            "mode": "hard",
+            "commit": first_hash,
+        }))
+        .await
+        .unwrap();
+
+    assert_eq!(result["reset_to"].as_str().unwrap(), first_hash);
+
+    // HEAD should point to first commit.
+    let head_hash = String::from_utf8(
+        Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(&repo)
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap()
+    .trim()
+    .to_string();
+    assert_eq!(head_hash, first_hash);
+
+    // Worktree should have v1 content.
+    let content = std::fs::read_to_string(repo.join("file.txt")).unwrap();
+    assert_eq!(
+        content, "v1\n",
+        "worktree should match first commit after hard reset"
+    );
+}
+
+// ── git_restore tests ─────────────────────────────────────────────────────────
+
+/// Restoring a modified tracked file from the index reverts worktree changes.
+#[tokio::test]
+async fn restore_worktree() {
+    let dir = TempDir::new().unwrap();
+    let repo = init_repo(&dir);
+    write_file(&repo, "file.txt", "original\n");
+    run_git(&repo, &["add", "file.txt"]);
+    run_git(&repo, &["commit", "-m", "initial"]);
+
+    // Modify without staging.
+    write_file(&repo, "file.txt", "modified\n");
+
+    let result = GitRestoreTool
+        .invoke(json!({ "path": repo.to_str().unwrap(), "files": ["file.txt"] }))
+        .await
+        .unwrap();
+
+    let restored = result["restored"].as_array().unwrap();
+    assert_eq!(restored.len(), 1);
+
+    let content = std::fs::read_to_string(repo.join("file.txt")).unwrap();
+    assert_eq!(
+        content, "original\n",
+        "worktree should be restored from index"
+    );
+}
+
+/// Restoring with staged=true resets the index entry from HEAD.
+#[tokio::test]
+async fn restore_staged() {
+    let dir = TempDir::new().unwrap();
+    let repo = init_repo(&dir);
+    write_file(&repo, "file.txt", "original\n");
+    run_git(&repo, &["add", "file.txt"]);
+    run_git(&repo, &["commit", "-m", "initial"]);
+
+    // Modify and stage.
+    write_file(&repo, "file.txt", "modified\n");
+    run_git(&repo, &["add", "file.txt"]);
+
+    // Verify staged.
+    let status_before = GitStatusTool
+        .invoke(json!({ "path": repo.to_str().unwrap() }))
+        .await
+        .unwrap();
+    assert!(
+        status_before["staged"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["path"].as_str().unwrap() == "file.txt"),
+        "file.txt should be staged"
+    );
+
+    // Restore staged (reset index from HEAD).
+    let result = GitRestoreTool
+        .invoke(json!({
+            "path": repo.to_str().unwrap(),
+            "files": ["file.txt"],
+            "staged": true,
+        }))
+        .await
+        .unwrap();
+
+    let restored = result["restored"].as_array().unwrap();
+    assert_eq!(restored.len(), 1);
+
+    // Should no longer be staged.
+    let status_after = GitStatusTool
+        .invoke(json!({ "path": repo.to_str().unwrap() }))
+        .await
+        .unwrap();
+    assert!(
+        !status_after["staged"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["path"].as_str().unwrap() == "file.txt"),
+        "file.txt should not be staged after restore --staged"
+    );
+}
+
+/// Calling git_restore without files returns an error.
+#[tokio::test]
+async fn restore_missing_files_error() {
+    let dir = TempDir::new().unwrap();
+    let repo = init_repo(&dir);
+
+    let result = GitRestoreTool
+        .invoke(json!({ "path": repo.to_str().unwrap() }))
+        .await;
+
+    assert!(result.is_err(), "expected error when files arg is missing");
+}
+
+// ── batch-2 registry integration ─────────────────────────────────────────────
+
+/// All 4 batch-2 tools register successfully.
+#[test]
+fn registry_batch2_tools_register() {
+    let mut registry = ToolRegistry::new();
+    register_git_branch_tool(&mut registry);
+    register_git_checkout_tool(&mut registry);
+    register_git_reset_tool(&mut registry);
+    register_git_restore_tool(&mut registry);
+
+    for name in &["git_branch", "git_checkout", "git_reset", "git_restore"] {
         assert!(registry.get(name).is_some(), "{name} not found in registry");
     }
 }

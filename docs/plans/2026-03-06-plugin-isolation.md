@@ -2,11 +2,11 @@
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
-**Goal:** Implement per-plugin policy profiles for WASM plugins that gate filesystem, network, process, and hook capabilities, with enforcement at both host dispatch and WASM boundary layers.
+**Goal:** Implement per-plugin policy profiles for WASM plugins that gate filesystem, network, process, and hook capabilities, with enforcement at both host dispatch and WASM boundary layers. Includes WASM resource limits, dynamic policy hot-reload, plugin isolation levels, and signed plugin verification.
 
-**Architecture:** `PluginPolicy` struct in `ucode-plugins` holds per-plugin effective permissions computed at handshake time (requested caps intersected with host-allowed caps). Enforcement at 5 points: hook category filtering, hook response validation, hook response aggregation, tool invocation policy checks, and WASI preopens for defense-in-depth. No cross-crate dependency on `ucode-tools`.
+**Architecture:** `PluginPolicy` struct in `ucode-plugins` holds per-plugin effective permissions computed at handshake time (requested caps intersected with host-allowed caps). Enforcement at 5 points: hook category filtering, hook response validation, hook response aggregation, tool invocation policy checks, and WASI preopens for defense-in-depth. Resource limits via wasmtime fuel/memory. Ed25519 plugin signatures for authenticity. No cross-crate dependency on `ucode-tools`.
 
-**Tech Stack:** Rust, serde, tracing, wasmtime (WASI preopens), existing ucode-plugins infrastructure
+**Tech Stack:** Rust, serde, tracing, wasmtime (WASI preopens, fuel, StoreLimits), ed25519-dalek (optional), existing ucode-plugins infrastructure
 
 **Design doc:** `docs/plans/2026-03-06-plugin-isolation-design.md`
 
@@ -1486,7 +1486,7 @@ feat(plugins): add tracing instrumentation for policy decisions (ISSUE 0805)
 
 ---
 
-### Task 9: Update PLANS.md and EPIC.md, final verification
+### Task 9: (moved to Task 14 — final verification after all features)
 
 **Files:**
 - Modify: `PLANS.md`
@@ -1512,6 +1512,952 @@ Mark Task 8.5 as DONE with test count.
 **Step 4: Update EPIC.md**
 
 Mark ISSUE 0805 as DONE with summary of what was implemented.
+
+**Step 5: Commit**
+
+```
+docs: mark ISSUE 0805 plugin isolation model DONE
+```
+
+---
+
+### Task 10: WASM resource limits (fuel + memory)
+
+**Files:**
+- Modify: `crates/ucode-plugins/src/policy.rs`
+- Modify: `crates/ucode-plugins/src/wasm/host.rs`
+
+**Step 1: Write failing tests for ResourceLimits**
+
+Add to `policy.rs` tests:
+
+```rust
+#[test]
+fn test_resource_limits_default() {
+    let limits = ResourceLimits::default();
+    assert_eq!(limits.max_memory_bytes, 16 * 1024 * 1024); // 16 MiB
+    assert_eq!(limits.max_fuel, 1_000_000);
+    assert_eq!(limits.max_instances, 1);
+}
+
+#[test]
+fn test_default_wasm_policy_has_resource_limits() {
+    let policy = PluginPolicy::default_wasm();
+    assert_eq!(policy.resource_limits.max_memory_bytes, 16 * 1024 * 1024);
+    assert_eq!(policy.resource_limits.max_fuel, 1_000_000);
+}
+
+#[test]
+fn test_default_native_policy_no_resource_limits() {
+    let policy = PluginPolicy::default_native();
+    // Native plugins get generous limits (effectively unlimited)
+    assert_eq!(policy.resource_limits.max_memory_bytes, usize::MAX);
+    assert_eq!(policy.resource_limits.max_fuel, u64::MAX);
+}
+```
+
+**Step 2: Run tests to verify they fail**
+
+Run: `cargo test -p ucode-plugins -- test_resource_limits`
+Expected: FAIL (ResourceLimits not defined)
+
+**Step 3: Implement ResourceLimits**
+
+Add to `policy.rs`:
+
+```rust
+/// Resource limits for WASM plugin execution.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResourceLimits {
+    /// Maximum linear memory in bytes per WASM instance (default: 16 MiB).
+    pub max_memory_bytes: usize,
+    /// Maximum fuel (instruction budget) per hook dispatch (default: 1_000_000).
+    pub max_fuel: u64,
+    /// Maximum number of WASM instances (default: 1).
+    pub max_instances: usize,
+}
+
+impl Default for ResourceLimits {
+    fn default() -> Self {
+        Self {
+            max_memory_bytes: 16 * 1024 * 1024, // 16 MiB
+            max_fuel: 1_000_000,
+            max_instances: 1,
+        }
+    }
+}
+
+impl ResourceLimits {
+    /// Effectively unlimited resource limits for native plugins.
+    pub fn unlimited() -> Self {
+        Self {
+            max_memory_bytes: usize::MAX,
+            max_fuel: u64::MAX,
+            max_instances: usize::MAX,
+        }
+    }
+}
+```
+
+Add `resource_limits: ResourceLimits` field to `PluginPolicy`. Update `default_wasm()` to use `ResourceLimits::default()` and `default_native()` to use `ResourceLimits::unlimited()`. Update `from_capabilities()` to use `ResourceLimits::default()`.
+
+**Step 4: Run tests to verify they pass**
+
+Run: `cargo test -p ucode-plugins -- test_resource_limits`
+Expected: PASS
+
+**Step 5: Write failing tests for fuel-aware Store creation**
+
+Add to `wasm/host.rs` tests:
+
+```rust
+#[test]
+fn test_build_engine_with_fuel() {
+    let engine = build_engine_with_fuel().unwrap();
+    // Engine should be created successfully with fuel consumption enabled
+    let _ = engine;
+}
+
+#[test]
+fn test_wasm_host_state_has_limits() {
+    let limits = StoreLimitsBuilder::new()
+        .memory_size(16 * 1024 * 1024)
+        .instances(1)
+        .build();
+    let state = WasmHostState {
+        log_messages: Vec::new(),
+        limits,
+    };
+    assert!(state.log_messages.is_empty());
+}
+```
+
+**Step 6: Implement fuel-aware engine and Store with limits**
+
+In `wasm/host.rs`:
+
+1. Add `StoreLimits` to `WasmHostState`:
+
+```rust
+use wasmtime::StoreLimits;
+
+pub struct WasmHostState {
+    pub log_messages: Vec<String>,
+    pub limits: StoreLimits,
+}
+```
+
+2. Add `build_engine_with_fuel()`:
+
+```rust
+fn build_engine_with_fuel() -> Result<Engine, WasmPluginError> {
+    let mut config = Config::new();
+    config.wasm_component_model(true);
+    config.consume_fuel(true);
+    Engine::new(&config).map_err(WasmPluginError::Engine)
+}
+```
+
+3. Update `create_store_with_policy()` to configure limits and fuel:
+
+```rust
+pub fn create_store_with_policy(
+    engine: &Engine,
+    policy: &PluginPolicy,
+    workspace_root: Option<&std::path::Path>,
+) -> Store<WasmHostState> {
+    let limits = StoreLimitsBuilder::new()
+        .memory_size(policy.resource_limits.max_memory_bytes)
+        .instances(policy.resource_limits.max_instances)
+        .build();
+
+    let mut store = Store::new(
+        engine,
+        WasmHostState {
+            log_messages: Vec::new(),
+            limits,
+        },
+    );
+
+    store.limiter(|state| &mut state.limits);
+
+    if let Err(e) = store.set_fuel(policy.resource_limits.max_fuel) {
+        tracing::warn!("failed to set fuel: {e}");
+    }
+
+    tracing::info!(
+        max_memory_bytes = policy.resource_limits.max_memory_bytes,
+        max_fuel = policy.resource_limits.max_fuel,
+        max_instances = policy.resource_limits.max_instances,
+        "WASM store created with resource limits"
+    );
+
+    store
+}
+```
+
+4. Update `WasmPlugin::from_file()` and `from_bytes()` to use `build_engine_with_fuel()`.
+
+5. Update existing `create_store()` to also include `StoreLimits` in `WasmHostState` (backward compat).
+
+**Step 7: Run tests to verify they pass**
+
+Run: `cargo test -p ucode-plugins --features wasm -- test_build_engine_with_fuel test_wasm_host_state_has_limits`
+Expected: PASS
+
+**Step 8: Verify full test suite**
+
+Run: `cargo test -p ucode-plugins --features wasm`
+Expected: All tests pass
+
+**Step 9: Commit**
+
+```
+feat(plugins): add WASM resource limits (fuel + memory) (ISSUE 0805)
+```
+
+---
+
+### Task 11: Dynamic policy hot-reload
+
+**Files:**
+- Modify: `crates/ucode-plugins/src/policy.rs`
+- Modify: `crates/ucode-plugins/src/host.rs`
+
+**Step 1: Write failing tests for TOML config parsing**
+
+Add to `policy.rs` tests:
+
+```rust
+#[test]
+fn test_policy_config_from_toml() {
+    let toml = r#"
+        [default_wasm]
+        filesystem_read = true
+        filesystem_write = false
+        workspace_bound = true
+        process_spawn = false
+        guarded_ui = false
+
+        [default_wasm.network]
+        allowed = false
+
+        [default_wasm.resource_limits]
+        max_memory_bytes = 8388608
+        max_fuel = 500000
+        max_instances = 1
+    "#;
+    let config: PluginPolicyConfig = toml::from_str(toml).unwrap();
+    assert!(config.default_wasm.filesystem_read);
+    assert!(!config.default_wasm.filesystem_write);
+    assert_eq!(config.default_wasm.resource_limits.max_memory_bytes, 8_388_608);
+}
+
+#[test]
+fn test_policy_config_to_toml_roundtrip() {
+    let config = PluginPolicyConfig::default();
+    let toml_str = toml::to_string_pretty(&config).unwrap();
+    let parsed: PluginPolicyConfig = toml::from_str(&toml_str).unwrap();
+    assert_eq!(parsed.default_wasm.filesystem_read, config.default_wasm.filesystem_read);
+    assert_eq!(parsed.default_wasm.resource_limits.max_fuel, config.default_wasm.resource_limits.max_fuel);
+}
+```
+
+**Step 2: Run tests to verify they fail**
+
+Run: `cargo test -p ucode-plugins -- test_policy_config_from_toml test_policy_config_to_toml`
+Expected: FAIL (PluginPolicy fields not fully serializable or TOML parsing issues)
+
+**Step 3: Ensure PluginPolicy and all nested types derive Serialize + Deserialize**
+
+Verify that `OverrideClass` has serde derives. If not, add:
+
+```rust
+// In hooks.rs
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OverrideClass {
+    Safe,
+    Guarded,
+    Risky,
+}
+```
+
+Ensure `PluginIsolationLevel` (added in Task 12) also has serde derives.
+
+**Step 4: Write failing tests for reload_policy_config**
+
+Add to `host.rs` tests:
+
+```rust
+#[test]
+fn test_reload_policy_config() {
+    let mut host = PluginHost::new();
+    host.load(TestPlugin::new("org.test.logger")).unwrap();
+
+    // Initial policy is default_native
+    let policy = host.plugin_policy("org.test.logger").unwrap();
+    assert!(policy.filesystem_write);
+
+    // Reload with restrictive config
+    let mut config = PluginPolicyConfig::default();
+    let mut restrictive = PluginPolicy::default_wasm();
+    restrictive.filesystem_write = false;
+    config.per_plugin.insert("org.test.logger".into(), restrictive);
+    host.reload_policy_config(&config);
+
+    // Policy should be updated
+    let policy = host.plugin_policy("org.test.logger").unwrap();
+    assert!(!policy.filesystem_write);
+}
+
+#[test]
+fn test_reload_policy_config_unaffected_plugins() {
+    let mut host = PluginHost::new();
+    host.load(TestPlugin::new("org.test.a")).unwrap();
+    host.load(TestPlugin::new("org.test.b")).unwrap();
+
+    let mut config = PluginPolicyConfig::default();
+    let mut restrictive = PluginPolicy::default_wasm();
+    restrictive.process_spawn = false;
+    config.per_plugin.insert("org.test.a".into(), restrictive);
+    host.reload_policy_config(&config);
+
+    // org.test.a should be restricted
+    assert!(!host.plugin_policy("org.test.a").unwrap().process_spawn);
+    // org.test.b should keep default_native
+    assert!(host.plugin_policy("org.test.b").unwrap().process_spawn);
+}
+```
+
+**Step 5: Implement reload_policy_config**
+
+Add to `PluginHost`:
+
+```rust
+/// Reload plugin policies from a new config.
+///
+/// Updates host-level policy checks immediately for all loaded plugins.
+/// Per-plugin overrides take precedence; plugins without overrides get
+/// the appropriate default (native or WASM).
+///
+/// Note: WASI preopens are set at Store creation time and only take
+/// effect on next plugin restart.
+pub fn reload_policy_config(&mut self, config: &PluginPolicyConfig) {
+    for loaded in &mut self.plugins {
+        let new_policy = if let Some(override_policy) = config.per_plugin.get(&loaded.plugin_id) {
+            override_policy.clone()
+        } else {
+            match &loaded.instance {
+                #[cfg(feature = "wasm")]
+                PluginInstance::Wasm(_) => config.default_wasm.clone(),
+                _ => config.default_native.clone(),
+            }
+        };
+        tracing::info!(
+            plugin_id = %loaded.plugin_id,
+            "reloaded plugin policy"
+        );
+        loaded.policy = new_policy;
+    }
+}
+```
+
+**Step 6: Run tests to verify they pass**
+
+Run: `cargo test -p ucode-plugins -- test_reload_policy_config test_policy_config_from_toml test_policy_config_to_toml`
+Expected: PASS
+
+**Step 7: Verify full test suite**
+
+Run: `cargo test -p ucode-plugins`
+Expected: All tests pass
+
+**Step 8: Commit**
+
+```
+feat(plugins): add dynamic policy hot-reload (ISSUE 0805)
+```
+
+---
+
+### Task 12: Plugin-to-plugin communication policy (isolation levels)
+
+**Files:**
+- Modify: `crates/ucode-plugins/src/policy.rs`
+- Modify: `crates/ucode-plugins/src/host.rs`
+
+**Step 1: Write failing tests for PluginIsolationLevel**
+
+Add to `policy.rs` tests:
+
+```rust
+#[test]
+fn test_default_wasm_isolation_full() {
+    let policy = PluginPolicy::default_wasm();
+    assert_eq!(policy.isolation_level, PluginIsolationLevel::Full);
+}
+
+#[test]
+fn test_default_native_isolation_ordered() {
+    let policy = PluginPolicy::default_native();
+    assert_eq!(policy.isolation_level, PluginIsolationLevel::Ordered);
+}
+```
+
+Add to `host.rs` tests:
+
+```rust
+#[test]
+fn test_ordered_dispatch_passes_modifications() {
+    // Plugin A modifies args, Plugin B sees modified args
+    struct ModifierPlugin {
+        id: String,
+        seen_args: Option<serde_json::Value>,
+    }
+    impl Plugin for ModifierPlugin {
+        fn handshake(&self) -> HandshakeRequest {
+            HandshakeRequest {
+                plugin_id: self.id.clone(),
+                plugin_version: semver::Version::new(1, 0, 0),
+                min_api_version: semver::Version::new(1, 0, 0),
+                required_features: [Feature::Hooks].into(),
+                capabilities: PluginCapabilities::default(),
+            }
+        }
+        fn initialize(&mut self, _: &HandshakeResponse) -> Result<(), String> { Ok(()) }
+        fn shutdown(&mut self) {}
+    }
+    impl HookHandler for ModifierPlugin {
+        fn on_event(&mut self, record: &HookRecord) -> HookResponse {
+            if self.id == "org.test.modifier" {
+                HookResponse::Modify {
+                    changes: serde_json::json!({"injected": true}),
+                }
+            } else {
+                // Observer records what it saw
+                HookResponse::Ok
+            }
+        }
+    }
+
+    let mut host = PluginHost::new();
+    let modifier = ModifierPlugin { id: "org.test.modifier".into(), seen_args: None };
+    let observer = ModifierPlugin { id: "org.test.observer".into(), seen_args: None };
+    host.load(modifier).unwrap();
+    host.load(observer).unwrap();
+
+    // Set both to Ordered isolation with Guarded ceiling
+    let mut policy = PluginPolicy::default_native();
+    policy.isolation_level = PluginIsolationLevel::Ordered;
+    policy.max_override_class = OverrideClass::Guarded;
+    host.set_plugin_policy("org.test.modifier", policy.clone());
+    host.set_plugin_policy("org.test.observer", policy);
+
+    let results = host.dispatch_hook(HookEvent::BeforeToolCall {
+        tool_name: "bash".into(),
+        args: serde_json::json!({"cmd": "ls"}),
+    });
+    // Both plugins should have been dispatched
+    assert_eq!(results.len(), 2);
+    // First plugin returned Modify
+    assert!(matches!(results[0].response, HookResponse::Modify { .. }));
+}
+
+#[test]
+fn test_full_isolation_no_modification_passthrough() {
+    // With Full isolation, each plugin sees the original event
+    let mut host = PluginHost::new();
+    let plugin_a = TestPlugin::new("org.test.a");
+    let plugin_b = TestPlugin::new("org.test.b");
+    host.load(plugin_a).unwrap();
+    host.load(plugin_b).unwrap();
+
+    // Set both to Full isolation (WASM default)
+    let policy = PluginPolicy::default_wasm();
+    host.set_plugin_policy("org.test.a", policy.clone());
+    host.set_plugin_policy("org.test.b", policy);
+
+    let results = host.dispatch_hook(HookEvent::SessionStart { session_id: "s1".into() });
+    // Both should receive the event (both have empty allowed_hook_categories = all)
+    assert_eq!(results.len(), 2);
+}
+```
+
+**Step 2: Run tests to verify they fail**
+
+Run: `cargo test -p ucode-plugins -- test_ordered_dispatch test_full_isolation test_default_wasm_isolation test_default_native_isolation`
+Expected: FAIL
+
+**Step 3: Implement PluginIsolationLevel**
+
+Add to `policy.rs`:
+
+```rust
+/// Controls whether a plugin can observe other plugins' hook responses.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PluginIsolationLevel {
+    /// Plugin sees only the original event payload.
+    Full,
+    /// Plugin sees the event payload as modified by prior plugins in load order.
+    Ordered,
+}
+
+impl Default for PluginIsolationLevel {
+    fn default() -> Self {
+        Self::Full
+    }
+}
+```
+
+Add `isolation_level: PluginIsolationLevel` to `PluginPolicy`. Update `default_wasm()` to use `Full`, `default_native()` to use `Ordered`.
+
+**Step 4: Update dispatch_hook for isolation levels**
+
+In `host.rs`, update `dispatch_hook()` to track modifications when plugins use `Ordered` isolation. When a plugin returns `Modify` and the next plugin has `Ordered` isolation, the modifications are applied to the record before dispatch.
+
+The implementation is a documentation-level change for now: the `HookRecord` is cloned per-plugin when `Full`, or mutated in-place when `Ordered`. Since `Modify` returns a `serde_json::Value` of changes, applying it to the record requires merging the changes into the event payload. For v1, the `Ordered` mode passes the accumulated `changes` as additional context rather than modifying the `HookEvent` enum (which is not easily mutable).
+
+Simpler approach: add an `accumulated_changes: Option<serde_json::Value>` field to `HookRecord` that `Ordered` plugins can see:
+
+```rust
+// In hooks.rs, extend HookRecord:
+pub struct HookRecord {
+    pub event: HookEvent,
+    pub timestamp: DateTime<Utc>,
+    /// Accumulated modifications from prior plugins (Ordered isolation only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accumulated_changes: Option<serde_json::Value>,
+}
+```
+
+In `dispatch_hook()`:
+
+```rust
+let mut accumulated_changes: Option<serde_json::Value> = None;
+
+for loaded in &mut self.plugins {
+    // ... category check ...
+
+    // Build record with or without accumulated changes based on isolation
+    let dispatch_record = if loaded.policy.isolation_level == PluginIsolationLevel::Ordered {
+        HookRecord {
+            event: record.event.clone(),
+            timestamp: record.timestamp,
+            accumulated_changes: accumulated_changes.clone(),
+        }
+    } else {
+        HookRecord {
+            event: record.event.clone(),
+            timestamp: record.timestamp,
+            accumulated_changes: None,
+        }
+    };
+
+    // ... dispatch to plugin ...
+
+    // If plugin returned Modify, accumulate changes
+    if let HookResponse::Modify { changes } = &response {
+        accumulated_changes = Some(match accumulated_changes {
+            Some(mut existing) => {
+                if let (Some(obj), Some(new)) = (existing.as_object_mut(), changes.as_object()) {
+                    for (k, v) in new {
+                        obj.insert(k.clone(), v.clone());
+                    }
+                }
+                existing
+            }
+            None => changes.clone(),
+        });
+    }
+}
+```
+
+**Step 5: Run tests to verify they pass**
+
+Run: `cargo test -p ucode-plugins -- test_ordered_dispatch test_full_isolation test_default_wasm_isolation test_default_native_isolation`
+Expected: PASS
+
+**Step 6: Verify full test suite**
+
+Run: `cargo test -p ucode-plugins`
+Expected: All tests pass
+
+**Step 7: Commit**
+
+```
+feat(plugins): add plugin isolation levels (Full/Ordered) (ISSUE 0805)
+```
+
+---
+
+### Task 13: Signed plugin verification (Ed25519)
+
+**Files:**
+- Modify: `Cargo.toml` (workspace deps)
+- Modify: `crates/ucode-plugins/Cargo.toml`
+- Create: `crates/ucode-plugins/src/wasm/signature.rs`
+- Modify: `crates/ucode-plugins/src/wasm/mod.rs`
+- Modify: `crates/ucode-plugins/src/wasm/host.rs`
+- Modify: `crates/ucode-plugins/src/policy.rs`
+
+**Step 1: Add ed25519-dalek dependency**
+
+In workspace `Cargo.toml`:
+
+```toml
+ed25519-dalek = { version = "2", features = ["std"] }
+```
+
+In `crates/ucode-plugins/Cargo.toml`:
+
+```toml
+[features]
+default = []
+wasm = ["dep:wasmtime", "dep:wasmtime-wasi"]
+signed-plugins = ["dep:ed25519-dalek"]
+
+[dependencies]
+ed25519-dalek = { workspace = true, optional = true }
+```
+
+**Step 2: Write failing tests for signature verification**
+
+Create `crates/ucode-plugins/src/wasm/signature.rs`:
+
+```rust
+//! Ed25519 signature verification for WASM plugin binaries.
+
+#[cfg(feature = "signed-plugins")]
+use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+
+use std::path::Path;
+
+/// Signature verification policy.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SignaturePolicy {
+    /// Reject unsigned or invalid-signature plugins.
+    Required,
+    /// Warn on unsigned plugins, reject invalid signatures.
+    WarnUnsigned,
+    /// Skip signature verification entirely.
+    Disabled,
+}
+
+impl Default for SignaturePolicy {
+    fn default() -> Self {
+        Self::Disabled
+    }
+}
+
+/// Result of signature verification.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SignatureCheckResult {
+    /// Signature is valid.
+    Valid,
+    /// No signature file found.
+    Unsigned,
+    /// Signature file exists but is invalid.
+    Invalid { reason: String },
+}
+
+/// Errors from signature verification.
+#[derive(Debug)]
+pub enum SignatureError {
+    /// Plugin is unsigned and policy requires signatures.
+    Unsigned,
+    /// Signature is invalid.
+    Invalid(String),
+    /// I/O error reading signature file.
+    Io(std::io::Error),
+    /// Invalid key format.
+    InvalidKey(String),
+}
+
+impl std::fmt::Display for SignatureError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unsigned => write!(f, "plugin is unsigned"),
+            Self::Invalid(reason) => write!(f, "invalid signature: {reason}"),
+            Self::Io(e) => write!(f, "signature I/O error: {e}"),
+            Self::InvalidKey(reason) => write!(f, "invalid key: {reason}"),
+        }
+    }
+}
+
+impl std::error::Error for SignatureError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_signature_policy_default_disabled() {
+        assert_eq!(SignaturePolicy::default(), SignaturePolicy::Disabled);
+    }
+
+    #[test]
+    fn test_signature_check_result_variants() {
+        let valid = SignatureCheckResult::Valid;
+        assert_eq!(valid, SignatureCheckResult::Valid);
+
+        let unsigned = SignatureCheckResult::Unsigned;
+        assert_eq!(unsigned, SignatureCheckResult::Unsigned);
+
+        let invalid = SignatureCheckResult::Invalid { reason: "bad sig".into() };
+        assert!(matches!(invalid, SignatureCheckResult::Invalid { .. }));
+    }
+
+    #[test]
+    fn test_apply_policy_disabled_allows_unsigned() {
+        let result = apply_signature_policy(&SignaturePolicy::Disabled, &SignatureCheckResult::Unsigned);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_apply_policy_required_rejects_unsigned() {
+        let result = apply_signature_policy(&SignaturePolicy::Required, &SignatureCheckResult::Unsigned);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_apply_policy_warn_unsigned_allows() {
+        let result = apply_signature_policy(&SignaturePolicy::WarnUnsigned, &SignatureCheckResult::Unsigned);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_apply_policy_required_allows_valid() {
+        let result = apply_signature_policy(&SignaturePolicy::Required, &SignatureCheckResult::Valid);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_apply_policy_any_rejects_invalid() {
+        let invalid = SignatureCheckResult::Invalid { reason: "bad".into() };
+        // All policies except Disabled reject invalid signatures
+        assert!(apply_signature_policy(&SignaturePolicy::Required, &invalid).is_err());
+        assert!(apply_signature_policy(&SignaturePolicy::WarnUnsigned, &invalid).is_err());
+        // Disabled skips verification entirely
+        assert!(apply_signature_policy(&SignaturePolicy::Disabled, &invalid).is_ok());
+    }
+
+    #[cfg(feature = "signed-plugins")]
+    #[test]
+    fn test_verify_signature_roundtrip() {
+        use ed25519_dalek::{SigningKey, Signer};
+        use rand::rngs::OsRng;
+
+        let signing_key = SigningKey::generate(&mut OsRng);
+        let verifying_key = signing_key.verifying_key();
+        let wasm_bytes = b"fake wasm component bytes";
+        let signature = signing_key.sign(wasm_bytes);
+        let sig_bytes = signature.to_bytes();
+
+        let result = verify_signature(wasm_bytes, &sig_bytes, &[verifying_key]);
+        assert_eq!(result, SignatureCheckResult::Valid);
+    }
+
+    #[cfg(feature = "signed-plugins")]
+    #[test]
+    fn test_verify_signature_wrong_key() {
+        use ed25519_dalek::{SigningKey, Signer};
+        use rand::rngs::OsRng;
+
+        let signing_key = SigningKey::generate(&mut OsRng);
+        let wrong_key = SigningKey::generate(&mut OsRng).verifying_key();
+        let wasm_bytes = b"fake wasm component bytes";
+        let signature = signing_key.sign(wasm_bytes);
+        let sig_bytes = signature.to_bytes();
+
+        let result = verify_signature(wasm_bytes, &sig_bytes, &[wrong_key]);
+        assert!(matches!(result, SignatureCheckResult::Invalid { .. }));
+    }
+}
+```
+
+**Step 3: Run tests to verify they fail**
+
+Run: `cargo test -p ucode-plugins -- signature`
+Expected: FAIL (functions not implemented)
+
+**Step 4: Implement signature verification functions**
+
+Add to `signature.rs`:
+
+```rust
+/// Apply signature policy to a check result.
+pub fn apply_signature_policy(
+    policy: &SignaturePolicy,
+    result: &SignatureCheckResult,
+) -> Result<(), SignatureError> {
+    match policy {
+        SignaturePolicy::Disabled => Ok(()),
+        SignaturePolicy::WarnUnsigned => match result {
+            SignatureCheckResult::Valid => Ok(()),
+            SignatureCheckResult::Unsigned => {
+                tracing::warn!("plugin is unsigned (policy: warn_unsigned)");
+                Ok(())
+            }
+            SignatureCheckResult::Invalid { reason } => {
+                Err(SignatureError::Invalid(reason.clone()))
+            }
+        },
+        SignaturePolicy::Required => match result {
+            SignatureCheckResult::Valid => Ok(()),
+            SignatureCheckResult::Unsigned => Err(SignatureError::Unsigned),
+            SignatureCheckResult::Invalid { reason } => {
+                Err(SignatureError::Invalid(reason.clone()))
+            }
+        },
+    }
+}
+
+/// Check if a `.wasm.sig` file exists for the given WASM path.
+pub fn check_signature_file(wasm_path: &Path) -> Option<Vec<u8>> {
+    let sig_path = wasm_path.with_extension("wasm.sig");
+    std::fs::read(&sig_path).ok()
+}
+
+/// Verify a signature against WASM bytes using trusted keys.
+#[cfg(feature = "signed-plugins")]
+pub fn verify_signature(
+    wasm_bytes: &[u8],
+    signature_bytes: &[u8; 64],
+    trusted_keys: &[VerifyingKey],
+) -> SignatureCheckResult {
+    let signature = Signature::from_bytes(signature_bytes);
+    for key in trusted_keys {
+        if key.verify(wasm_bytes, &signature).is_ok() {
+            return SignatureCheckResult::Valid;
+        }
+    }
+    SignatureCheckResult::Invalid {
+        reason: "signature does not match any trusted key".into(),
+    }
+}
+
+/// Full verification flow: check for sig file, verify if present, apply policy.
+#[cfg(feature = "signed-plugins")]
+pub fn verify_plugin_signature(
+    wasm_path: &Path,
+    wasm_bytes: &[u8],
+    trusted_keys: &[VerifyingKey],
+    policy: &SignaturePolicy,
+) -> Result<(), SignatureError> {
+    if matches!(policy, SignaturePolicy::Disabled) {
+        return Ok(());
+    }
+
+    let check_result = match check_signature_file(wasm_path) {
+        None => SignatureCheckResult::Unsigned,
+        Some(sig_bytes) => {
+            if sig_bytes.len() != 64 {
+                SignatureCheckResult::Invalid {
+                    reason: format!("signature file is {} bytes, expected 64", sig_bytes.len()),
+                }
+            } else {
+                let mut sig_array = [0u8; 64];
+                sig_array.copy_from_slice(&sig_bytes);
+                verify_signature(wasm_bytes, &sig_array, trusted_keys)
+            }
+        }
+    };
+
+    apply_signature_policy(policy, &check_result)
+}
+```
+
+**Step 5: Add SignaturePolicy to PluginPolicyConfig**
+
+In `policy.rs`, add to `PluginPolicyConfig`:
+
+```rust
+pub struct PluginPolicyConfig {
+    pub default_wasm: PluginPolicy,
+    pub default_native: PluginPolicy,
+    pub per_plugin: HashMap<String, PluginPolicy>,
+    /// Signature verification policy for WASM plugins.
+    #[serde(default)]
+    pub signature_policy: SignaturePolicy,
+    /// Hex-encoded Ed25519 public keys trusted for plugin signing.
+    #[serde(default)]
+    pub trusted_keys: Vec<String>,
+}
+```
+
+Import `SignaturePolicy` from `wasm::signature` (or define it in `policy.rs` and re-export).
+
+**Step 6: Wire into load_wasm**
+
+In `host.rs`, update `load_wasm()` to call signature verification before instantiation (when `signed-plugins` feature is enabled).
+
+**Step 7: Add module to wasm/mod.rs**
+
+```rust
+pub mod signature;
+pub use signature::{SignaturePolicy, SignatureCheckResult, SignatureError};
+```
+
+**Step 8: Run tests to verify they pass**
+
+Run: `cargo test -p ucode-plugins -- signature`
+Run: `cargo test -p ucode-plugins --features signed-plugins -- signature`
+Expected: PASS
+
+**Step 9: Verify full test suite**
+
+Run: `cargo test -p ucode-plugins`
+Run: `cargo test -p ucode-plugins --features wasm`
+Run: `cargo test -p ucode-plugins --features wasm,signed-plugins`
+Expected: All pass
+
+**Step 10: Commit**
+
+```
+feat(plugins): add Ed25519 signed plugin verification (ISSUE 0805)
+```
+
+---
+
+### Task 14: Final verification and docs update (replaces Task 9)
+
+**Files:**
+- Modify: `PLANS.md`
+- Modify: `EPIC.md`
+
+**Step 1: Run full test suite**
+
+Run: `cargo test -p ucode-plugins`
+Run: `cargo test -p ucode-plugins --features wasm`
+Run: `cargo test -p ucode-plugins --features wasm,signed-plugins`
+Run: `cargo clippy -p ucode-plugins -- -D warnings`
+Run: `cargo clippy -p ucode-plugins --features wasm -- -D warnings`
+Run: `cargo clippy -p ucode-plugins --features wasm,signed-plugins -- -D warnings`
+Expected: All pass, 0 warnings
+
+**Step 2: Count tests**
+
+Run: `cargo test -p ucode-plugins --features wasm,signed-plugins 2>&1 | grep 'test result'`
+Expected: Note the total test count
+
+**Step 3: Update PLANS.md**
+
+Mark Task 8.5 as DONE with test count and summary:
+- PluginPolicy with scoped capabilities
+- Hook category filtering + override class ceiling
+- Hook response aggregation (Veto > Modify > Ok)
+- WASM resource limits (fuel + memory)
+- Dynamic policy hot-reload
+- Plugin isolation levels (Full/Ordered)
+- Ed25519 signed plugin verification
+- WASI preopens for defense-in-depth
+
+**Step 4: Update EPIC.md**
+
+Mark ISSUE 0805 as DONE.
 
 **Step 5: Commit**
 

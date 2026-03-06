@@ -227,9 +227,114 @@ display.
 - `crates/ucode-plugins/src/lib.rs` — add pub mod policy
 - `crates/ucode-plugins/Cargo.toml` — add tracing dependency
 
-## Out of Scope (Phase 2)
+## WASM Resource Limits
 
-- WASM resource limits (fuel/memory caps via wasmtime Store config)
-- Dynamic policy hot-reload
-- Plugin-to-plugin communication policy
-- Signed plugin verification
+Wasmtime provides two mechanisms for bounding plugin resource consumption:
+
+1. **Memory limits** via `StoreLimitsBuilder::memory_size(bytes)` — caps linear
+   memory growth per instance. Configured on the `Store` via `store.limiter()`.
+2. **Fuel metering** via `Config::consume_fuel(true)` + `Store::set_fuel(n)` —
+   instruction-level CPU budget. When fuel runs out, wasmtime raises a trap.
+
+New type in `PluginPolicy`:
+
+```rust
+pub struct ResourceLimits {
+    /// Maximum linear memory in bytes (default: 16 MiB).
+    pub max_memory_bytes: usize,
+    /// Maximum fuel (instruction budget) per hook dispatch (default: 1_000_000).
+    pub max_fuel: u64,
+    /// Maximum number of WASM instances (default: 1).
+    pub max_instances: usize,
+}
+```
+
+Enforcement:
+- Engine config: `config.consume_fuel(true)` when any plugin has fuel limits.
+- Store creation: `store.limiter(|state| &mut state.limits)` with
+  `StoreLimitsBuilder::memory_size(policy.resource_limits.max_memory_bytes)`.
+- Before each dispatch: `store.set_fuel(policy.resource_limits.max_fuel)`.
+- Trap on fuel exhaustion is caught and converted to a `HookResponse::Ok` with
+  a warning log.
+
+## Dynamic Policy Hot-Reload
+
+Plugin policies can be updated at runtime without restarting the host:
+
+1. **Config file**: `PluginPolicyConfig` serialized as TOML. Loaded from
+   workspace config directory.
+2. **Reload method**: `PluginHost::reload_policy_config(config)` updates
+   host-level checks immediately for all loaded plugins.
+3. **WASI preopens caveat**: WASI preopens are set at Store creation time.
+   Changed filesystem paths only take effect on next plugin restart (Store
+   recreation). Host-level checks update immediately.
+4. **Trigger**: The host application calls `reload_policy_config()` on SIGHUP,
+   CLI command, or config file change. The file watcher is the caller's
+   responsibility — `ucode-plugins` only provides the reload method.
+
+## Plugin-to-Plugin Communication Policy
+
+Controls whether plugins can observe each other's hook responses:
+
+```rust
+pub enum PluginIsolationLevel {
+    /// Plugin sees only the original event payload. No visibility into
+    /// other plugins' responses.
+    Full,
+    /// Plugin sees the event payload as modified by prior plugins in
+    /// load order. Later plugins see earlier Modify results.
+    Ordered,
+}
+```
+
+Default: `Full` for WASM plugins, `Ordered` for native plugins.
+
+When `Ordered`:
+- `dispatch_hook()` applies each plugin's `Modify` response to the
+  `HookRecord` before passing it to the next plugin.
+- This enables plugin pipelines (e.g., plugin A normalizes args, plugin B
+  validates them).
+
+When `Full`:
+- Each plugin receives the original, unmodified `HookRecord`.
+- Responses are aggregated after all plugins have run.
+
+## Signed Plugin Verification
+
+WASM plugin binaries can be signed with Ed25519 for authenticity verification:
+
+1. **Signature format**: Detached `.wasm.sig` file alongside the `.wasm` file.
+   Contains a 64-byte Ed25519 signature over the raw `.wasm` bytes.
+2. **Key management**: Trusted public keys stored in `PluginPolicyConfig` as
+   hex-encoded 32-byte Ed25519 verifying keys.
+3. **Verification policy**:
+
+```rust
+pub enum SignaturePolicy {
+    /// Reject unsigned or invalid-signature plugins.
+    Required,
+    /// Warn on unsigned plugins, reject invalid signatures.
+    WarnUnsigned,
+    /// Skip signature verification entirely.
+    Disabled,
+}
+```
+
+4. **Enforcement**: At `load_wasm()` time, before instantiation:
+   - Read `{path}.sig` file.
+   - Verify signature against all trusted keys.
+   - Apply policy (reject/warn/skip).
+5. **Dependency**: `ed25519-dalek` crate (optional, behind `signed-plugins`
+   feature flag).
+
+## Files Touched
+
+- `crates/ucode-plugins/src/manifest.rs` — extend PluginCapabilities
+- `crates/ucode-plugins/src/policy.rs` — new: PluginPolicy, PluginPolicyConfig, ResourceLimits, PluginIsolationLevel, SignaturePolicy, enforcement helpers
+- `crates/ucode-plugins/src/host.rs` — add PluginPolicy to LoadedPlugin, enforce in dispatch/invoke, add query API, hook response aggregation, reload, ordered dispatch
+- `crates/ucode-plugins/src/api.rs` — update HandshakeResponse to carry scoped granted info
+- `crates/ucode-plugins/src/wasm/host.rs` — WASI preopens, resource limits, Store config
+- `crates/ucode-plugins/src/wasm/signature.rs` — new: Ed25519 signature verification
+- `crates/ucode-plugins/src/hooks.rs` — add hook_category() helper to HookEvent
+- `crates/ucode-plugins/src/lib.rs` — add pub mod policy
+- `crates/ucode-plugins/Cargo.toml` — add tracing, ed25519-dalek (optional) dependencies

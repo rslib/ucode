@@ -1,10 +1,15 @@
 //! ucode-plugins: plugin manifest, discovery, registry, and hooks API
 
+pub mod api;
 pub mod hooks;
 pub mod loader;
 pub mod manifest;
 pub mod ui_api;
 
+pub use api::{
+    API_VERSION, Feature, HandshakeError, HandshakeRequest, HandshakeResponse, HookHandler,
+    HookResponse, Plugin, ToolProvider, check_features_compatible, check_version_compatible,
+};
 pub use hooks::{HookDispatcher, HookEvent, HookRecord, HookSubscription, OverrideClass};
 pub use loader::{PluginInfo, PluginRegistry, PluginStatus, discover_plugins};
 pub use manifest::{

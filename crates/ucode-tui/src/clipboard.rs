@@ -2,7 +2,7 @@
 //!
 //! Priority order for `ClipboardMethod::Osc52`:
 //!   1. OSC 52 escape sequence (works through tmux ≥ 3.3 with `set-clipboard on`)
-//!   2. External tool (`xclip`, `xsel`, `pbcopy`, `clip.exe`)
+//!   2. External tool (`wl-copy`, `xclip`, `xsel`, `pbcopy`, `clip.exe`)
 //!   3. File at `$XDG_DATA_HOME/ucode/clipboard`
 
 use std::io::Write;
@@ -48,7 +48,7 @@ pub enum ClipboardMethod {
     /// OSC 52 escape sequence (default). Falls back to external, then file.
     #[default]
     Osc52,
-    /// External tool (`xclip`, `xsel`, `pbcopy`, `clip.exe`). Falls back to file.
+    /// External tool (`wl-copy`, `xclip`, `xsel`, `pbcopy`, `clip.exe`). Falls back to file.
     External,
     /// Write to `$XDG_DATA_HOME/ucode/clipboard`.
     File,
@@ -59,7 +59,7 @@ pub enum ClipboardError {
     #[error("OSC 52 write failed: {0}")]
     Osc52WriteFailed(String),
 
-    #[error("no clipboard tool found (xclip, xsel, pbcopy, clip.exe)")]
+    #[error("no clipboard tool found (wl-copy, xclip, xsel, pbcopy, clip.exe)")]
     ExternalToolNotFound,
 
     #[error("clipboard tool failed: {0}")]
@@ -119,12 +119,12 @@ pub fn write_osc52(content: &str, writer: &mut impl Write) -> Result<(), Clipboa
 pub fn detect_external_tool() -> Option<&'static str> {
     #[cfg(target_os = "macos")]
     {
-        return Some("pbcopy");
+        Some("pbcopy")
     }
 
     #[cfg(target_os = "windows")]
     {
-        return Some("clip.exe");
+        Some("clip.exe")
     }
 
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
@@ -132,6 +132,10 @@ pub fn detect_external_tool() -> Option<&'static str> {
         // WSL: WSLENV is set by the Windows host.
         if std::env::var("WSLENV").is_ok() {
             return Some("clip.exe");
+        }
+        // Wayland: prefer wl-copy, fall back to X11 tools.
+        if std::env::var("WAYLAND_DISPLAY").is_ok() && tool_exists("wl-copy") {
+            return Some("wl-copy");
         }
         for tool in ["xclip", "xsel"] {
             if tool_exists(tool) {
@@ -154,8 +158,20 @@ fn tool_exists(name: &str) -> bool {
 }
 
 /// Pipes `content` to the stdin of the named clipboard tool.
+///
+/// Each tool requires specific arguments to target the system clipboard:
+/// - `xclip`   → `-selection clipboard`
+/// - `xsel`    → `--clipboard --input`
+/// - `wl-copy`, `pbcopy`, `clip.exe` → no args needed
 pub fn write_external(content: &str, tool: &str) -> Result<(), ClipboardError> {
+    let args: &[&str] = match tool {
+        "xclip" => &["-selection", "clipboard"],
+        "xsel" => &["--clipboard", "--input"],
+        _ => &[],
+    };
+
     let mut child = Command::new(tool)
+        .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::null())

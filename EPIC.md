@@ -89,7 +89,7 @@
 * Cancellation and timeout produce explicit terminal states.
   **Owner:** Core
 
-### ISSUE 0106 — Inter-agent communication bus (ucode-core)
+### ISSUE 0106 — Inter-agent communication bus (ucode-core) [DONE]
 
 **Goal:** Enable optional controlled communication among concurrent agents.
 **Scope/Notes:**
@@ -367,7 +367,7 @@ Commands:
 * Tool-call event emitted for a tool-using prompt (mock ok)
   **Owner:** Providers
 
-### ISSUE 0303 — Anthropic adapter (streaming + tools) (ucode-providers)
+### ISSUE 0303 — Anthropic adapter (streaming + tools) (ucode-providers) [DONE]
 
 **Goal:** Implement Anthropic adapter with streaming and tool use.
 **Scope/Notes:**
@@ -565,7 +565,7 @@ This ensures consistent behavior, no runtime dependency on installed binaries, a
 * `../` traversal and symlink escape both denied.
   **Owner:** Tools/TUI/Security
 
-### ISSUE 0410 — Network capability policy for web/deep research (ucode-tools)
+### ISSUE 0410 — Network capability policy for web/deep research (ucode-tools) [DONE]
 
 **Goal:** Allow safe internet-enabled research without weakening default isolation.
 **Scope/Notes:**

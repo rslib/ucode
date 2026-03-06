@@ -112,7 +112,7 @@ Streaming events:
 * `wait_all` returns deterministic completion summary.
 * Cancellation stops running agent and emits failure/cancel event.
 
-### Task 1.4: Inter-agent communication channels (ucode-core)
+### Task 1.4: Inter-agent communication channels (ucode-core) [DONE]
 
 * Optional mailbox channel per agent (`send(agent_id, payload)`)
 * Optional shared context board for fan-out/fan-in coordination
@@ -353,7 +353,7 @@ CLI:
 * Tool/function calls → canonical ToolCall
 * Uses auth module (key or login)
 
-### Task 3.3 Anthropic adapter
+### Task 3.3 Anthropic adapter [DONE]
 
 * Streaming tokens
 * Tool use mapping → canonical ToolCall
@@ -488,7 +488,7 @@ CLI:
 * Denial emits clear reason and audit event.
 * Symlink escape attempt is denied.
 
-### Task 4.8 Network capability policy for web/deep research (ucode-tools)
+### Task 4.8 Network capability policy for web/deep research (ucode-tools) [DONE]
 
 * Separate `network` capability from general command execution
 * Policy can allow network for selected tools/agents only (e.g., web-search agent gets `networked` tier)

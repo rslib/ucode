@@ -870,20 +870,22 @@ Search:
 * Theme toggle preserves contrast/accessibility in supported terminals. [DONE]
   **Owner:** TUI
 
-### ISSUE 0707 — Slash command UX + registry integration (ucode-tui + ucode-core)
+### ISSUE 0707 — Slash command UX + registry integration (ucode-tui + ucode-core) [DONE]
 
 **Goal:** Make `/command` first-class in the TUI with discoverability and safe execution.
 **Scope/Notes:**
 
-* Execute slash commands from input line and command palette
-* Show command source badge: user/project/plugin
-* Inline argument hints and validation messages
-* Command execution routed through same sandbox/approval pipeline
+* Execute slash commands from input line and command palette [DONE]
+* Show command source badge: user/project/plugin [DONE]
+* Inline argument hints and validation messages [DONE]
+* Command execution routed through same sandbox/approval pipeline [DONE]
   **Acceptance tests:**
-* User-defined `/command` resolves and executes from TUI input.
-* Unknown command returns ranked suggestions.
-* Command execution enforces normal policy gates.
+* User-defined `/command` resolves and executes from TUI input. [DONE]
+* Unknown command returns ranked suggestions. [DONE]
+* Command execution enforces normal policy gates. [DONE]
   **Owner:** TUI/Core
+
+**Completed:** 298 tests, 4 phases (0707a-0707d). CommandRegistry with register/resolve/search/suggest, slash autocomplete on `/` prefix, command execution via directive parser, source badges and argument hints in autocomplete dropdown and palette.
 
 ### ISSUE 0708 — Toast notification system + plugin UI extension API (ucode-tui + ucode-plugins)
 

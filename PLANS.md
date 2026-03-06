@@ -718,7 +718,7 @@ Terminal compatibility:
 * Theme toggles preserve contrast/accessibility in supported terminals.
 * Fully usable without leaving fullscreen UI (except browser auth step).
 
-### Task 7.4 Slash command UX and discoverability (ucode-tui + ucode-core)
+### Task 7.4 Slash command UX and discoverability (ucode-tui + ucode-core) [DONE]
 
 * Command palette and input parser support `/command` invocation
 * Show command source badges: user/project/plugin

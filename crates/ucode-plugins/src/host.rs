@@ -335,7 +335,6 @@ mod tests {
     use crate::api::*;
     use crate::hooks::*;
     use crate::manifest::*;
-    use crate::policy::PluginPolicy;
 
     /// Minimal test plugin that implements Plugin + HookHandler.
     struct TestPlugin {

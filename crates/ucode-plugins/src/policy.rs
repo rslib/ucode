@@ -9,6 +9,49 @@ use serde::{Deserialize, Serialize};
 use crate::hooks::OverrideClass;
 use crate::manifest::PluginCapabilities;
 
+/// Resource limits for WASM plugin execution.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResourceLimits {
+    /// Maximum linear memory in bytes per WASM instance (default: 16 MiB).
+    pub max_memory_bytes: usize,
+    /// Maximum fuel (instruction budget) per hook dispatch (default: 1_000_000).
+    pub max_fuel: u64,
+    /// Maximum number of WASM instances (default: 1).
+    pub max_instances: usize,
+}
+
+impl Default for ResourceLimits {
+    fn default() -> Self {
+        Self {
+            max_memory_bytes: 16 * 1024 * 1024,
+            max_fuel: 1_000_000,
+            max_instances: 1,
+        }
+    }
+}
+
+impl ResourceLimits {
+    /// Effectively unlimited resource limits for native plugins.
+    pub fn unlimited() -> Self {
+        Self {
+            max_memory_bytes: usize::MAX,
+            max_fuel: u64::MAX,
+            max_instances: usize::MAX,
+        }
+    }
+}
+
+/// Controls whether a plugin can observe other plugins' hook responses.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PluginIsolationLevel {
+    /// Plugin sees only the original event payload.
+    #[default]
+    Full,
+    /// Plugin sees the event payload as modified by prior plugins in load order.
+    Ordered,
+}
+
 /// Per-plugin network policy.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PluginNetworkPolicy {
@@ -44,6 +87,8 @@ pub struct PluginPolicy {
     )]
     pub allowed_hook_categories: HashSet<String>,
     pub max_override_class: OverrideClass,
+    pub resource_limits: ResourceLimits,
+    pub isolation_level: PluginIsolationLevel,
 }
 
 // serde helpers for HashSet<String> -- serialize as sorted Vec for determinism
@@ -76,6 +121,8 @@ impl PluginPolicy {
             guarded_ui: false,
             allowed_hook_categories: HashSet::new(),
             max_override_class: OverrideClass::Safe,
+            resource_limits: ResourceLimits::default(),
+            isolation_level: PluginIsolationLevel::Full,
         }
     }
 
@@ -94,6 +141,8 @@ impl PluginPolicy {
             guarded_ui: true,
             allowed_hook_categories: HashSet::new(),
             max_override_class: OverrideClass::Risky,
+            resource_limits: ResourceLimits::unlimited(),
+            isolation_level: PluginIsolationLevel::Ordered,
         }
     }
 
@@ -118,6 +167,8 @@ impl PluginPolicy {
             guarded_ui: caps.guarded_ui,
             allowed_hook_categories: caps.hook_categories.iter().cloned().collect(),
             max_override_class,
+            resource_limits: ResourceLimits::default(),
+            isolation_level: PluginIsolationLevel::Full,
         }
     }
 
@@ -486,6 +537,70 @@ mod tests {
         let policy = config.resolve_wasm("org.test.plugin", &caps);
         assert!(policy.filesystem_read);
         assert!(!policy.network.allowed);
+    }
+
+    #[test]
+    fn test_resource_limits_default() {
+        let limits = ResourceLimits::default();
+        assert_eq!(limits.max_memory_bytes, 16 * 1024 * 1024);
+        assert_eq!(limits.max_fuel, 1_000_000);
+        assert_eq!(limits.max_instances, 1);
+    }
+
+    #[test]
+    fn test_resource_limits_unlimited() {
+        let limits = ResourceLimits::unlimited();
+        assert_eq!(limits.max_memory_bytes, usize::MAX);
+        assert_eq!(limits.max_fuel, u64::MAX);
+        assert_eq!(limits.max_instances, usize::MAX);
+    }
+
+    #[test]
+    fn test_default_wasm_policy_has_resource_limits() {
+        let policy = PluginPolicy::default_wasm();
+        assert_eq!(policy.resource_limits.max_memory_bytes, 16 * 1024 * 1024);
+        assert_eq!(policy.resource_limits.max_fuel, 1_000_000);
+        assert_eq!(policy.resource_limits.max_instances, 1);
+    }
+
+    #[test]
+    fn test_default_native_policy_no_resource_limits() {
+        let policy = PluginPolicy::default_native();
+        assert_eq!(policy.resource_limits.max_memory_bytes, usize::MAX);
+        assert_eq!(policy.resource_limits.max_fuel, u64::MAX);
+        assert_eq!(policy.resource_limits.max_instances, usize::MAX);
+    }
+
+    #[test]
+    fn test_from_capabilities_has_default_resource_limits() {
+        let caps = PluginCapabilities::default();
+        let policy = PluginPolicy::from_capabilities(&caps);
+        assert_eq!(policy.resource_limits.max_memory_bytes, 16 * 1024 * 1024);
+        assert_eq!(policy.resource_limits.max_fuel, 1_000_000);
+    }
+
+    #[test]
+    fn test_default_wasm_isolation_full() {
+        let policy = PluginPolicy::default_wasm();
+        assert_eq!(policy.isolation_level, PluginIsolationLevel::Full);
+    }
+
+    #[test]
+    fn test_default_native_isolation_ordered() {
+        let policy = PluginPolicy::default_native();
+        assert_eq!(policy.isolation_level, PluginIsolationLevel::Ordered);
+    }
+
+    #[test]
+    fn test_from_capabilities_isolation_full() {
+        let caps = PluginCapabilities::default();
+        let policy = PluginPolicy::from_capabilities(&caps);
+        assert_eq!(policy.isolation_level, PluginIsolationLevel::Full);
+    }
+
+    #[test]
+    fn test_isolation_level_default_is_full() {
+        assert_eq!(PluginIsolationLevel::default(), PluginIsolationLevel::Full);
     }
 
     #[test]

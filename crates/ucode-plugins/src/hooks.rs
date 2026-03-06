@@ -587,6 +587,9 @@ impl HookEvent {
 pub struct HookRecord {
     pub event: HookEvent,
     pub timestamp: DateTime<Utc>,
+    /// Accumulated modifications from prior plugins (Ordered isolation only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accumulated_changes: Option<serde_json::Value>,
 }
 
 impl HookRecord {
@@ -595,6 +598,7 @@ impl HookRecord {
         Self {
             event,
             timestamp: Utc::now(),
+            accumulated_changes: None,
         }
     }
 }
@@ -733,6 +737,14 @@ mod tests {
     }
 
     // ---- HookRecord ----
+
+    #[test]
+    fn test_hook_record_accumulated_changes_default_none() {
+        let rec = HookRecord::new(HookEvent::SessionStart {
+            session_id: "x".into(),
+        });
+        assert!(rec.accumulated_changes.is_none());
+    }
 
     #[test]
     fn test_hook_record_timestamp() {

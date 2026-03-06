@@ -4,7 +4,7 @@ use std::collections::HashSet;
 use std::path::Path;
 
 use wasmtime::component::{Component, Linker};
-use wasmtime::{Config, Engine, Store};
+use wasmtime::{Config, Engine, Store, StoreLimits, StoreLimitsBuilder};
 
 use super::convert::EVENT_INTERFACE_MAP;
 use crate::policy::PluginPolicy;
@@ -13,6 +13,8 @@ use crate::policy::PluginPolicy;
 pub struct WasmHostState {
     /// Log messages emitted by plugins via the `ucode:plugin/host-log` import.
     pub log_messages: Vec<String>,
+    /// Resource limiter enforcing memory and instance caps from [`PluginPolicy`].
+    pub limits: StoreLimits,
 }
 
 /// A loaded WASM plugin component.
@@ -88,16 +90,17 @@ impl WasmPlugin {
         &self.component
     }
 
-    /// Create a fresh [`Store`] with empty host state.
+    /// Create a fresh [`Store`] with empty host state and default resource limits.
     ///
     /// Each dispatch call should use a fresh store to avoid cross-call state
-    /// leakage. For performance-critical paths, consider reusing a store and
-    /// clearing `log_messages` between calls.
+    /// leakage. For policy-enforced fuel and memory limits use
+    /// [`create_store_with_policy`] instead.
     pub fn create_store(&self) -> Store<WasmHostState> {
         Store::new(
             &self.engine,
             WasmHostState {
                 log_messages: Vec::new(),
+                limits: StoreLimitsBuilder::new().build(),
             },
         )
     }
@@ -174,6 +177,18 @@ fn build_engine() -> Result<Engine, WasmPluginError> {
     Engine::new(&config).map_err(WasmPluginError::Engine)
 }
 
+/// Build an engine with fuel consumption enabled.
+///
+/// Required when creating stores that enforce per-dispatch instruction budgets
+/// via [`Store::set_fuel`]. The engine and store must agree on fuel enablement;
+/// calling `set_fuel` on a store backed by a non-fuel engine returns an error.
+pub fn build_engine_with_fuel() -> Result<Engine, WasmPluginError> {
+    let mut config = Config::new();
+    config.wasm_component_model(true);
+    config.consume_fuel(true);
+    Engine::new(&config).map_err(WasmPluginError::Engine)
+}
+
 /// Walk every (event_name, wit_iface) pair and record which ones the
 /// component actually exports.
 fn probe_exports(component: &Component) -> HashSet<String> {
@@ -192,25 +207,37 @@ fn probe_exports(component: &Component) -> HashSet<String> {
 /// Filesystem preopens are restricted to `allowed_paths` (or `workspace_root`
 /// if `workspace_bound` and no specific paths). Network capability is only
 /// granted if `policy.network.allowed` is true.
+///
+/// The engine must have been created with [`build_engine_with_fuel`] for fuel
+/// limits to take effect; if the engine does not support fuel, the `set_fuel`
+/// call is a no-op (logged as a warning).
 pub fn create_store_with_policy(
     engine: &Engine,
     policy: &PluginPolicy,
     _workspace_root: Option<&std::path::Path>,
 ) -> Store<WasmHostState> {
-    let store = Store::new(
+    let limits = StoreLimitsBuilder::new()
+        .memory_size(policy.resource_limits.max_memory_bytes)
+        .instances(policy.resource_limits.max_instances)
+        .build();
+
+    let mut store = Store::new(
         engine,
         WasmHostState {
             log_messages: Vec::new(),
+            limits,
         },
     );
 
+    store.limiter(|state| &mut state.limits);
+
+    if let Err(e) = store.set_fuel(policy.resource_limits.max_fuel) {
+        tracing::warn!("failed to set fuel: {e}");
+    }
+
     // Note: Full WASI preopens configuration requires wasmtime-wasi's
-    // WasiCtxBuilder. For now we document the policy intent and configure
-    // what we can. Full WASI integration will be wired when wasmtime-wasi
+    // WasiCtxBuilder. Full WASI integration will be wired when wasmtime-wasi
     // WasiCtx is added to WasmHostState.
-    //
-    // The policy is stored and can be queried for enforcement at the host
-    // dispatch layer.
 
     tracing::info!(
         filesystem_read = policy.filesystem_read,
@@ -218,7 +245,10 @@ pub fn create_store_with_policy(
         workspace_bound = policy.workspace_bound,
         network_allowed = policy.network.allowed,
         process_spawn = policy.process_spawn,
-        "WASM store created with policy"
+        max_memory_bytes = policy.resource_limits.max_memory_bytes,
+        max_fuel = policy.resource_limits.max_fuel,
+        max_instances = policy.resource_limits.max_instances,
+        "WASM store created with resource limits"
     );
 
     store
@@ -264,6 +294,7 @@ mod tests {
     fn test_wasm_host_state_default() {
         let state = WasmHostState {
             log_messages: Vec::new(),
+            limits: StoreLimitsBuilder::new().build(),
         };
         assert!(state.log_messages.is_empty());
     }
@@ -290,6 +321,42 @@ mod tests {
         policy.filesystem_read = true;
         let workspace = tempfile::tempdir().unwrap();
         let store = create_store_with_policy(&engine, &policy, Some(workspace.path()));
+        assert!(store.data().log_messages.is_empty());
+    }
+
+    #[test]
+    fn test_build_engine_with_fuel() {
+        let engine = build_engine_with_fuel().unwrap();
+        let _ = engine;
+    }
+
+    #[test]
+    fn test_create_store_with_policy_has_fuel() {
+        let engine = build_engine_with_fuel().unwrap();
+        let policy = PluginPolicy::default_wasm();
+        let store = create_store_with_policy(&engine, &policy, None);
+        assert!(store.get_fuel().is_ok());
+        assert_eq!(store.get_fuel().unwrap(), 1_000_000);
+    }
+
+    #[test]
+    fn test_create_store_with_policy_custom_fuel() {
+        let engine = build_engine_with_fuel().unwrap();
+        let mut policy = PluginPolicy::default_wasm();
+        policy.resource_limits.max_fuel = 500_000;
+        let store = create_store_with_policy(&engine, &policy, None);
+        assert_eq!(store.get_fuel().unwrap(), 500_000);
+    }
+
+    #[test]
+    fn test_create_store_backward_compat() {
+        // create_store() must still work without fuel
+        let engine = build_engine().unwrap();
+        let plugin_state = WasmHostState {
+            log_messages: Vec::new(),
+            limits: wasmtime::StoreLimitsBuilder::new().build(),
+        };
+        let store = Store::new(&engine, plugin_state);
         assert!(store.data().log_messages.is_empty());
     }
 }

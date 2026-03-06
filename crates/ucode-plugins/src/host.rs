@@ -6,7 +6,7 @@ use crate::api::{
 };
 use crate::hooks::{HookEvent, HookRecord, OverrideClass};
 use crate::manifest::PluginToolDef;
-use crate::policy::{PluginPolicy, PolicyCheckResult, override_class_level};
+use crate::policy::{PluginIsolationLevel, PluginPolicy, PolicyCheckResult, override_class_level};
 
 /// Result of dispatching a hook to a single plugin.
 pub struct HookResult {
@@ -191,11 +191,17 @@ impl PluginHost {
     ///
     /// Respects per-plugin policy: skips plugins whose category is not allowed,
     /// and downgrades responses that exceed the plugin's override ceiling.
+    ///
+    /// Isolation levels control what each plugin sees:
+    /// - `Full`: plugin receives only the original event (no accumulated changes).
+    /// - `Ordered`: plugin receives accumulated changes from prior plugins in load order.
     pub fn dispatch_hook(&mut self, event: HookEvent) -> Vec<HookResult> {
         let record = HookRecord::new(event);
         let category = record.event.hook_category();
         let event_override_class = record.event.override_class();
         let mut results = Vec::new();
+        let mut accumulated_changes: Option<serde_json::Value> = None;
+
         for loaded in &mut self.plugins {
             // Check hook category policy
             if loaded.policy.check_hook_category(category) != PolicyCheckResult::Allowed {
@@ -208,13 +214,46 @@ impl PluginHost {
             }
             match &mut loaded.instance {
                 PluginInstance::WithHooks(p) => {
-                    let response = p.on_event(&record);
+                    let dispatch_record =
+                        if loaded.policy.isolation_level == PluginIsolationLevel::Ordered {
+                            HookRecord {
+                                event: record.event.clone(),
+                                timestamp: record.timestamp,
+                                accumulated_changes: accumulated_changes.clone(),
+                            }
+                        } else {
+                            HookRecord {
+                                event: record.event.clone(),
+                                timestamp: record.timestamp,
+                                accumulated_changes: None,
+                            }
+                        };
+
+                    let response = p.on_event(&dispatch_record);
                     let response = validate_hook_response(
                         response,
                         &loaded.policy,
                         &event_override_class,
                         &loaded.plugin_id,
                     );
+
+                    // Accumulate changes from Modify responses for downstream Ordered plugins.
+                    if let HookResponse::Modify { changes } = &response {
+                        accumulated_changes = Some(match accumulated_changes.take() {
+                            Some(mut existing) => {
+                                if let (Some(obj), Some(new_obj)) =
+                                    (existing.as_object_mut(), changes.as_object())
+                                {
+                                    for (k, v) in new_obj {
+                                        obj.insert(k.clone(), v.clone());
+                                    }
+                                }
+                                existing
+                            }
+                            None => changes.clone(),
+                        });
+                    }
+
                     results.push(HookResult {
                         plugin_id: loaded.plugin_id.clone(),
                         response,
@@ -757,5 +796,134 @@ mod tests {
         let results: Vec<HookResult> = vec![];
         let agg = aggregate_hook_responses(&results);
         assert!(matches!(agg, HookResponse::Ok));
+    }
+
+    #[test]
+    fn test_full_isolation_no_accumulated_changes() {
+        let mut host = PluginHost::new();
+        host.load(TestPlugin::new("org.test.a")).unwrap();
+        host.load(TestPlugin::new("org.test.b")).unwrap();
+
+        let policy = PluginPolicy::default_wasm();
+        host.set_plugin_policy("org.test.a", policy.clone());
+        host.set_plugin_policy("org.test.b", policy);
+
+        let results = host.dispatch_hook(HookEvent::SessionStart {
+            session_id: "s1".into(),
+        });
+        assert_eq!(results.len(), 2);
+    }
+
+    #[test]
+    fn test_ordered_dispatch_accumulates_changes() {
+        struct ModifierPlugin {
+            id: String,
+        }
+        impl Plugin for ModifierPlugin {
+            fn handshake(&self) -> HandshakeRequest {
+                HandshakeRequest {
+                    plugin_id: self.id.clone(),
+                    plugin_version: semver::Version::new(1, 0, 0),
+                    min_api_version: semver::Version::new(1, 0, 0),
+                    required_features: [Feature::Hooks].into(),
+                    capabilities: PluginCapabilities::default(),
+                }
+            }
+            fn initialize(&mut self, _: &HandshakeResponse) -> Result<(), String> {
+                Ok(())
+            }
+            fn shutdown(&mut self) {}
+        }
+        impl HookHandler for ModifierPlugin {
+            fn on_event(&mut self, _record: &HookRecord) -> HookResponse {
+                if self.id == "org.test.modifier" {
+                    HookResponse::Modify {
+                        changes: serde_json::json!({"injected": true}),
+                    }
+                } else {
+                    HookResponse::Ok
+                }
+            }
+        }
+
+        let mut host = PluginHost::new();
+        host.load(ModifierPlugin {
+            id: "org.test.modifier".into(),
+        })
+        .unwrap();
+        host.load(ModifierPlugin {
+            id: "org.test.observer".into(),
+        })
+        .unwrap();
+
+        let mut policy = PluginPolicy::default_native();
+        policy.isolation_level = crate::policy::PluginIsolationLevel::Ordered;
+        policy.max_override_class = OverrideClass::Guarded;
+        host.set_plugin_policy("org.test.modifier", policy.clone());
+        host.set_plugin_policy("org.test.observer", policy);
+
+        let results = host.dispatch_hook(HookEvent::BeforeToolCall {
+            tool_name: "bash".into(),
+            args: serde_json::json!({"cmd": "ls"}),
+        });
+        assert_eq!(results.len(), 2);
+        assert!(matches!(results[0].response, HookResponse::Modify { .. }));
+        assert!(matches!(results[1].response, HookResponse::Ok));
+    }
+
+    #[test]
+    fn test_accumulated_changes_merge() {
+        struct ChangePlugin {
+            id: String,
+            change_key: String,
+        }
+        impl Plugin for ChangePlugin {
+            fn handshake(&self) -> HandshakeRequest {
+                HandshakeRequest {
+                    plugin_id: self.id.clone(),
+                    plugin_version: semver::Version::new(1, 0, 0),
+                    min_api_version: semver::Version::new(1, 0, 0),
+                    required_features: [Feature::Hooks].into(),
+                    capabilities: PluginCapabilities::default(),
+                }
+            }
+            fn initialize(&mut self, _: &HandshakeResponse) -> Result<(), String> {
+                Ok(())
+            }
+            fn shutdown(&mut self) {}
+        }
+        impl HookHandler for ChangePlugin {
+            fn on_event(&mut self, _record: &HookRecord) -> HookResponse {
+                HookResponse::Modify {
+                    changes: serde_json::json!({ &self.change_key: true }),
+                }
+            }
+        }
+
+        let mut host = PluginHost::new();
+        host.load(ChangePlugin {
+            id: "org.test.a".into(),
+            change_key: "key_a".into(),
+        })
+        .unwrap();
+        host.load(ChangePlugin {
+            id: "org.test.b".into(),
+            change_key: "key_b".into(),
+        })
+        .unwrap();
+
+        let mut policy = PluginPolicy::default_native();
+        policy.isolation_level = crate::policy::PluginIsolationLevel::Ordered;
+        policy.max_override_class = OverrideClass::Guarded;
+        host.set_plugin_policy("org.test.a", policy.clone());
+        host.set_plugin_policy("org.test.b", policy);
+
+        let results = host.dispatch_hook(HookEvent::BeforeToolCall {
+            tool_name: "bash".into(),
+            args: serde_json::json!({}),
+        });
+        assert_eq!(results.len(), 2);
+        assert!(matches!(results[0].response, HookResponse::Modify { .. }));
+        assert!(matches!(results[1].response, HookResponse::Modify { .. }));
     }
 }

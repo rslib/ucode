@@ -6,7 +6,7 @@ use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use std::path::Path;
 
 /// Signature verification policy.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SignaturePolicy {
     /// Reject unsigned or invalid-signature plugins.
@@ -14,13 +14,8 @@ pub enum SignaturePolicy {
     /// Warn on unsigned plugins, reject invalid signatures.
     WarnUnsigned,
     /// Skip signature verification entirely.
+    #[default]
     Disabled,
-}
-
-impl Default for SignaturePolicy {
-    fn default() -> Self {
-        Self::Disabled
-    }
 }
 
 /// Result of signature verification.

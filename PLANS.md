@@ -1073,7 +1073,7 @@ the actual context-management strategies on top.
 
 * Replace the existing 65 per-hook WIT interface packages with a single unified interface.
 * The 65 typed WIT packages (`ucode:hooks-session/on-start`, etc.) become dead code — removed.
-* New unified WIT package `ucode:plugin@1.0.0`:
+* New unified WIT package `ucode:plugin@1.0.0` with **two interfaces** (not three):
   ```wit
   package ucode:plugin@1.0.0;
 
@@ -1092,12 +1092,10 @@ the actual context-management strategies on top.
   interface tool-handler {
       handle-tool-call: func(name: string, args: string) -> result<string, string>;
   }
-
-  interface transform-handler {
-      transform-messages: func(messages: string) -> string;    // JSON array in/out
-      transform-system-prompt: func(prompt: string) -> string;
-  }
   ```
+* **No separate `transform-handler` interface.** Transforms (`transform_messages`,
+  `transform_system_prompt`) are regular hook events dispatched through `hook-handler.handle()`.
+  The host uses pipeline dispatch mode for these events (see 8.6.4).
 * Rationale: typed WIT per hook makes versioning hard (adding a field = WIT type change =
   breaking). JSON payload with `payload-version` field allows additive changes without breaking
   existing plugins. WIT still provides typed envelope and response.
@@ -1120,24 +1118,36 @@ the actual context-management strategies on top.
 * Apply `HookResponse::Modify` payloads back to the originating event (currently ignored)
 * Respect fuel/memory limits during handler execution; timeout → treat as `HookResponse::Ok`
 
-**8.6.4 Message transform hooks (new hook type)**
+**8.6.4 Message transform hooks (regular hooks with pipeline dispatch)**
 
-* New transform capabilities (not in current 65-event set):
-  * `transform-messages` — plugin receives full message array (JSON) before LLM call,
-    returns modified message array. DCP's core mechanism for dedup/supersede/prune.
-  * `transform-system-prompt` — plugin receives system prompt text, returns modified text.
-    Used by DCP to inject pruning instructions.
-* Exposed via the `transform-handler` WIT interface (separate from `hook-handler`).
-* These are **not dispatched through `dispatch_hook()`** — they have a separate call path because:
-  * They return transformed data (not Ok/Modify/Veto)
-  * They compose sequentially (output of plugin A feeds into plugin B)
-  * They run in the LLM call path (latency-sensitive)
-* New methods on `PluginHost`:
+* Two new hook events added to the existing event surface (bringing total to 67):
+  * `transform_messages` — plugin receives full message array (JSON) as payload before LLM call
+  * `transform_system_prompt` — plugin receives system prompt text as payload
+* These are **regular hooks** dispatched through the same `hook-handler.handle()` WIT interface.
+  No separate `transform-handler` interface — plugins implement one `handle()` function for all events.
+* **Return type: reuse `Modify`** — no new `HookResponse` variant needed:
+  * `Ok` = no change (pass through unchanged)
+  * `Modify(json)` = replacement data (for transforms: full replacement, not a patch)
+  * `Veto(reason)` = skip this plugin in the pipeline
+  * The host interprets `Modify` differently based on event type:
+    * Regular hooks (fan-out): `Modify` carries a partial patch, host merges into original
+    * Transform hooks (pipeline): `Modify` carries full replacement, host replaces pipeline data
+* **Dispatch mode differs from regular hooks:**
+  * Regular hooks: **fan-out** — every subscribed plugin sees the original event
+  * Transform hooks: **pipeline** — each plugin sees the output of the previous plugin
+  * The host determines dispatch mode from the event name (hardcoded 2-element set:
+    `{"transform_messages", "transform_system_prompt"}`)
+  * Plugin authors don't need to know the dispatch mode — they just handle events
+* New methods on `PluginHost` (separate from `dispatch_hook`):
+  ```rust
+  pub fn dispatch_transform(&mut self, event_name: &str, payload: String) -> String
+  ```
+  Internally calls `handle(event)` on each plugin in pipeline order, chaining `Modify` payloads.
+  Convenience wrappers:
   ```rust
   pub fn transform_messages(&mut self, messages: Vec<Message>) -> Vec<Message>
   pub fn transform_system_prompt(&mut self, prompt: String) -> String
   ```
-* Transform hooks are **composable** (output of one feeds into next).
 * **User controls ordering** — plugins do NOT declare priority or phase. The user defines
   the transform pipeline order in `ucode.toml`:
   ```toml
@@ -1150,7 +1160,10 @@ the actual context-management strategies on top.
   ```
   * Default (no config): `["native"]` — only built-in context management runs.
   * Omitting `"native"` from the list disables native context management for transforms.
-  * Plugin authors declare capability (`hooks = ["message_transform"]`), users declare order.
+  * Plugin subscribes to transform events via `hooks = ["transform_messages"]` in manifest.
+  * Plugins subscribed but not in `order` list are **not called** for transforms
+    (still called for regular hooks they subscribe to).
+  * Plugins in `order` but not subscribed to the transform event are skipped silently.
 * Safety classification: `Guarded` (can modify content but not escalate permissions)
 * Transform hooks run synchronously in the LLM call path (latency-sensitive)
 
@@ -1189,24 +1202,27 @@ the actual context-management strategies on top.
 
 * `examples/plugins/context-manager/` — minimal WASM plugin demonstrating:
   * Loads from user plugin path
-  * Implements `transform-handler` to remove duplicate assistant messages
+  * Implements `hook-handler` for `session_start`, `session_end`, and `transform_messages` events
+    (transform_messages removes duplicate assistant messages via pipeline dispatch)
   * Implements `tool-handler` with a `context_stats` tool returning message count/size
-  * Implements `hook-handler` for `session_start` / `session_end` events
   * Respects capability restrictions (cannot escalate)
-* Demonstrates the full lifecycle: discovery → load → dispatch → tool call → response
+* Demonstrates the full lifecycle: discovery → load → dispatch → transform → tool call → response
 * Integration test that loads fixture plugin from temp dir simulating `~/.ucode/plugins/`
 
 **Acceptance**
 
 * Fixture plugin loads from `~/.ucode/plugins/` and `.ucode/plugins/` paths.
 * WASM hook dispatch calls handlers via unified `hook-handler.handle()` (not stubbed).
-* Message transform hooks modify messages before LLM call via `transform-handler`.
+* Transform events (`transform_messages`, `transform_system_prompt`) dispatched through the same
+  `hook-handler.handle()` interface with pipeline composition (no separate `transform-handler`).
+* `Modify` response carries full replacement for transform events, partial patch for regular events.
 * Plugin-registered tools appear in LLM tool list, route via `tool-handler`, and go through
   the same approval/sandbox policy as built-in tools.
 * Hook payloads include `payload-version`; version mismatch handled gracefully.
 * User controls transform pipeline ordering via `ucode.toml`.
 * Permission escalation attempts are blocked and recorded in audit logs.
-* Old 65 typed WIT packages removed; unified `ucode:plugin@1.0.0` is the only WIT interface.
+* Old 65 typed WIT packages removed; unified `ucode:plugin@1.0.0` has two interfaces
+  (`hook-handler` + `tool-handler`).
 
 ### Task 8.8 Native context management system (ucode-context crate) [P0]
 

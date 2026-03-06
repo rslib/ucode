@@ -21,6 +21,8 @@ pub struct AutocompleteEntry {
     pub description: String,
     /// Source badge, e.g. "[builtin]", "[user]", "[plugin]"
     pub source: String,
+    /// Optional argument hint, e.g. "<name>"
+    pub args_hint: Option<String>,
 }
 
 impl AutocompleteEntry {
@@ -33,7 +35,13 @@ impl AutocompleteEntry {
             name: name.into(),
             description: description.into(),
             source: source.into(),
+            args_hint: None,
         }
+    }
+
+    pub fn with_args_hint(mut self, hint: impl Into<String>) -> Self {
+        self.args_hint = Some(hint.into());
+        self
     }
 }
 
@@ -913,14 +921,25 @@ impl Widget for AutocompleteDropdown<'_> {
             // Fill the row background.
             buf.set_style(row_area, bg_style);
 
-            let line = Line::from(vec![
+            let hint_style = if is_selected {
+                bg_style
+            } else {
+                self.theme.dim_style()
+            };
+
+            let mut spans = vec![
                 Span::styled("  ", bg_style),
                 Span::styled(entry.name.clone(), name_style),
-                Span::styled("  ", bg_style),
-                Span::styled(entry.description.clone(), desc_style),
-                Span::styled("  ", bg_style),
-                Span::styled(entry.source.clone(), src_style),
-            ]);
+            ];
+            if let Some(hint) = &entry.args_hint {
+                spans.push(Span::styled(format!(" {hint}"), hint_style));
+            }
+            spans.push(Span::styled("  ", bg_style));
+            spans.push(Span::styled(entry.description.clone(), desc_style));
+            spans.push(Span::styled("  ", bg_style));
+            spans.push(Span::styled(entry.source.clone(), src_style));
+
+            let line = Line::from(spans);
             line.render(row_area, buf);
         }
     }
@@ -1287,6 +1306,20 @@ mod tests {
             AutocompleteEntry::new("/session list", "List sessions", "[builtin]"),
             AutocompleteEntry::new("/help", "Show help", "[builtin]"),
         ]
+    }
+
+    #[test]
+    fn test_autocomplete_entry_with_args_hint() {
+        let entry = AutocompleteEntry::new("/session rename", "Rename session", "[builtin]")
+            .with_args_hint("<name>");
+        assert_eq!(entry.name, "/session rename");
+        assert_eq!(entry.args_hint, Some("<name>".to_owned()));
+    }
+
+    #[test]
+    fn test_autocomplete_entry_without_args_hint() {
+        let entry = AutocompleteEntry::new("/session list", "List sessions", "[builtin]");
+        assert_eq!(entry.args_hint, None);
     }
 
     #[test]

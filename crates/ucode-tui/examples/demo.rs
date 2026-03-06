@@ -16,7 +16,9 @@ use std::time::Duration;
 
 use tokio::sync::mpsc;
 use ucode_tui::app::ToolCallStatus;
+use ucode_tui::command_registry::{CommandCategory, CommandDef, CommandSource};
 use ucode_tui::event_loop::TuiEvent;
+use ucode_tui::overlays::palette::PaletteState;
 
 // ---------------------------------------------------------------------------
 // Transcript index constants
@@ -338,6 +340,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Spawn the scripted LLM responder.
     tokio::spawn(fake_llm(user_rx, tui_tx));
 
-    // Run the TUI; SendMessage notifications reach our fake LLM via user_tx.
-    ucode_tui::run(tui_rx, Some(user_tx)).await
+    // Build app state with a demo plugin command that showcases the plugin badge
+    // and args_hint rendering in both the autocomplete dropdown and palette.
+    let mut app = ucode_tui::app::AppState::new();
+    app.command_registry.register(CommandDef {
+        name: "/analyze".to_owned(),
+        description: "Run code analysis".to_owned(),
+        category: CommandCategory::Plugins,
+        source: CommandSource::Plugin("code-analyzer".to_owned()),
+        args_hint: Some("<path>".to_owned()),
+        action: None,
+    });
+    app.palette = PaletteState::from_registry(&app.command_registry);
+    app.message_tx = Some(user_tx);
+
+    let mut input_box = ucode_tui::components::input::InputBoxState::new();
+    let mut sidebar_data = ucode_tui::components::sidebar::SidebarData::new();
+    ucode_tui::event_loop::run_event_loop(&mut app, &mut input_box, &mut sidebar_data, tui_rx).await
 }

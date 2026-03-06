@@ -2116,6 +2116,21 @@ mod tests {
     }
 
     #[test]
+    fn test_slash_completions_include_args_hint() {
+        let app = AppState::new();
+        let results = app.slash_completions("/session rename");
+        let rename = results
+            .iter()
+            .find(|e| e.name == "/session rename")
+            .expect("/session rename must appear in completions");
+        assert_eq!(
+            rename.args_hint.as_deref(),
+            Some("<name>"),
+            "/session rename should carry the <name> args_hint"
+        );
+    }
+
+    #[test]
     fn test_slash_prefix_triggers_autocomplete() {
         let mut app = AppState::new();
         app.focus = FocusTarget::Input;

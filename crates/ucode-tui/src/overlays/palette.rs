@@ -243,12 +243,17 @@ impl Widget for PaletteOverlay<'_> {
                     };
                     let badge_style = self.theme.dim_style();
 
-                    let name_len = cmd.name.len();
+                    let hint_str = cmd
+                        .args_hint
+                        .as_deref()
+                        .map(|h| format!(" {h}"))
+                        .unwrap_or_default();
+                    let name_display_len = cmd.name.len() + hint_str.len();
                     let badge = cmd.source.badge();
                     let badge_len = badge.len();
                     let spacing = 2usize;
                     let desc_max = (list_area.width as usize)
-                        .saturating_sub(name_len + 2 + badge_len + spacing);
+                        .saturating_sub(name_display_len + 2 + badge_len + spacing);
 
                     let desc_truncated = if cmd.description.len() > desc_max {
                         format!("{}…", &cmd.description[..desc_max.saturating_sub(1)])
@@ -257,17 +262,22 @@ impl Widget for PaletteOverlay<'_> {
                     };
 
                     let prefix = if is_selected { "▸ " } else { "  " };
+                    let hint_style = self.theme.dim_style();
                     let displayed_desc_len = desc_truncated.len().min(desc_max);
-                    let used = prefix.len() + name_len + spacing + displayed_desc_len + badge_len;
+                    let used =
+                        prefix.len() + name_display_len + spacing + displayed_desc_len + badge_len;
                     let pad = (list_area.width as usize).saturating_sub(used);
 
-                    let line = Line::from(vec![
-                        Span::styled(format!("{prefix}{}", cmd.name), name_style),
-                        Span::raw("  "),
-                        Span::styled(desc_truncated, desc_style),
-                        Span::raw(" ".repeat(pad)),
-                        Span::styled(badge, badge_style),
-                    ]);
+                    let mut spans = vec![Span::styled(format!("{prefix}{}", cmd.name), name_style)];
+                    if !hint_str.is_empty() {
+                        spans.push(Span::styled(hint_str, hint_style));
+                    }
+                    spans.push(Span::raw("  "));
+                    spans.push(Span::styled(desc_truncated, desc_style));
+                    spans.push(Span::raw(" ".repeat(pad)));
+                    spans.push(Span::styled(badge, badge_style));
+
+                    let line = Line::from(spans);
 
                     let row_style = if is_selected {
                         Style::default().bg(self.theme.surface)
@@ -306,6 +316,17 @@ mod tests {
     fn builtin_commands_count() {
         let state = PaletteState::new();
         assert_eq!(state.commands.len(), 10);
+    }
+
+    #[test]
+    fn test_palette_commands_have_args_hint() {
+        let state = PaletteState::new();
+        let rename = state
+            .commands
+            .iter()
+            .find(|c| c.name == "/session rename")
+            .expect("/session rename must exist");
+        assert_eq!(rename.args_hint.as_deref(), Some("<name>"));
     }
 
     #[test]

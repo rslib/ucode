@@ -248,7 +248,14 @@ impl AppState {
         self.command_registry
             .search(query)
             .into_iter()
-            .map(|cmd| AutocompleteEntry::new(&cmd.name, &cmd.description, cmd.source.badge()))
+            .map(|cmd| {
+                let entry = AutocompleteEntry::new(&cmd.name, &cmd.description, cmd.source.badge());
+                if let Some(hint) = &cmd.args_hint {
+                    entry.with_args_hint(hint)
+                } else {
+                    entry
+                }
+            })
             .collect()
     }
 

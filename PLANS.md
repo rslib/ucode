@@ -663,6 +663,8 @@ Parse:
 
 # Phase 7 — Fullscreen TUI (ratatui)
 
+> **Design spec:** `docs/plans/2026-03-05-tui-design.md` — full component inventory, visual system, plugin UI API, and ASCII layout sketches. All tasks in this phase implement that spec.
+
 ### Task 7.1 TUI foundation (ucode-tui)
 
 Panes:
@@ -721,6 +723,49 @@ Keybinds:
 * User-defined `/command` resolves and executes from TUI input.
 * Unknown command returns suggestions.
 * Command execution obeys the same sandbox/approval controls.
+
+### Task 7.5 Toast notification system + plugin UI extension API (ucode-tui + ucode-plugins)
+
+> See `docs/plans/2026-03-05-tui-design.md` §7 (Notifications) and §11 (Plugin UI Extension API).
+
+* Toast component: stacked top-right, 4 types (`info`/`success`/`warning`/`error`), auto-dismiss timers, manual dismiss
+* System-triggered toasts: checkpoint created, budget warning, agent completed/failed, MCP crash, auth expired
+* Plugin UI extension API (versioned, Safe/Guarded/Risky override classes):
+  * `ui::toast(level, title, body?, ms?)` — Safe
+  * `ui::notify(level, message)` — Safe
+  * `ui::sidebar_section(id, title, lines, priority?)` — Safe
+  * `ui::status_segment(id, content, priority?)` — Safe
+  * `ui::palette_command(name, desc, handler)` — Safe
+  * `ui::transcript_event(style, content)` — Guarded
+  * `ui::modal(title, content, actions)` — Guarded
+  * `ui::badge(section_id, count, level)` — Safe (own section only)
+  * `ui::confirm(title, message) -> bool` — Guarded
+  * `ui::input_prompt(title, placeholder) -> String` — Guarded
+* Plugin UI lifecycle: register on `on_session_start`, cleanup on `on_session_end`
+* Plugin sidebar sections rendered in standard style with `[plugin]` badge
+
+**Acceptance**
+
+* System toast fires on checkpoint creation, budget warning, agent completion/failure.
+* Plugin calls `ui::toast()` and toast appears with correct style and auto-dismiss.
+* Plugin registers sidebar section; it appears after built-in sections with `[plugin]` badge.
+* Plugin registers palette command; it appears in palette with `[plugin]` badge.
+* Guarded calls require plugin to have guarded capability declared in manifest.
+* Plugin UI elements cleaned up on session end.
+
+### Task 7.6 Copy mode + search overlay + keybind overlay (ucode-tui)
+
+> See `docs/plans/2026-03-05-tui-design.md` §6.10–6.11 and §6 (Overlays).
+
+* `v` enters vim-like copy mode in transcript; `y` yanks selection to clipboard
+* `Ctrl+F` opens search overlay; matches highlighted; `n`/`N` navigate
+* `?` opens keybind overlay with full keybind reference
+
+**Acceptance**
+
+* `v` enters copy mode; `y` copies selected text to clipboard.
+* `Ctrl+F` opens search; matches highlighted; `n`/`N` navigate between matches.
+* `?` shows full keybind reference overlay.
 
 ---
 

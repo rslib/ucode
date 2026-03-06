@@ -4,5 +4,13 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+ratatui = { workspace = true }
+crossterm = { workspace = true }
+tokio = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
+unicode-width = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+serde_json = { workspace = true }

@@ -686,16 +686,19 @@ This ensures consistent behavior, no runtime dependency on installed binaries, a
 * Command/package/version drift triggers trust re-approval.
   **Owner:** MCP/Security
 
-### ISSUE 0504 — MCP per-server policy + lifecycle controls (ucode-mcp + ucode-tools)
+### ISSUE 0504 — MCP per-server policy + lifecycle controls (ucode-mcp + ucode-tools) [DONE]
 
 **Goal:** Treat each MCP server as an isolated trust domain with managed lifecycle.
 **Scope/Notes:**
 
-* Per-server sandbox tier, network policy, and tool permission profile
-* Namespaced server identity to prevent command substitution drift
-* Managed lifecycle: start/stop/restart with crash diagnostics
-* Health check + auto-restart with backoff
-* Full audit events: launch, approval, deny, crash, restart
+* `ServerTier`: Trusted/Sandboxed/Untrusted (default Untrusted)
+* `ServerPolicy`: per-server tier, network policy, tool permission, restart config
+* `ToolPermission`: AllowAll/AllowList/DenyAll with `check_tool_permission()`
+* `ServerLifecycle`: state machine (Stopped/Starting/Running/Crashed/Restarting)
+* Exponential backoff restart: `base_ms * 2^(attempt-1)` with overflow safety
+* `AuditEvent`/`AuditEventType`: timestamped lifecycle audit records
+* `ServerPolicyStore`: HashMap-backed registry for multiple servers
+* 19 tests
   **Acceptance tests:**
 * Untrusted server cannot execute tools until approved.
 * Per-server policy is enforced at invocation time.
@@ -717,15 +720,19 @@ This ensures consistent behavior, no runtime dependency on installed binaries, a
 * Auth failures on remote transport surface clear actionable errors.
   **Owner:** MCP
 
-### ISSUE 0506 — MCP resources/prompts integration (ucode-mcp + ucode-tools + ucode-core) [P0]
+### ISSUE 0506 — MCP resources/prompts integration (ucode-mcp + ucode-tools + ucode-core) [P0] [DONE]
 
 **Goal:** Support MCP resources and prompts in addition to MCP tools for compatibility with modern agent ecosystems.
 **Scope/Notes:**
 
-* Discover/list MCP resources and prompts with server namespacing
-* Resolve/read resource payloads through policy/sandbox/audit pipeline
-* Prompt invocation and variable binding flow integrated into command/session context
-* Collision handling across servers for resource/prompt identifiers
+* Resource types: `McpResourceDef`, `McpResourceContent` (text + blob)
+* Prompt types: `McpPromptDef`, `McpPromptArgument`, `McpPromptMessage`, `McpPromptMessageContent`
+* `McpClient` methods: `list_resources()`, `read_resource()`, `list_prompts()`, `get_prompt()`
+* Capability checks: `supports_resources()`, `supports_prompts()`
+* `ServerCapabilities` extended with `resources` and `prompts` fields
+* `McpResourceRegistry`: collision-detecting registry with namespacing (`mcp.<server>.<name>`)
+* `NamespacedResource`/`NamespacedPrompt` with server origin tracking
+* 19 new tests (9 type tests + 10 registry tests)
   **Acceptance tests:**
 * Resources and prompts are discoverable and invokable from registered MCP servers.
 * Resource/prompt access obeys policy and audit requirements.
@@ -863,14 +870,20 @@ Search:
 
 ## EPIC 8 — Plugins + hooks (user customization)
 
-### ISSUE 0801 — Plugin manifest + loader (ucode-plugins)
+### ISSUE 0801 — Plugin manifest + loader (ucode-plugins) [DONE]
 
 **Goal:** Define plugin manifests/registry and lifecycle contracts without introducing runtime complexity early.
 **Scope/Notes:**
 
-* Plugin manifest + discovery/registration flow
-* Register hooks + optional tools + declared capabilities
-* Runtime implementation deferred to latest-stage WASM issue
+* `PluginManifest`: name, version, description, author, min_api_version, hooks, tools, capabilities
+* `PluginToolDef`: name, description, input_schema for plugin-exported tools
+* `PluginCapabilities`: filesystem, network, process_spawn flags
+* `parse_manifest()`/`parse_manifest_file()`: TOML parsing with validation
+* `validate_manifest()`: checks non-empty name/version/tool-names/hook-names
+* `discover_plugins()`: scans directories for `plugin.toml` in subdirectories
+* `PluginRegistry`: register/list/find/activate/deactivate/mark_failed
+* `PluginStatus`: Discovered/Active/Inactive/Failed
+* 23 tests (12 manifest + 11 loader)
   **Acceptance tests:**
 * Example plugin manifest is discovered and validated.
 * Capability declarations load into policy engine.

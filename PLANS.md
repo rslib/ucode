@@ -583,7 +583,7 @@ CLI:
 * Startup timeout and invalid command errors are handled clearly.
 * Changing server command/package/version triggers trust re-confirmation.
 
-### Task 5.4 MCP per-server policy + lifecycle controls (ucode-mcp + ucode-tools)
+### Task 5.4 MCP per-server policy + lifecycle controls (ucode-mcp + ucode-tools) [DONE]
 
 * Per-server sandbox tier, network policy, and tool permission profile
 * Managed lifecycle: start/stop/restart with crash diagnostics
@@ -597,6 +597,7 @@ CLI:
 * Crash/restart cycle produces clear diagnostics.
 
 ### Task 5.5 MCP transport parity (stdio + SSE + HTTP) (ucode-mcp) [P0]
+<!-- Deferred: needs reqwest/eventsource HTTP client dependencies -->
 
 * Support stdio, SSE, and HTTP MCP transports
 * Add auth header/token config for remote transports
@@ -609,7 +610,7 @@ CLI:
 * Disconnect triggers bounded reconnect with diagnostics.
 * Remote auth failures return actionable errors.
 
-### Task 5.6 MCP resources/prompts integration (ucode-mcp + ucode-tools + ucode-core) [P0]
+### Task 5.6 MCP resources/prompts integration (ucode-mcp + ucode-tools + ucode-core) [P0] [DONE]
 
 * Discover/list/invoke MCP resources and prompts (not tools only)
 * Apply normal policy/sandbox/audit checks to resource/prompt access
@@ -727,7 +728,7 @@ Keybinds:
 
 Define plugin contracts, event surfaces, and safety policy first. Defer WASM runtime implementation to the latest stage.
 
-### Task 8.1 Plugin manifest + loader (ucode-plugins)
+### Task 8.1 Plugin manifest + loader (ucode-plugins) [DONE]
 
 * `plugin.toml`: name, version, command, hooks, tools exported
 

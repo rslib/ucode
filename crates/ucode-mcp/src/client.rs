@@ -2,7 +2,10 @@ use serde_json::json;
 
 use crate::error::McpError;
 use crate::transport::StdioTransport;
-use crate::types::{McpToolDef, McpToolResult, ServerCapabilities, ServerInfo};
+use crate::types::{
+    McpPromptDef, McpPromptMessage, McpResourceContent, McpResourceDef, McpToolDef, McpToolResult,
+    ServerCapabilities, ServerInfo,
+};
 
 const PROTOCOL_VERSION: &str = "2024-11-05";
 
@@ -82,6 +85,69 @@ impl McpClient {
         let result = self.transport.request("tools/call", Some(params)).await?;
         let tool_result: McpToolResult = serde_json::from_value(result)?;
         Ok(tool_result)
+    }
+
+    /// List available resources from the server.
+    pub async fn list_resources(&mut self) -> Result<Vec<McpResourceDef>, McpError> {
+        let result = self.transport.request("resources/list", None).await?;
+        let resources: Vec<McpResourceDef> =
+            serde_json::from_value(result.get("resources").cloned().ok_or_else(|| {
+                McpError::Protocol("resources/list response missing resources field".into())
+            })?)?;
+        Ok(resources)
+    }
+
+    /// Read a resource by URI.
+    pub async fn read_resource(&mut self, uri: &str) -> Result<Vec<McpResourceContent>, McpError> {
+        let params = serde_json::json!({ "uri": uri });
+        let result = self
+            .transport
+            .request("resources/read", Some(params))
+            .await?;
+        let contents: Vec<McpResourceContent> =
+            serde_json::from_value(result.get("contents").cloned().ok_or_else(|| {
+                McpError::Protocol("resources/read response missing contents field".into())
+            })?)?;
+        Ok(contents)
+    }
+
+    /// List available prompts from the server.
+    pub async fn list_prompts(&mut self) -> Result<Vec<McpPromptDef>, McpError> {
+        let result = self.transport.request("prompts/list", None).await?;
+        let prompts: Vec<McpPromptDef> =
+            serde_json::from_value(result.get("prompts").cloned().ok_or_else(|| {
+                McpError::Protocol("prompts/list response missing prompts field".into())
+            })?)?;
+        Ok(prompts)
+    }
+
+    /// Get a prompt with arguments resolved.
+    pub async fn get_prompt(
+        &mut self,
+        name: &str,
+        arguments: serde_json::Value,
+    ) -> Result<Vec<McpPromptMessage>, McpError> {
+        let params = serde_json::json!({ "name": name, "arguments": arguments });
+        let result = self.transport.request("prompts/get", Some(params)).await?;
+        let messages: Vec<McpPromptMessage> =
+            serde_json::from_value(result.get("messages").cloned().ok_or_else(|| {
+                McpError::Protocol("prompts/get response missing messages field".into())
+            })?)?;
+        Ok(messages)
+    }
+
+    /// Check if the server supports resources (based on capabilities from initialize).
+    pub fn supports_resources(&self) -> bool {
+        self.server_capabilities
+            .as_ref()
+            .is_some_and(|c| c.resources.is_some())
+    }
+
+    /// Check if the server supports prompts (based on capabilities from initialize).
+    pub fn supports_prompts(&self) -> bool {
+        self.server_capabilities
+            .as_ref()
+            .is_some_and(|c| c.prompts.is_some())
     }
 
     /// Shut down the client and the server process.

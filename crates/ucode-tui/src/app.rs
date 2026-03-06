@@ -370,6 +370,74 @@ impl AppState {
         self.mark_dirty();
     }
 
+    /// Execute a slash command by name with arguments.
+    ///
+    /// `name` may include or omit the leading `/`; the registry stores names
+    /// with the `/` prefix so we normalise before lookup.
+    ///
+    /// Multi-word registry names (e.g. `/session rename`) are matched by
+    /// greedily consuming leading args: we try `/name arg0`, then `/name arg0
+    /// arg1`, etc., before falling back to `/name` alone.
+    ///
+    /// Returns `true` if the command was found and executed, `false` otherwise.
+    pub fn execute_command(&mut self, name: &str, args: &[String]) -> bool {
+        let bare_name = name.trim_start_matches('/');
+
+        // Build candidate lookups from most-specific to least-specific.
+        // e.g. name="session", args=["rename","foo"] → tries:
+        //   "/session rename foo", "/session rename", "/session"
+        let mut candidates: Vec<(String, &[String])> = Vec::new();
+        for n in (0..=args.len()).rev() {
+            let full = if n == 0 {
+                format!("/{bare_name}")
+            } else {
+                format!("/{bare_name} {}", args[..n].join(" "))
+            };
+            candidates.push((full, &args[n..]));
+        }
+
+        // Resolve and clone the needed fields before any mutable borrow.
+        let resolved = candidates.iter().find_map(|(lookup, remaining_args)| {
+            self.command_registry
+                .resolve(lookup)
+                .map(|cmd| (cmd.name.clone(), cmd.action.is_some(), *remaining_args))
+        });
+
+        if let Some((cmd_name, has_action, remaining_args)) = resolved {
+            let bare = cmd_name.trim_start_matches('/');
+            let args_str = if remaining_args.is_empty() {
+                String::new()
+            } else {
+                format!(" {}", remaining_args.join(" "))
+            };
+            self.push_system_message(format!("/{bare}{args_str}"));
+
+            if has_action {
+                self.push_system_message(format!("Executed: {bare}"));
+            } else {
+                self.push_system_message(format!("Command {cmd_name} is not yet implemented"));
+            }
+            true
+        } else {
+            let suggestions: Vec<String> = self
+                .command_registry
+                .suggest(bare_name)
+                .into_iter()
+                .map(|c| c.name.clone())
+                .collect();
+            let lookup = format!("/{bare_name}");
+            if suggestions.is_empty() {
+                self.push_system_message(format!("Unknown command: {lookup}"));
+            } else {
+                self.push_system_message(format!(
+                    "Unknown command: {lookup}. Did you mean: {}?",
+                    suggestions.join(", ")
+                ));
+            }
+            false
+        }
+    }
+
     /// Push a patch proposal to the transcript and submit through the overlay queue.
     pub fn propose_patch(&mut self, file_path: String, raw_diff: String, patch_id: Option<String>) {
         self.transcript.push(TranscriptEntry::PatchProposed {
@@ -812,6 +880,79 @@ mod tests {
 
         assert!(!app.diff_modal.visible);
         assert_eq!(app.focus, FocusTarget::Input);
+    }
+
+    // ------------------------------------------------------------------
+    // execute_command
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn test_execute_command_known() {
+        let mut app = AppState::new();
+        let result = app.execute_command("connect", &[]);
+        assert!(result, "known command should return true");
+        // Should have two system messages: the echo and the "not yet implemented" note.
+        let sys_msgs: Vec<_> = app
+            .transcript
+            .iter()
+            .filter_map(|e| {
+                if let TranscriptEntry::SystemMessage(m) = e {
+                    Some(m.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert!(
+            sys_msgs.iter().any(|m| m.contains("connect")),
+            "transcript should mention the command name"
+        );
+    }
+
+    #[test]
+    fn test_execute_command_unknown() {
+        let mut app = AppState::new();
+        let result = app.execute_command("nonexistent", &[]);
+        assert!(!result, "unknown command should return false");
+        let has_unknown = app.transcript.iter().any(
+            |e| matches!(e, TranscriptEntry::SystemMessage(m) if m.contains("Unknown command")),
+        );
+        assert!(has_unknown, "should emit Unknown command message");
+    }
+
+    #[test]
+    fn test_execute_command_with_slash_prefix() {
+        let mut app = AppState::new();
+        // With leading slash — same as without.
+        let result = app.execute_command("/connect", &[]);
+        assert!(result, "execute_command should accept names with leading /");
+    }
+
+    #[test]
+    fn test_execute_command_unknown_shows_suggestions() {
+        let mut app = AppState::new();
+        // "conect" is close enough to "/connect" to get a suggestion.
+        let result = app.execute_command("conect", &[]);
+        assert!(!result);
+        let has_suggestion = app
+            .transcript
+            .iter()
+            .any(|e| matches!(e, TranscriptEntry::SystemMessage(m) if m.contains("Did you mean")));
+        assert!(has_suggestion, "should suggest similar commands");
+    }
+
+    #[test]
+    fn test_execute_command_with_args() {
+        let mut app = AppState::new();
+        let args = vec!["my-session".to_owned()];
+        // "/session rename" is a known command.
+        let result = app.execute_command("session rename", &args);
+        assert!(result);
+        let has_args = app
+            .transcript
+            .iter()
+            .any(|e| matches!(e, TranscriptEntry::SystemMessage(m) if m.contains("my-session")));
+        assert!(has_args, "args should appear in the echo message");
     }
 
     #[test]

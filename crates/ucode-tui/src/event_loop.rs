@@ -12,6 +12,8 @@ use tokio::sync::mpsc;
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::time;
 
+use ucode_core::directive::{Directive, parse_input};
+
 use crate::app::{AppState, FocusTarget, ToolCallStatus, TranscriptEntry};
 use crate::components::input::InputBoxState;
 use crate::components::sidebar::SidebarData;
@@ -224,7 +226,7 @@ fn handle_terminal_event(
                     }
                     crossterm::event::KeyCode::Enter => {
                         if let Some(cmd) = app.palette.execute_selected() {
-                            app.push_system_message(format!("Executed: {}", cmd.name));
+                            app.execute_command(&cmd.name, &[]);
                             app.focus = FocusTarget::Input;
                         }
                     }
@@ -630,10 +632,31 @@ fn dispatch_action(action: Action, app: &mut AppState, input_box: &mut InputBoxS
         Action::SendMessage => {
             let content = input_box.take_content();
             if !content.is_empty() {
-                app.push_user_message(content);
-                // Callers are responsible for triggering the LLM; we just
-                // record the message and start streaming state.
-                app.start_streaming();
+                if content.starts_with('/') {
+                    let parsed = parse_input(&content, &[]);
+                    // Find the first slash command directive.
+                    let slash_cmd = parsed.directives.iter().find_map(|d| {
+                        if let Directive::SlashCommand { name, args, .. } = d {
+                            Some((name.clone(), args.clone()))
+                        } else {
+                            None
+                        }
+                    });
+                    if let Some((name, args)) = slash_cmd {
+                        // A slash command was parsed — dispatch it regardless of whether
+                        // it resolves. Never fall back to streaming for slash input.
+                        app.execute_command(&name, &args);
+                    } else {
+                        // Bare "/" with no command name — treat as regular message.
+                        app.push_user_message(content);
+                        app.start_streaming();
+                    }
+                } else {
+                    app.push_user_message(content);
+                    // Callers are responsible for triggering the LLM; we just
+                    // record the message and start streaming state.
+                    app.start_streaming();
+                }
             }
         }
 
@@ -1417,9 +1440,11 @@ mod tests {
         handle_terminal_event(enter, &mut app, &mut input_box, &mut sidebar_data);
 
         assert!(!app.palette.visible);
-        let has_system_msg = app.transcript.iter().any(|e| {
-            matches!(e, crate::app::TranscriptEntry::SystemMessage(msg) if msg.contains("Executed"))
-        });
+        // execute_command always emits at least one system message (the echo line).
+        let has_system_msg = app
+            .transcript
+            .iter()
+            .any(|e| matches!(e, crate::app::TranscriptEntry::SystemMessage(_)));
         assert!(has_system_msg);
     }
 
@@ -2313,5 +2338,147 @@ mod tests {
         );
         // Content should be preserved (not cleared) when autocomplete was visible.
         assert_eq!(input_box.content, "/con");
+    }
+
+    // -----------------------------------------------------------------------
+    // Slash command execution on Enter
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_slash_command_executed_on_enter() {
+        let mut app = AppState::new();
+        let mut input_box = InputBoxState::new();
+
+        for c in "/connect".chars() {
+            input_box.insert_char(c);
+        }
+        dispatch_action(Action::SendMessage, &mut app, &mut input_box);
+
+        // Should have system messages, not a user message + streaming.
+        assert!(
+            !app.streaming,
+            "streaming should not start for a slash command"
+        );
+        let has_user_msg = app
+            .transcript
+            .iter()
+            .any(|e| matches!(e, TranscriptEntry::UserMessage(_)));
+        assert!(
+            !has_user_msg,
+            "slash command must not produce a user message"
+        );
+        let has_system_msg = app
+            .transcript
+            .iter()
+            .any(|e| matches!(e, TranscriptEntry::SystemMessage(_)));
+        assert!(
+            has_system_msg,
+            "slash command should produce system messages"
+        );
+    }
+
+    #[test]
+    fn test_unknown_slash_command_shows_suggestions() {
+        let mut app = AppState::new();
+        let mut input_box = InputBoxState::new();
+
+        for c in "/conect".chars() {
+            input_box.insert_char(c);
+        }
+        dispatch_action(Action::SendMessage, &mut app, &mut input_box);
+
+        let has_suggestion = app
+            .transcript
+            .iter()
+            .any(|e| matches!(e, TranscriptEntry::SystemMessage(m) if m.contains("Did you mean")));
+        assert!(
+            has_suggestion,
+            "typo should trigger Did you mean suggestion"
+        );
+        assert!(!app.streaming);
+    }
+
+    #[test]
+    fn test_unknown_slash_command_no_suggestions() {
+        let mut app = AppState::new();
+        let mut input_box = InputBoxState::new();
+
+        for c in "/zzzzz".chars() {
+            input_box.insert_char(c);
+        }
+        dispatch_action(Action::SendMessage, &mut app, &mut input_box);
+
+        let has_unknown = app.transcript.iter().any(|e| {
+            matches!(e, TranscriptEntry::SystemMessage(m)
+                if m.contains("Unknown command") && !m.contains("Did you mean"))
+        });
+        assert!(
+            has_unknown,
+            "completely unknown command should say Unknown command without suggestions"
+        );
+        assert!(!app.streaming);
+    }
+
+    #[test]
+    fn test_regular_message_still_works() {
+        let mut app = AppState::new();
+        let mut input_box = InputBoxState::new();
+
+        for c in "hello world".chars() {
+            input_box.insert_char(c);
+        }
+        dispatch_action(Action::SendMessage, &mut app, &mut input_box);
+
+        let has_user_msg = app
+            .transcript
+            .iter()
+            .any(|e| matches!(e, TranscriptEntry::UserMessage(m) if m == "hello world"));
+        assert!(has_user_msg, "regular message should become a UserMessage");
+        assert!(app.streaming, "regular message should start streaming");
+    }
+
+    #[test]
+    fn test_slash_command_with_args() {
+        let mut app = AppState::new();
+        let mut input_box = InputBoxState::new();
+
+        for c in "/session rename my-session".chars() {
+            input_box.insert_char(c);
+        }
+        dispatch_action(Action::SendMessage, &mut app, &mut input_box);
+
+        assert!(!app.streaming);
+        let has_args_echo = app
+            .transcript
+            .iter()
+            .any(|e| matches!(e, TranscriptEntry::SystemMessage(m) if m.contains("my-session")));
+        assert!(has_args_echo, "args should appear in the command echo");
+    }
+
+    #[test]
+    fn test_palette_execute_uses_execute_command() {
+        let mut app = AppState::new();
+        let mut input_box = InputBoxState::new();
+        let mut sidebar_data = SidebarData::new();
+
+        dispatch_action(Action::OpenPalette, &mut app, &mut input_box);
+        assert!(app.palette.visible);
+
+        let enter = Event::Key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Enter,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        handle_terminal_event(enter, &mut app, &mut input_box, &mut sidebar_data);
+
+        assert!(!app.palette.visible);
+        // execute_command produces system messages (echo + status), not the old "Executed: name".
+        let has_system_msg = app
+            .transcript
+            .iter()
+            .any(|e| matches!(e, TranscriptEntry::SystemMessage(_)));
+        assert!(
+            has_system_msg,
+            "palette Enter should produce system messages via execute_command"
+        );
     }
 }

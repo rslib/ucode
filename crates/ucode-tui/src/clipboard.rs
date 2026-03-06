@@ -142,6 +142,7 @@ pub fn detect_external_tool() -> Option<&'static str> {
     }
 }
 
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn tool_exists(name: &str) -> bool {
     Command::new("which")
         .arg(name)

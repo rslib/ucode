@@ -12,7 +12,7 @@ use crate::theme::UcodeTheme;
 
 use sections::{
     AgentStatus, AgentsData, ContextData, JobStatus, JobsData, McpData, McpServerStatus,
-    NetworkData, RouterData, SkillData, ToolsData, WorkspaceData,
+    NetworkData, PluginSidebarSection, RouterData, SkillData, ToolsData, WorkspaceData,
 };
 
 // ---------------------------------------------------------------------------
@@ -108,6 +108,7 @@ pub struct SidebarData {
     pub network: NetworkData,
     pub jobs: JobsData,
     pub mcp: McpData,
+    pub plugin_sections: Vec<PluginSidebarSection>,
 }
 
 impl SidebarData {
@@ -131,7 +132,32 @@ impl SidebarData {
             network: NetworkData::default(),
             jobs: JobsData::default(),
             mcp: McpData::default(),
+            plugin_sections: Vec::new(),
         }
+    }
+
+    /// Add or replace (by `section_id`) a plugin-registered sidebar section.
+    pub fn register_plugin_section(&mut self, section: PluginSidebarSection) {
+        if let Some(existing) = self
+            .plugin_sections
+            .iter_mut()
+            .find(|s| s.section_id == section.section_id)
+        {
+            *existing = section;
+        } else {
+            self.plugin_sections.push(section);
+        }
+    }
+
+    /// Remove all sections registered by `plugin_name`.
+    pub fn remove_plugin_sections(&mut self, plugin_name: &str) {
+        self.plugin_sections
+            .retain(|s| s.plugin_name != plugin_name);
+    }
+
+    /// Remove all plugin sections.
+    pub fn clear_plugin_sections(&mut self) {
+        self.plugin_sections.clear();
     }
 
     pub fn toggle_section(&mut self, id: SectionId) {
@@ -324,6 +350,72 @@ fn render_full(data: &SidebarData, theme: &UcodeTheme, area: Rect, buf: &mut Buf
                 if y >= bottom {
                     break;
                 }
+                let row_area = Rect {
+                    x: area.x,
+                    y,
+                    width: area.width,
+                    height: 1,
+                };
+                line.render(row_area, buf);
+                y += 1;
+            }
+        }
+    }
+
+    // Render plugin sections after all built-in sections, sorted by priority
+    // (ascending), then title (alphabetical).
+    let mut sorted_plugins: Vec<&PluginSidebarSection> = data.plugin_sections.iter().collect();
+    sorted_plugins.sort_by(|a, b| a.priority.cmp(&b.priority).then(a.title.cmp(&b.title)));
+
+    for plugin_section in sorted_plugins {
+        if y >= bottom {
+            break;
+        }
+
+        // Divider before each plugin section.
+        let divider = "─".repeat(area.width as usize);
+        let line = Line::from(Span::styled(divider, theme.muted_style()));
+        let row_area = Rect {
+            x: area.x,
+            y,
+            width: area.width,
+            height: 1,
+        };
+        line.render(row_area, buf);
+        y += 1;
+
+        if y >= bottom {
+            break;
+        }
+
+        // Plugin section header: "▼ TITLE [plugin]" or "▶ TITLE [plugin]"
+        let arrow = if plugin_section.collapsed {
+            "▶"
+        } else {
+            "▼"
+        };
+        let header_text = format!("{arrow} {}", plugin_section.title);
+        let header_line = Line::from(vec![
+            Span::styled(header_text, theme.accent_style()),
+            Span::raw(" "),
+            Span::styled("[plugin]", theme.accent_style()),
+        ]);
+        let row_area = Rect {
+            x: area.x,
+            y,
+            width: area.width,
+            height: 1,
+        };
+        header_line.render(row_area, buf);
+        y += 1;
+
+        // Content lines when expanded.
+        if !plugin_section.collapsed {
+            for content_line in &plugin_section.lines {
+                if y >= bottom {
+                    break;
+                }
+                let line = Line::from(Span::styled(content_line.clone(), theme.text_style()));
                 let row_area = Rect {
                     x: area.x,
                     y,
@@ -766,7 +858,7 @@ mod tests {
     use ratatui::layout::Rect;
     use sections::{
         AgentEntry, AgentStatus, FileDiff, JobEntry, JobStatus, McpServerEntry, McpServerStatus,
-        ToolEntry,
+        PluginSidebarSection, ToolEntry,
     };
 
     // -----------------------------------------------------------------------
@@ -1249,6 +1341,204 @@ mod tests {
         assert!(
             text.contains('⚠'),
             "expected ⚠ symbol for PendingApproval:\n{text}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // PluginSidebarSection
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn plugin_sidebar_section_creation() {
+        let section = PluginSidebarSection {
+            plugin_name: "my-plugin".into(),
+            section_id: "my-plugin-stats".into(),
+            title: "MY STATS".into(),
+            lines: vec!["  value: 42".into()],
+            priority: 50,
+            collapsed: false,
+        };
+        assert_eq!(section.plugin_name, "my-plugin");
+        assert_eq!(section.section_id, "my-plugin-stats");
+        assert_eq!(section.title, "MY STATS");
+        assert_eq!(section.lines.len(), 1);
+        assert_eq!(section.priority, 50);
+        assert!(!section.collapsed);
+    }
+
+    #[test]
+    fn register_plugin_section_adds_section() {
+        let mut data = SidebarData::new();
+        assert!(data.plugin_sections.is_empty());
+        data.register_plugin_section(PluginSidebarSection {
+            plugin_name: "code-analyzer".into(),
+            section_id: "code-analyzer-stats".into(),
+            title: "CODE ANALYSIS".into(),
+            lines: vec!["  complexity: 12".into()],
+            priority: 100,
+            collapsed: false,
+        });
+        assert_eq!(data.plugin_sections.len(), 1);
+        assert_eq!(data.plugin_sections[0].section_id, "code-analyzer-stats");
+    }
+
+    #[test]
+    fn register_plugin_section_replaces_by_section_id() {
+        let mut data = SidebarData::new();
+        data.register_plugin_section(PluginSidebarSection {
+            plugin_name: "code-analyzer".into(),
+            section_id: "code-analyzer-stats".into(),
+            title: "OLD TITLE".into(),
+            lines: vec![],
+            priority: 100,
+            collapsed: false,
+        });
+        data.register_plugin_section(PluginSidebarSection {
+            plugin_name: "code-analyzer".into(),
+            section_id: "code-analyzer-stats".into(),
+            title: "NEW TITLE".into(),
+            lines: vec!["  updated".into()],
+            priority: 50,
+            collapsed: false,
+        });
+        assert_eq!(data.plugin_sections.len(), 1, "should replace, not add");
+        assert_eq!(data.plugin_sections[0].title, "NEW TITLE");
+        assert_eq!(data.plugin_sections[0].priority, 50);
+    }
+
+    #[test]
+    fn remove_plugin_sections_removes_by_plugin_name() {
+        let mut data = SidebarData::new();
+        data.register_plugin_section(PluginSidebarSection {
+            plugin_name: "plugin-a".into(),
+            section_id: "a-section".into(),
+            title: "A".into(),
+            lines: vec![],
+            priority: 100,
+            collapsed: false,
+        });
+        data.register_plugin_section(PluginSidebarSection {
+            plugin_name: "plugin-b".into(),
+            section_id: "b-section".into(),
+            title: "B".into(),
+            lines: vec![],
+            priority: 100,
+            collapsed: false,
+        });
+        assert_eq!(data.plugin_sections.len(), 2);
+        data.remove_plugin_sections("plugin-a");
+        assert_eq!(data.plugin_sections.len(), 1);
+        assert_eq!(data.plugin_sections[0].plugin_name, "plugin-b");
+    }
+
+    #[test]
+    fn clear_plugin_sections_removes_all() {
+        let mut data = SidebarData::new();
+        data.register_plugin_section(PluginSidebarSection {
+            plugin_name: "plugin-a".into(),
+            section_id: "a-section".into(),
+            title: "A".into(),
+            lines: vec![],
+            priority: 100,
+            collapsed: false,
+        });
+        data.register_plugin_section(PluginSidebarSection {
+            plugin_name: "plugin-b".into(),
+            section_id: "b-section".into(),
+            title: "B".into(),
+            lines: vec![],
+            priority: 100,
+            collapsed: false,
+        });
+        assert_eq!(data.plugin_sections.len(), 2);
+        data.clear_plugin_sections();
+        assert!(data.plugin_sections.is_empty());
+    }
+
+    #[test]
+    fn plugin_sections_render_after_builtin_sections() {
+        let mut data = SidebarData::new();
+        data.register_plugin_section(PluginSidebarSection {
+            plugin_name: "code-analyzer".into(),
+            section_id: "code-analyzer-stats".into(),
+            title: "CODE ANALYSIS".into(),
+            lines: vec!["  complexity: 12".into(), "  coverage: 87%".into()],
+            priority: 100,
+            collapsed: false,
+        });
+        // Use a tall buffer so all sections fit.
+        let buf = render_sidebar(&data, SidebarMode::Full, 50, 120);
+        let text = buf_text(&buf);
+        // Plugin section title should appear.
+        assert!(
+            text.contains("CODE ANALYSIS"),
+            "expected CODE ANALYSIS in:\n{text}"
+        );
+        // Plugin badge should appear.
+        assert!(
+            text.contains("[plugin]"),
+            "expected [plugin] badge in:\n{text}"
+        );
+        // Content lines should appear.
+        assert!(
+            text.contains("complexity: 12"),
+            "expected content line in:\n{text}"
+        );
+        // Built-in sections still present.
+        assert!(text.contains("ROUTER"), "expected ROUTER in:\n{text}");
+        assert!(text.contains("MCP"), "expected MCP in:\n{text}");
+    }
+
+    #[test]
+    fn plugin_sections_sorted_by_priority_then_title() {
+        let mut data = SidebarData::new();
+        // Add sections in reverse priority order.
+        data.register_plugin_section(PluginSidebarSection {
+            plugin_name: "p".into(),
+            section_id: "low".into(),
+            title: "LOW PRIORITY".into(),
+            lines: vec![],
+            priority: 200,
+            collapsed: false,
+        });
+        data.register_plugin_section(PluginSidebarSection {
+            plugin_name: "p".into(),
+            section_id: "high".into(),
+            title: "HIGH PRIORITY".into(),
+            lines: vec![],
+            priority: 10,
+            collapsed: false,
+        });
+        let buf = render_sidebar(&data, SidebarMode::Full, 50, 120);
+        let text = buf_text(&buf);
+        let pos_high = text.find("HIGH PRIORITY").unwrap_or(usize::MAX);
+        let pos_low = text.find("LOW PRIORITY").unwrap_or(usize::MAX);
+        assert!(
+            pos_high < pos_low,
+            "HIGH PRIORITY (priority=10) should appear before LOW PRIORITY (priority=200)"
+        );
+    }
+
+    #[test]
+    fn collapsed_plugin_section_hides_content() {
+        let mut data = SidebarData::new();
+        data.register_plugin_section(PluginSidebarSection {
+            plugin_name: "p".into(),
+            section_id: "s".into(),
+            title: "MY SECTION".into(),
+            lines: vec!["  secret content".into()],
+            priority: 100,
+            collapsed: true,
+        });
+        let buf = render_sidebar(&data, SidebarMode::Full, 50, 120);
+        let text = buf_text(&buf);
+        assert!(
+            text.contains("MY SECTION"),
+            "header should still appear when collapsed"
+        );
+        assert!(
+            !text.contains("secret content"),
+            "content should be hidden when collapsed"
         );
     }
 }

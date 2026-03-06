@@ -149,6 +149,12 @@ impl CommandRegistry {
         &self.commands
     }
 
+    /// Remove all commands whose source is `Plugin(source_name)`.
+    pub fn remove_by_source_name(&mut self, source_name: &str) {
+        self.commands
+            .retain(|c| !matches!(&c.source, CommandSource::Plugin(n) if n == source_name));
+    }
+
     /// Return commands whose name contains `name` as a substring (case-insensitive).
     /// Used to suggest alternatives when a command is not found.
     pub fn suggest(&self, name: &str) -> Vec<&CommandDef> {
@@ -287,5 +293,48 @@ mod tests {
         let reg = CommandRegistry::with_builtins();
         let state = PaletteState::from_registry(&reg);
         assert_eq!(state.commands.len(), 10);
+    }
+
+    #[test]
+    fn remove_by_source_name_removes_matching_plugin_commands() {
+        let mut reg = CommandRegistry::with_builtins();
+        reg.register(CommandDef {
+            name: "/analyze".to_owned(),
+            description: "Run analysis".to_owned(),
+            category: CommandCategory::Plugins,
+            source: CommandSource::Plugin("code-analyzer".to_owned()),
+            args_hint: None,
+            action: None,
+        });
+        reg.register(CommandDef {
+            name: "/lint".to_owned(),
+            description: "Run linter".to_owned(),
+            category: CommandCategory::Plugins,
+            source: CommandSource::Plugin("linter".to_owned()),
+            args_hint: None,
+            action: None,
+        });
+        assert_eq!(reg.list().len(), 12);
+        reg.remove_by_source_name("code-analyzer");
+        assert_eq!(reg.list().len(), 11);
+        assert!(reg.resolve("/analyze").is_none());
+        assert!(reg.resolve("/lint").is_some());
+    }
+
+    #[test]
+    fn remove_by_source_name_leaves_builtins_intact() {
+        let mut reg = CommandRegistry::with_builtins();
+        reg.register(CommandDef {
+            name: "/plugin-cmd".to_owned(),
+            description: "Plugin command".to_owned(),
+            category: CommandCategory::Plugins,
+            source: CommandSource::Plugin("my-plugin".to_owned()),
+            args_hint: None,
+            action: None,
+        });
+        reg.remove_by_source_name("my-plugin");
+        // All 10 builtins should remain.
+        assert_eq!(reg.list().len(), 10);
+        assert!(reg.resolve("/connect").is_some());
     }
 }

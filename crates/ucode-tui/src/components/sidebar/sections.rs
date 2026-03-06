@@ -2,6 +2,21 @@ use crate::app::ToolCallStatus;
 use crate::theme::{ModelGroup, SandboxTier};
 
 // ---------------------------------------------------------------------------
+// Plugin sidebar section
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+pub struct PluginSidebarSection {
+    pub plugin_name: String,
+    pub section_id: String,
+    pub title: String,
+    pub lines: Vec<String>,
+    /// Lower value = higher priority (rendered first). Default 100.
+    pub priority: i32,
+    pub collapsed: bool,
+}
+
+// ---------------------------------------------------------------------------
 // 1. Router
 // ---------------------------------------------------------------------------
 

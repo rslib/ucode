@@ -628,6 +628,47 @@ impl AppState {
     }
 
     // ------------------------------------------------------------------
+    // Plugin command registration
+    // ------------------------------------------------------------------
+
+    /// Register a command from a plugin in the command registry and refresh the palette.
+    pub fn register_plugin_command(&mut self, plugin_name: &str, name: &str, description: &str) {
+        use crate::command_registry::{CommandCategory, CommandDef, CommandSource};
+        self.command_registry.register(CommandDef {
+            name: name.to_owned(),
+            description: description.to_owned(),
+            category: CommandCategory::Plugins,
+            source: CommandSource::Plugin(plugin_name.to_owned()),
+            args_hint: None,
+            action: None,
+        });
+        self.palette =
+            crate::overlays::palette::PaletteState::from_registry(&self.command_registry);
+    }
+
+    /// Remove all commands registered by `plugin_name` and refresh the palette.
+    pub fn remove_plugin_commands(&mut self, plugin_name: &str) {
+        self.command_registry.remove_by_source_name(plugin_name);
+        self.palette =
+            crate::overlays::palette::PaletteState::from_registry(&self.command_registry);
+    }
+
+    // ------------------------------------------------------------------
+    // Plugin UI lifecycle
+    // ------------------------------------------------------------------
+
+    /// Called when a plugin session starts. Currently a no-op placeholder;
+    /// plugins register their UI elements individually.
+    pub fn plugin_session_start(&mut self, _plugin_name: &str) {}
+
+    /// Called when a plugin session ends. Cleans up all palette commands for
+    /// the plugin. Sidebar sections must be cleaned up separately via
+    /// `SidebarData::remove_plugin_sections`.
+    pub fn plugin_session_end(&mut self, plugin_name: &str) {
+        self.remove_plugin_commands(plugin_name);
+    }
+
+    // ------------------------------------------------------------------
     // Resize
     // ------------------------------------------------------------------
 
@@ -1017,5 +1058,71 @@ mod tests {
         app.dirty = false;
         app.scroll_to_bottom();
         assert!(app.dirty);
+    }
+
+    // ------------------------------------------------------------------
+    // Plugin command registration
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn register_plugin_command_adds_to_registry_and_palette() {
+        let mut app = AppState::new();
+        let initial_count = app.command_registry.list().len();
+        app.register_plugin_command("code-analyzer", "/analyze", "Run code analysis");
+        assert_eq!(app.command_registry.list().len(), initial_count + 1);
+        assert!(app.command_registry.resolve("/analyze").is_some());
+        // Palette should be refreshed.
+        assert_eq!(app.palette.commands.len(), initial_count + 1);
+    }
+
+    #[test]
+    fn register_plugin_command_uses_plugin_source() {
+        let mut app = AppState::new();
+        app.register_plugin_command("my-plugin", "/my-cmd", "My command");
+        let cmd = app.command_registry.resolve("/my-cmd").unwrap();
+        assert_eq!(
+            cmd.source,
+            crate::command_registry::CommandSource::Plugin("my-plugin".to_owned())
+        );
+    }
+
+    #[test]
+    fn remove_plugin_commands_removes_from_registry_and_palette() {
+        let mut app = AppState::new();
+        app.register_plugin_command("code-analyzer", "/analyze", "Run analysis");
+        app.register_plugin_command("code-analyzer", "/report", "Generate report");
+        app.register_plugin_command("other-plugin", "/other", "Other command");
+        let before = app.command_registry.list().len();
+        app.remove_plugin_commands("code-analyzer");
+        assert_eq!(app.command_registry.list().len(), before - 2);
+        assert!(app.command_registry.resolve("/analyze").is_none());
+        assert!(app.command_registry.resolve("/report").is_none());
+        assert!(app.command_registry.resolve("/other").is_some());
+        // Palette should be refreshed.
+        assert_eq!(
+            app.palette.commands.len(),
+            app.command_registry.list().len()
+        );
+    }
+
+    #[test]
+    fn plugin_session_start_is_noop() {
+        let mut app = AppState::new();
+        let before_count = app.command_registry.list().len();
+        app.plugin_session_start("my-plugin");
+        // No side effects.
+        assert_eq!(app.command_registry.list().len(), before_count);
+    }
+
+    #[test]
+    fn plugin_session_end_removes_commands() {
+        let mut app = AppState::new();
+        app.register_plugin_command("my-plugin", "/cmd1", "Command 1");
+        app.register_plugin_command("my-plugin", "/cmd2", "Command 2");
+        let before = app.command_registry.list().len();
+        app.plugin_session_end("my-plugin");
+        assert_eq!(app.command_registry.list().len(), before - 2);
+        assert!(app.command_registry.resolve("/cmd1").is_none());
+        assert!(app.command_registry.resolve("/cmd2").is_none());
     }
 }

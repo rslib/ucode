@@ -17,6 +17,7 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use ucode_tui::app::ToolCallStatus;
 use ucode_tui::command_registry::{CommandCategory, CommandDef, CommandSource};
+use ucode_tui::components::sidebar::sections::PluginSidebarSection;
 use ucode_tui::components::toast::ToastLevel;
 use ucode_tui::event_loop::TuiEvent;
 use ucode_tui::overlays::palette::PaletteState;
@@ -366,5 +367,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut input_box = ucode_tui::components::input::InputBoxState::new();
     let mut sidebar_data = ucode_tui::components::sidebar::SidebarData::new();
+    sidebar_data.register_plugin_section(PluginSidebarSection {
+        plugin_name: "code-analyzer".into(),
+        section_id: "code-analyzer-stats".into(),
+        title: "CODE ANALYSIS".into(),
+        lines: vec!["  complexity: 12".into(), "  coverage: 87%".into()],
+        priority: 100,
+        collapsed: false,
+    });
     ucode_tui::event_loop::run_event_loop(&mut app, &mut input_box, &mut sidebar_data, tui_rx).await
 }

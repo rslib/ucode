@@ -2,6 +2,7 @@
 
 pub mod api;
 pub mod hooks;
+pub mod host;
 pub mod loader;
 pub mod manifest;
 pub mod ui_api;
@@ -11,6 +12,7 @@ pub use api::{
     HookResponse, Plugin, ToolProvider, check_features_compatible, check_version_compatible,
 };
 pub use hooks::{HookDispatcher, HookEvent, HookRecord, HookSubscription, OverrideClass};
+pub use host::{HookResult, PluginHost};
 pub use loader::{PluginInfo, PluginRegistry, PluginStatus, discover_plugins};
 pub use manifest::{
     ManifestError, PluginCapabilities, PluginManifest, PluginToolDef, parse_manifest,

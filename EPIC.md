@@ -1035,71 +1035,108 @@ Search:
 ### ISSUE 0802 — Hooks API v1 (ucode-plugins + core/tools) [DONE]
 
 **Goal:** Define hook events and dispatch them.
-**Hooks:**
 
-* `on_session_start/end`
-* `before/after_tool_call`
-* `before/after_apply_patch`
-* `before/after_run_cmd`
-* `before_model_select`
-* `on_model_fallback`
-* `on_router_decision`
-* `on_context_shrink`
-* `on_context_distilled`
-* `on_skill_changed`
-* `on_auth_changed`
-* `on_session_title_generated/updated`
-* `on_agent_spawned/completed/failed`
-* `on_agent_message`
-* `on_command_invoked`
-* `on_sandbox_decision`
-* `on_permission_decision`
-* `on_approval_granted/denied`
-* `on_mcp_server_launch/restart/crash`
-* `on_budget_threshold_warning/reached`
-* `on_background_job_state_changed`
-* Override classes matrix enforced by host policy:
+**Full hook event surface (64 events, 16 categories).** Initial implementation delivered 22 events; remaining 42 events added in ISSUE 0803.
+
+Session lifecycle: `session_start`, `session_end`, `session_title_generated`, `session_title_updated`, `config_reloaded`
+Message flow: `user_message_received`, `assistant_response_started`, `assistant_response_completed`, `message_retry` (Guarded)
+Model selection: `before_model_call` (Guarded), `after_model_call`, `before_model_select` (Guarded), `model_fallback` (Risky), `router_decision`, `model_rate_limited`, `model_quota_exhausted`
+Tool calls (generic): `before_tool_call` (Guarded), `after_tool_call`, `tool_error`, `tool_timeout`
+Tool calls (specific): `before_apply_patch` (Guarded), `after_apply_patch`, `before_run_cmd` (Guarded), `after_run_cmd`, `before_file_read` (Guarded), `after_file_read`, `before_file_write` (Guarded), `after_file_write`
+Context: `context_overflow` (Guarded), `context_compaction` (Guarded), `context_distilled`, `token_usage_updated`
+Agent: `agent_spawned`, `agent_message`, `agent_completed`, `agent_failed`, `agent_cancelled`
+Approval: `approval_required` (Guarded), `approval_granted`, `approval_denied`, `sandbox_decision`, `permission_decision`
+Auth: `auth_changed`, `auth_failed`, `provider_switched`
+MCP: `mcp_server_connected`, `mcp_server_disconnected`, `mcp_server_launch`, `mcp_server_restart`, `mcp_server_crash`, `mcp_tool_invoked`
+Skills: `skill_activated`, `skill_deactivated`
+Plugins: `plugin_loaded`, `plugin_unloaded`, `plugin_error`
+Checkpoints: `checkpoint_created` (Guarded), `checkpoint_restored` (Risky)
+Budget: `budget_threshold_warning`, `budget_threshold_reached` (Guarded), `cost_incurred`
+Background: `background_job_state_changed`
+Commands/UI: `command_invoked`, `palette_command_executed`
+Diagnostics: `unhandled_error`
+
+Override classes matrix enforced by host policy:
 
 | Class | Examples | Auto-apply | Requires explicit approval |
 | --- | --- | --- | --- |
 | Safe | fallback ranking hints, logging verbosity, context-shrink preference | Yes (policy-safe) | No |
 | Guarded | model group preference changes within limits, retry tuning in bounds | Yes (bounded) | No |
 | Risky | widening network/filesystem/process permissions, bypassing deny rules | No | Yes |
-  **Acceptance tests:**
+
+**Acceptance tests:**
 * Example plugin logs router/fallback decisions and can propose safe fallback preferences.
 * Unsafe behavior override attempt is blocked unless explicitly user-approved.
 * Risky class override is never auto-applied.
-  **Owner:** Plugins/Core
 
-### ISSUE 0803 — Plugin tool registration (ucode-plugins + ucode-tools)
+**Completed:** Initial 22 events implemented with `HookEvent` enum, `HookDispatcher`, `HookRecord`, `HookSubscription`, `OverrideClass`. 12 tests.
 
-**Goal:** Allow WASM plugins to add tools to registry safely.
+**Owner:** Plugins/Core
+
+### ISSUE 0803 — Plugin API contract, tool registration, and Rust SDK (ucode-plugins)
+
+**Goal:** Define the v1 plugin API as Rust traits, expand hook surface to 64 events, implement tool registration with namespacing, and provide an in-process example plugin. Traits-first approach; WASM/WIT deferred to ISSUE 0805.
+
 **Scope/Notes:**
 
-* Plugin declares tools during initialization using typed `ToolSpec`
-* Host namespaces each tool as `plugin.<plugin-id>.<tool-name>`
-* Host validates schemas and capability requirements before activation
-* Plugin tool calls flow through normal sandbox/approval/audit pipeline
+Manifest changes:
+* `id` field: reverse-domain globally unique identifier (e.g., `org.acme.code-analyzer`), minimum 3 dot-separated segments, each segment `[a-z0-9-]`
+* `name` field: human-readable display name (arbitrary string, e.g., "Code Analyzer")
+* `required_features`: unversioned feature set (`["hooks", "tools", "ui"]`)
+* Tool names are local in manifest; host constructs FQN as `{plugin_id}.{tool_name}`
+
+Handshake protocol:
+* Plugin sends `HandshakeRequest { plugin_id, min_api_version, required_features, capabilities }`
+* Host responds `HandshakeResponse::Accepted { api_version, supported_features, granted_capabilities }` or `Rejected { reason }`
+* Semver check: host API version >= plugin min_api_version (same major)
+* Feature check: plugin required_features is subset of host supported_features
+* Capability check: host may grant subset of requested capabilities
+
+Plugin traits (v1):
+* `Plugin` (mandatory): `handshake()`, `initialize()`, `shutdown()`
+* `HookHandler` (opt-in, `hooks` feature): `on_event(&HookEvent) -> HookResponse`
+* `ToolProvider` (opt-in, `tools` feature): `tool_specs()`, `invoke_tool()`
+* `HookResponse`: `Ok` / `Modify { changes }` (Guarded only) / `Veto { reason }` (Risky only)
+
+Hook event expansion:
+* Expand `HookEvent` from 22 to 64 variants (full surface from ISSUE 0802 spec)
+
+Tool registration:
+* Plugin declares `ToolSpec` via `ToolProvider::tool_specs()`
+* Host namespaces as `{plugin_id}.{tool_name}` (e.g., `org.acme.code-analyzer.lint`)
+* Host validates JSON schema and capability policy before activation
+* Plugin tools flow through normal sandbox/approval/audit pipeline
+
+Version negotiation:
+* `semver` crate for parsing and comparison
+* `Feature` enum: `Hooks`, `Tools`, `Ui`
+* Host reports `API_VERSION` constant and supported features
+
 **Acceptance tests:**
+* Rust in-process example plugin passes handshake and receives hooks.
+* Version mismatch produces `HandshakeError::VersionIncompatible`.
+* Feature mismatch produces `HandshakeError::UnsupportedFeatures`.
+* Plugin tool registered with namespaced FQN and invocable through host registry.
+* All 64 hook events have `event_name()` and `override_class()`.
 
-* Plugin registers `hello_tool`; it appears in `list_tools` and can be invoked.
-* Plugin tool with disallowed capability is rejected at activation.
-* Plugin tool invocation obeys same policy gates as built-in tools.
-  **Owner:** Plugins/Tools
+**Owner:** Plugins/Tools
 
-### ISSUE 0804 — Versioned plugin API contract + Rust SDK (ucode-plugins)
+### ISSUE 0804 — WIT interface + wasmtime WASM runtime (ucode-plugins)
 
-**Goal:** Define stable plugin API and Rust-first SDK for WASM plugins.
+**Goal:** Translate the Rust trait API (from ISSUE 0803) into WIT/component-model interfaces and integrate wasmtime for WASM plugin execution.
 **Scope/Notes:**
 
-* Versioned WIT/component-model contract (`v1`)
-* Handshake/capability negotiation and hook subscription model
-* Structured request/response/error envelope
-* Rust-first SDK for WASM plugin authors
-* Manifest fields for minimum API version and requested capabilities
+* Define `.wit` files mirroring the `Plugin`, `HookHandler`, `ToolProvider` traits
+* Integrate `wasmtime` with component-model support for loading `.wasm` plugins
+* `wit-bindgen` for generating host and guest bindings
+* WASM plugin lifecycle: load `.wasm` -> handshake -> activate -> dispatch hooks
+* Rust SDK crate for authoring WASM plugins (compiles to `wasm32-wasip1`)
+* Example WASM plugin demonstrating handshake + hook handling + tool export
   **Acceptance tests:**
-* Rust WASM sample plugin handshake and hook flow compile against contract.
-* Version mismatch returns explicit incompatibility error.
+* Rust WASM plugin compiled to `.wasm` loads via wasmtime and passes handshake.
+* WASM plugin receives hook events and returns `HookResponse`.
+* WASM plugin exports tools accessible through host registry with namespaced FQN.
+* Version mismatch between WIT contract versions produces clear error.
   **Owner:** Plugins
 
 ### ISSUE 0805 — WASM plugin runtime isolation model (latest stage) (ucode-plugins + security)

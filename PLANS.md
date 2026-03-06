@@ -844,29 +844,95 @@ Define plugin contracts, event surfaces, and safety policy first. Defer WASM run
 
 ### Task 8.2 Hooks API (v1) [DONE]
 
-Events:
+Full hook event surface (64 events across 16 categories). Initial implementation delivered 22 events; remaining events added in Task 8.3 as part of the v1 API contract.
 
-* `on_session_start/end`
-* `before/after_tool_call`
-* `before/after_apply_patch`
-* `before/after_run_cmd`
-* `before_model_select`
-* `on_model_fallback`
-* `on_router_decision`
-* `on_context_shrink`
-* `on_context_distilled`
-* `on_skill_changed`
-* `on_auth_changed`
-* `on_session_title_generated/updated`
-* `on_agent_spawned/completed/failed`
-* `on_agent_message`
-* `on_command_invoked`
-* `on_sandbox_decision`
-* `on_permission_decision`
-* `on_approval_granted/denied`
-* `on_mcp_server_launch/restart/crash`
-* `on_budget_threshold_warning/reached`
-* `on_background_job_state_changed`
+**Session lifecycle** (Safe unless noted)
+
+* `session_start`, `session_end`
+* `session_title_generated`, `session_title_updated`
+* `config_reloaded`
+
+**Message flow**
+
+* `user_message_received` (Safe)
+* `assistant_response_started` (Safe)
+* `assistant_response_completed` (Safe)
+* `message_retry` (Guarded)
+
+**Model selection & routing**
+
+* `before_model_call` (Guarded), `after_model_call` (Safe)
+* `before_model_select` (Guarded)
+* `model_fallback` (Risky)
+* `router_decision` (Safe)
+* `model_rate_limited` (Safe), `model_quota_exhausted` (Safe)
+
+**Tool calls (generic)**
+
+* `before_tool_call` (Guarded), `after_tool_call` (Safe)
+* `tool_error` (Safe), `tool_timeout` (Safe)
+
+**Tool calls (specific high-value types)**
+
+* `before_apply_patch` (Guarded), `after_apply_patch` (Safe)
+* `before_run_cmd` (Guarded), `after_run_cmd` (Safe)
+* `before_file_read` (Guarded), `after_file_read` (Safe)
+* `before_file_write` (Guarded), `after_file_write` (Safe)
+
+**Context management**
+
+* `context_overflow` (Guarded), `context_compaction` (Guarded)
+* `context_distilled` (Safe)
+* `token_usage_updated` (Safe)
+
+**Agent / Sub-agent**
+
+* `agent_spawned`, `agent_message`, `agent_completed`, `agent_failed` (Safe)
+* `agent_cancelled` (Safe)
+
+**Approval / Permission / Sandbox**
+
+* `approval_required` (Guarded), `approval_granted` (Safe), `approval_denied` (Safe)
+* `sandbox_decision` (Safe), `permission_decision` (Safe)
+
+**Auth & Provider**
+
+* `auth_changed` (Safe), `auth_failed` (Safe), `provider_switched` (Safe)
+
+**MCP servers**
+
+* `mcp_server_connected`, `mcp_server_disconnected` (Safe)
+* `mcp_server_launch`, `mcp_server_restart`, `mcp_server_crash` (Safe)
+* `mcp_tool_invoked` (Safe)
+
+**Skills**
+
+* `skill_activated`, `skill_deactivated` (Safe)
+
+**Plugins**
+
+* `plugin_loaded`, `plugin_unloaded`, `plugin_error` (Safe)
+
+**Checkpoints**
+
+* `checkpoint_created` (Guarded), `checkpoint_restored` (Risky)
+
+**Budget / Cost**
+
+* `budget_threshold_warning` (Safe), `budget_threshold_reached` (Guarded)
+* `cost_incurred` (Safe)
+
+**Background jobs**
+
+* `background_job_state_changed` (Safe)
+
+**Commands / UI**
+
+* `command_invoked` (Safe), `palette_command_executed` (Safe)
+
+**Diagnostics**
+
+* `unhandled_error` (Safe)
 
 Plugins can:
 
@@ -897,30 +963,75 @@ Override classes matrix:
 
 ### Task 8.3 Plugin API contract + SDKs (ucode-plugins)
 
-* Define versioned plugin API using WIT/component-model interfaces (`v1` contract):
+Traits-first approach: define the v1 API as Rust traits, test with in-process plugins. WASM/WIT deferred to Task 8.4.
 
-  * handshake/capability negotiation
-  * hook subscriptions
-  * optional tool export schema
-  * structured error/result envelope with policy decision metadata
+**Manifest changes:**
 
-* Tool registration model:
+* `id` field: reverse-domain globally unique identifier (`org.acme.code-analyzer`), minimum 3 dot-separated segments
+* `name` field: human-readable display name (arbitrary string)
+* `required_features`: unversioned feature set (`["hooks", "tools", "ui"]`)
+* `min_api_version`: semver floor for compatibility
+* Tool names are local in manifest; host constructs FQN as `{plugin_id}.{tool_name}`
 
-  * plugin declares `ToolSpec` set during initialization
-  * host namespaces tools as `plugin.<plugin-id>.<tool-name>`
-  * host validates schema and applies capability policy before activation
+**Handshake protocol:**
 
-* Provide Rust-first SDK for authoring WASM plugins
-* Plugin manifest includes requested capabilities and minimum API version
+* Plugin sends: `HandshakeRequest { plugin_id, min_api_version, required_features, capabilities }`
+* Host responds: `HandshakeResponse::Accepted { api_version, supported_features, granted_capabilities }` or `Rejected { reason }`
+* Check 1: semver — host API version >= plugin min_api_version (same major)
+* Check 2: features — plugin required_features is subset of host supported_features
+* Check 3: capabilities — host may grant a subset of requested capabilities
+
+**Plugin traits (v1 contract):**
+
+* `Plugin` (mandatory): `handshake()`, `initialize()`, `shutdown()`
+* `HookHandler` (opt-in, requires `hooks` feature): `on_event() -> HookResponse`
+* `ToolProvider` (opt-in, requires `tools` feature): `tool_specs()`, `invoke_tool()`
+* `HookResponse`: `Ok` / `Modify { changes }` (Guarded) / `Veto { reason }` (Risky)
+
+**Hook event expansion:**
+
+* Expand `HookEvent` enum from 22 to 64 variants (full surface from Task 8.2 spec)
+* All new events get `event_name()` and `override_class()` implementations
+
+**Tool registration model:**
+
+* Plugin declares `ToolSpec` set via `ToolProvider::tool_specs()`
+* Host namespaces as `{plugin_id}.{tool_name}` (e.g., `org.acme.code-analyzer.lint`)
+* Host validates JSON schema and applies capability policy before activation
+* Plugin tool calls flow through normal sandbox/approval/audit pipeline
+
+**Version negotiation:**
+
+* `semver` crate for version parsing and comparison
+* `Feature` enum: `Hooks`, `Tools`, `Ui`
+* Host reports `API_VERSION` constant and `supported_features` set
 
 **Acceptance**
 
-* Rust WASM example plugin passes handshake and receives hooks.
-* Version mismatch produces clear incompatibility error.
+* Rust in-process example plugin passes handshake and receives hooks.
+* Version mismatch produces clear `HandshakeError::VersionIncompatible` error.
+* Feature mismatch produces clear `HandshakeError::UnsupportedFeatures` error.
+* Plugin tool registered with namespaced FQN and invocable through host registry.
+* All 64 hook events have `event_name()` and `override_class()` implementations.
 
-### Task 8.4 Plugin runtime isolation model (ucode-plugins + security)
+### Task 8.4 WIT interface + wasmtime WASM runtime (ucode-plugins)
 
-* Runtime policy model prepared for WASM-only plugin execution
+* Translate Rust trait API (from Task 8.3) into `.wit` component-model interfaces
+* Integrate `wasmtime` with component-model support for loading `.wasm` plugins
+* `wit-bindgen` for host and guest binding generation
+* WASM plugin lifecycle: load `.wasm` -> handshake -> activate -> dispatch hooks
+* Rust SDK crate for authoring WASM plugins (compiles to `wasm32-wasip1`)
+* Example WASM plugin demonstrating handshake + hook handling + tool export
+
+**Acceptance**
+
+* Rust WASM plugin compiled to `.wasm` loads via wasmtime and passes handshake.
+* WASM plugin receives hook events and returns `HookResponse`.
+* WASM plugin exports tools accessible through host registry with namespaced FQN.
+
+### Task 8.5 Plugin runtime isolation model (ucode-plugins + security)
+
+* Runtime policy model for WASM-only plugin execution
 * Per-plugin policy profile: filesystem scope, network, command spawn, hook scopes
 * All plugin-originated actions routed through the same approval and audit pipeline
 
@@ -930,7 +1041,7 @@ Override classes matrix:
 * Plugin-originated tool call triggers normal approval/sandbox checks.
 * Runtime model and effective permissions visible in logs/UI.
 
-### Task 8.5 External DCP-style plugin support + hook exposure (ucode-plugins + ucode-core) [P0]
+### Task 8.6 External DCP-style plugin support + hook exposure (ucode-plugins + ucode-core) [P0]
 
 * Support user-installed DCP-style plugins (for example `opencode-dcp`) via documented public hook contracts
 * Guarantee stable, versioned payload schemas for hooks used by DCP workflows:
@@ -948,7 +1059,7 @@ Override classes matrix:
 * Plugin can react to compaction/distillation and session-title events without private host APIs.
 * Permission escalation attempts are blocked and recorded in audit logs.
 
-### Task 8.6 Remote plugin install/update distribution with trust verification (ucode-plugins + security) [P1]
+### Task 8.7 Remote plugin install/update distribution with trust verification (ucode-plugins + security) [P1]
 
 * Support plugin install/update from git/url/registry sources
 * Verify signatures/fingerprints before activation

@@ -1033,11 +1033,19 @@ DONE. 115 plugin tests (111 unit + 4 integration), 0 clippy warnings. Implemente
 * WASM plugin receives hook events and returns `HookResponse`.
 * WASM plugin exports tools accessible through host registry with namespaced FQN.
 
-### Task 8.5 Plugin runtime isolation model (ucode-plugins + security)
+### Task 8.5 Plugin runtime isolation model (ucode-plugins + security) -- DONE
 
 * Runtime policy model for WASM-only plugin execution
 * Per-plugin policy profile: filesystem scope, network, command spawn, hook scopes
 * All plugin-originated actions routed through the same approval and audit pipeline
+* Ed25519 signed plugin verification (feature-gated: `signed-plugins`)
+* WASM resource limits (fuel metering + memory caps via StoreLimits)
+* Plugin isolation levels (Full / Ordered) with accumulated_changes tracking
+* Dynamic policy hot-reload from TOML config
+* WASI preopens for defense-in-depth filesystem sandboxing
+* Tracing instrumentation across all policy enforcement paths
+
+**Tests:** 145 (no features) / 178 (wasm) / 180 (wasm + signed-plugins), 0 clippy warnings
 
 **Acceptance**
 

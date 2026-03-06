@@ -1149,7 +1149,7 @@ Design doc: `docs/plans/2026-03-06-wasm-runtime-design.md`
 * Version mismatch between WIT contract versions produces clear error.
   **Owner:** Plugins
 
-### ISSUE 0805 — WASM plugin runtime isolation model (latest stage) (ucode-plugins + security)
+### ISSUE 0805 — WASM plugin runtime isolation model (latest stage) (ucode-plugins + security) -- DONE
 
 **Goal:** Implement WASM-only plugin runtime in the latest stage, with strict safety controls.
 **Scope/Notes:**
@@ -1158,6 +1158,13 @@ Design doc: `docs/plans/2026-03-06-wasm-runtime-design.md`
 * Per-plugin policy profile: filesystem scope, network, command spawn, hook scope
 * Plugin-originated actions must pass normal approval/sandbox/audit pipeline
 * Runtime is scheduled for latest stage to avoid early complexity
+* Ed25519 signed plugin verification (feature-gated: `signed-plugins`)
+* WASM resource limits (fuel metering + memory caps via StoreLimits)
+* Plugin isolation levels (Full / Ordered) with accumulated_changes tracking
+* Dynamic policy hot-reload from TOML config
+* WASI preopens for defense-in-depth filesystem sandboxing
+* Tracing instrumentation across all policy enforcement paths
+  **Tests:** 145 (no features) / 178 (wasm) / 180 (wasm + signed-plugins), 0 clippy warnings
   **Acceptance tests:**
 * Untrusted plugin cannot exceed granted permissions.
 * Plugin-originated action triggers normal approval/sandbox checks.

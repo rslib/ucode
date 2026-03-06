@@ -1,0 +1,26 @@
+package ucode:hooks-agent;
+
+interface on-spawned {
+    use ucode:hooks-types/types.{hook-response, agent-spawned-payload};
+    handle: func(payload: agent-spawned-payload) -> hook-response;
+}
+
+interface on-message {
+    use ucode:hooks-types/types.{hook-response, agent-message-payload};
+    handle: func(payload: agent-message-payload) -> hook-response;
+}
+
+interface on-completed {
+    use ucode:hooks-types/types.{hook-response, agent-completed-payload};
+    handle: func(payload: agent-completed-payload) -> hook-response;
+}
+
+interface on-failed {
+    use ucode:hooks-types/types.{hook-response, agent-failed-payload};
+    handle: func(payload: agent-failed-payload) -> hook-response;
+}
+
+interface on-cancelled {
+    use ucode:hooks-types/types.{hook-response, agent-cancelled-payload};
+    handle: func(payload: agent-cancelled-payload) -> hook-response;
+}

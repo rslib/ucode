@@ -1,0 +1,21 @@
+package ucode:hooks-tool-fs;
+
+interface on-before-read {
+    use ucode:hooks-types/types.{hook-response, before-file-read-payload};
+    handle: func(payload: before-file-read-payload) -> hook-response;
+}
+
+interface on-after-read {
+    use ucode:hooks-types/types.{hook-response, after-file-read-payload};
+    handle: func(payload: after-file-read-payload) -> hook-response;
+}
+
+interface on-before-write {
+    use ucode:hooks-types/types.{hook-response, before-file-write-payload};
+    handle: func(payload: before-file-write-payload) -> hook-response;
+}
+
+interface on-after-write {
+    use ucode:hooks-types/types.{hook-response, after-file-write-payload};
+    handle: func(payload: after-file-write-payload) -> hook-response;
+}

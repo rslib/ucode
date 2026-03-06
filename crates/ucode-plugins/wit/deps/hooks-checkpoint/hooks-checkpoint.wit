@@ -1,0 +1,11 @@
+package ucode:hooks-checkpoint;
+
+interface on-created {
+    use ucode:hooks-types/types.{hook-response, checkpoint-payload};
+    handle: func(payload: checkpoint-payload) -> hook-response;
+}
+
+interface on-restored {
+    use ucode:hooks-types/types.{hook-response, checkpoint-payload};
+    handle: func(payload: checkpoint-payload) -> hook-response;
+}

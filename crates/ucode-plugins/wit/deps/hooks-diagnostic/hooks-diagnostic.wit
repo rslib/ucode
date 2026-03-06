@@ -1,0 +1,6 @@
+package ucode:hooks-diagnostic;
+
+interface on-unhandled-error {
+    use ucode:hooks-types/types.{hook-response, unhandled-error-payload};
+    handle: func(payload: unhandled-error-payload) -> hook-response;
+}

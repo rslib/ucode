@@ -1,0 +1,6 @@
+package ucode:hooks-job;
+
+interface on-state-changed {
+    use ucode:hooks-types/types.{hook-response, job-state-payload};
+    handle: func(payload: job-state-payload) -> hook-response;
+}

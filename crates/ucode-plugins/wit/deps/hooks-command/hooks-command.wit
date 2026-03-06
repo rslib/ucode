@@ -1,0 +1,11 @@
+package ucode:hooks-command;
+
+interface on-invoked {
+    use ucode:hooks-types/types.{hook-response, command-payload};
+    handle: func(payload: command-payload) -> hook-response;
+}
+
+interface on-palette-executed {
+    use ucode:hooks-types/types.{hook-response, command-payload};
+    handle: func(payload: command-payload) -> hook-response;
+}

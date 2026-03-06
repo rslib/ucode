@@ -1,0 +1,36 @@
+package ucode:hooks-model;
+
+interface on-before-call {
+    use ucode:hooks-types/types.{hook-response, before-model-call-payload};
+    handle: func(payload: before-model-call-payload) -> hook-response;
+}
+
+interface on-after-call {
+    use ucode:hooks-types/types.{hook-response, after-model-call-payload};
+    handle: func(payload: after-model-call-payload) -> hook-response;
+}
+
+interface on-before-select {
+    use ucode:hooks-types/types.{hook-response, before-model-select-payload};
+    handle: func(payload: before-model-select-payload) -> hook-response;
+}
+
+interface on-fallback {
+    use ucode:hooks-types/types.{hook-response, model-fallback-payload};
+    handle: func(payload: model-fallback-payload) -> hook-response;
+}
+
+interface on-router-decision {
+    use ucode:hooks-types/types.{hook-response, router-decision-payload};
+    handle: func(payload: router-decision-payload) -> hook-response;
+}
+
+interface on-rate-limited {
+    use ucode:hooks-types/types.{hook-response, model-rate-limited-payload};
+    handle: func(payload: model-rate-limited-payload) -> hook-response;
+}
+
+interface on-quota-exhausted {
+    use ucode:hooks-types/types.{hook-response, model-quota-exhausted-payload};
+    handle: func(payload: model-quota-exhausted-payload) -> hook-response;
+}

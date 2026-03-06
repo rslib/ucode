@@ -1,0 +1,26 @@
+package ucode:hooks-approval;
+
+interface on-required {
+    use ucode:hooks-types/types.{hook-response, approval-required-payload};
+    handle: func(payload: approval-required-payload) -> hook-response;
+}
+
+interface on-granted {
+    use ucode:hooks-types/types.{hook-response, approval-granted-payload};
+    handle: func(payload: approval-granted-payload) -> hook-response;
+}
+
+interface on-denied {
+    use ucode:hooks-types/types.{hook-response, approval-denied-payload};
+    handle: func(payload: approval-denied-payload) -> hook-response;
+}
+
+interface on-sandbox-decision {
+    use ucode:hooks-types/types.{hook-response, sandbox-decision-payload};
+    handle: func(payload: sandbox-decision-payload) -> hook-response;
+}
+
+interface on-permission-decision {
+    use ucode:hooks-types/types.{hook-response, permission-decision-payload};
+    handle: func(payload: permission-decision-payload) -> hook-response;
+}

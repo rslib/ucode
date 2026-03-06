@@ -1,0 +1,21 @@
+package ucode:hooks-message;
+
+interface on-user-message {
+    use ucode:hooks-types/types.{hook-response, user-message-payload};
+    handle: func(payload: user-message-payload) -> hook-response;
+}
+
+interface on-response-started {
+    use ucode:hooks-types/types.{hook-response, response-started-payload};
+    handle: func(payload: response-started-payload) -> hook-response;
+}
+
+interface on-response-completed {
+    use ucode:hooks-types/types.{hook-response, response-completed-payload};
+    handle: func(payload: response-completed-payload) -> hook-response;
+}
+
+interface on-retry {
+    use ucode:hooks-types/types.{hook-response, retry-payload};
+    handle: func(payload: retry-payload) -> hook-response;
+}

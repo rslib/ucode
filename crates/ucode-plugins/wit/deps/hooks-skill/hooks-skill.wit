@@ -1,0 +1,11 @@
+package ucode:hooks-skill;
+
+interface on-activated {
+    use ucode:hooks-types/types.{hook-response, skill-payload};
+    handle: func(payload: skill-payload) -> hook-response;
+}
+
+interface on-deactivated {
+    use ucode:hooks-types/types.{hook-response, skill-payload};
+    handle: func(payload: skill-payload) -> hook-response;
+}

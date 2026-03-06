@@ -1,0 +1,21 @@
+package ucode:hooks-tool;
+
+interface on-before-call {
+    use ucode:hooks-types/types.{hook-response, before-tool-call-payload};
+    handle: func(payload: before-tool-call-payload) -> hook-response;
+}
+
+interface on-after-call {
+    use ucode:hooks-types/types.{hook-response, after-tool-call-payload};
+    handle: func(payload: after-tool-call-payload) -> hook-response;
+}
+
+interface on-error {
+    use ucode:hooks-types/types.{hook-response, tool-error-payload};
+    handle: func(payload: tool-error-payload) -> hook-response;
+}
+
+interface on-timeout {
+    use ucode:hooks-types/types.{hook-response, tool-timeout-payload};
+    handle: func(payload: tool-timeout-payload) -> hook-response;
+}

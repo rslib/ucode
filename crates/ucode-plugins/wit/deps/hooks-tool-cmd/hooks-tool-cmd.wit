@@ -1,0 +1,11 @@
+package ucode:hooks-tool-cmd;
+
+interface on-before-run {
+    use ucode:hooks-types/types.{hook-response, before-run-cmd-payload};
+    handle: func(payload: before-run-cmd-payload) -> hook-response;
+}
+
+interface on-after-run {
+    use ucode:hooks-types/types.{hook-response, after-run-cmd-payload};
+    handle: func(payload: after-run-cmd-payload) -> hook-response;
+}

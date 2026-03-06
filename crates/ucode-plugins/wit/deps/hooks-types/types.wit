@@ -1,0 +1,357 @@
+package ucode:hooks-types;
+
+interface types {
+    /// What a plugin returns from a hook handler.
+    enum hook-response-kind {
+        /// Observed, no action taken.
+        ok,
+        /// Propose modifications (Guarded events only).
+        modify,
+        /// Veto the action (Risky events only, requires approval).
+        veto,
+    }
+
+    record hook-response {
+        kind: hook-response-kind,
+        /// JSON string for modify (changes) or veto (reason). None for ok.
+        data: option<string>,
+    }
+
+    // ---- Session payloads ----
+
+    record session-start-payload {
+        session-id: string,
+    }
+
+    record session-end-payload {
+        session-id: string,
+        duration-secs: f64,
+    }
+
+    record session-title-payload {
+        session-id: string,
+        title: string,
+    }
+
+    // ---- Message payloads ----
+
+    record user-message-payload {
+        message-len: u32,
+    }
+
+    record response-started-payload {
+        model: string,
+    }
+
+    record response-completed-payload {
+        model: string,
+        tokens: u32,
+        duration-ms: u64,
+    }
+
+    record retry-payload {
+        reason: string,
+        attempt: u32,
+    }
+
+    // ---- Model payloads ----
+
+    record before-model-call-payload {
+        model: string,
+        message-count: u32,
+    }
+
+    record after-model-call-payload {
+        model: string,
+        tokens-used: u32,
+        duration-ms: u64,
+    }
+
+    record before-model-select-payload {
+        candidates: list<string>,
+    }
+
+    record model-fallback-payload {
+        from-model: string,
+        to-model: string,
+        reason: string,
+    }
+
+    record router-decision-payload {
+        model: string,
+        reason: string,
+    }
+
+    record model-rate-limited-payload {
+        model: string,
+        retry-after-ms: option<u64>,
+    }
+
+    record model-quota-exhausted-payload {
+        model: string,
+    }
+
+    // ---- Tool payloads ----
+
+    record before-tool-call-payload {
+        tool-name: string,
+        /// JSON-serialized arguments.
+        args: string,
+    }
+
+    record after-tool-call-payload {
+        tool-name: string,
+        /// JSON-serialized result.
+        tool-result: string,
+        duration-ms: u64,
+    }
+
+    record tool-error-payload {
+        tool-name: string,
+        error-msg: string,
+    }
+
+    record tool-timeout-payload {
+        tool-name: string,
+        timeout-ms: u64,
+    }
+
+    // ---- Tool FS payloads ----
+
+    record before-file-read-payload {
+        path: string,
+    }
+
+    record after-file-read-payload {
+        path: string,
+        size-bytes: u64,
+    }
+
+    record before-file-write-payload {
+        path: string,
+    }
+
+    record after-file-write-payload {
+        path: string,
+        size-bytes: u64,
+    }
+
+    // ---- Tool CMD payloads ----
+
+    record before-run-cmd-payload {
+        command: string,
+    }
+
+    record after-run-cmd-payload {
+        command: string,
+        exit-code: s32,
+        duration-ms: u64,
+    }
+
+    // ---- Tool Patch payloads ----
+
+    record before-apply-patch-payload {
+        file-path: string,
+        patch-summary: string,
+    }
+
+    record after-apply-patch-payload {
+        file-path: string,
+        lines-changed: u32,
+    }
+
+    // ---- Context payloads ----
+
+    record context-overflow-payload {
+        current-tokens: u32,
+        max-tokens: u32,
+    }
+
+    record context-compaction-payload {
+        before-tokens: u32,
+        after-tokens: u32,
+    }
+
+    record context-distilled-payload {
+        before-tokens: u32,
+        after-tokens: u32,
+    }
+
+    record token-usage-payload {
+        total-tokens: u32,
+        max-tokens: u32,
+    }
+
+    // ---- Agent payloads ----
+
+    record agent-spawned-payload {
+        agent-id: string,
+        task: string,
+    }
+
+    record agent-message-payload {
+        agent-id: string,
+        message: string,
+    }
+
+    record agent-completed-payload {
+        agent-id: string,
+        duration-ms: u64,
+    }
+
+    record agent-failed-payload {
+        agent-id: string,
+        error-msg: string,
+    }
+
+    record agent-cancelled-payload {
+        agent-id: string,
+        reason: string,
+    }
+
+    // ---- Approval payloads ----
+
+    record approval-required-payload {
+        tool-name: string,
+        risk-level: string,
+    }
+
+    record approval-granted-payload {
+        tool-name: string,
+    }
+
+    record approval-denied-payload {
+        tool-name: string,
+        reason: string,
+    }
+
+    record sandbox-decision-payload {
+        tool-name: string,
+        allowed: bool,
+        reason: string,
+    }
+
+    record permission-decision-payload {
+        action: string,
+        allowed: bool,
+        reason: string,
+    }
+
+    // ---- Auth payloads ----
+
+    record auth-changed-payload {
+        provider: string,
+    }
+
+    record auth-failed-payload {
+        provider: string,
+        error-msg: string,
+    }
+
+    record provider-switched-payload {
+        from-provider: string,
+        to-provider: string,
+    }
+
+    // ---- MCP payloads ----
+
+    record mcp-server-payload {
+        server-name: string,
+    }
+
+    record mcp-server-reason-payload {
+        server-name: string,
+        reason: string,
+    }
+
+    record mcp-server-error-payload {
+        server-name: string,
+        error-msg: string,
+    }
+
+    record mcp-tool-invoked-payload {
+        server-name: string,
+        tool-name: string,
+    }
+
+    // ---- Skill payloads ----
+
+    record skill-payload {
+        skill-name: string,
+    }
+
+    // ---- Plugin payloads ----
+
+    record plugin-payload {
+        plugin-name: string,
+    }
+
+    record plugin-error-payload {
+        plugin-name: string,
+        error-msg: string,
+    }
+
+    // ---- Checkpoint payloads ----
+
+    record checkpoint-payload {
+        checkpoint-id: string,
+    }
+
+    // ---- Budget payloads ----
+
+    record budget-warning-payload {
+        current-cost: f64,
+        threshold: f64,
+    }
+
+    record budget-reached-payload {
+        current-cost: f64,
+        limit: f64,
+    }
+
+    record cost-incurred-payload {
+        model: string,
+        cost-usd: f64,
+        tokens: u32,
+    }
+
+    // ---- Job payloads ----
+
+    record job-state-payload {
+        job-id: string,
+        state: string,
+    }
+
+    // ---- Command payloads ----
+
+    record command-payload {
+        command: string,
+    }
+
+    // ---- Diagnostic payloads ----
+
+    record unhandled-error-payload {
+        error-msg: string,
+        context: string,
+    }
+
+    // ---- Plugin lifecycle payloads ----
+
+    record handshake-request {
+        plugin-id: string,
+        plugin-version: string,
+        min-api-version: string,
+        required-features: list<string>,
+    }
+
+    variant handshake-result {
+        accepted(string),
+        rejected(string),
+    }
+
+    record tool-spec {
+        name: string,
+        description: option<string>,
+        input-schema: option<string>,
+    }
+}

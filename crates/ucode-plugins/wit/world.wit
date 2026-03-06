@@ -1,0 +1,115 @@
+package ucode:plugin-world@1.0.0;
+
+world maximal-plugin {
+    // Host provides
+    import ucode:plugin/host-log;
+
+    // Lifecycle (required for real plugins)
+    export ucode:plugin/lifecycle;
+
+    // Tools (optional)
+    export ucode:plugin/tool-provider;
+
+    // Session hooks
+    export ucode:hooks-session/on-start;
+    export ucode:hooks-session/on-end;
+    export ucode:hooks-session/on-title-generated;
+    export ucode:hooks-session/on-title-updated;
+    export ucode:hooks-session/on-config-reloaded;
+
+    // Message hooks
+    export ucode:hooks-message/on-user-message;
+    export ucode:hooks-message/on-response-started;
+    export ucode:hooks-message/on-response-completed;
+    export ucode:hooks-message/on-retry;
+
+    // Model hooks
+    export ucode:hooks-model/on-before-call;
+    export ucode:hooks-model/on-after-call;
+    export ucode:hooks-model/on-before-select;
+    export ucode:hooks-model/on-fallback;
+    export ucode:hooks-model/on-router-decision;
+    export ucode:hooks-model/on-rate-limited;
+    export ucode:hooks-model/on-quota-exhausted;
+
+    // Tool hooks
+    export ucode:hooks-tool/on-before-call;
+    export ucode:hooks-tool/on-after-call;
+    export ucode:hooks-tool/on-error;
+    export ucode:hooks-tool/on-timeout;
+
+    // Tool FS hooks
+    export ucode:hooks-tool-fs/on-before-read;
+    export ucode:hooks-tool-fs/on-after-read;
+    export ucode:hooks-tool-fs/on-before-write;
+    export ucode:hooks-tool-fs/on-after-write;
+
+    // Tool CMD hooks
+    export ucode:hooks-tool-cmd/on-before-run;
+    export ucode:hooks-tool-cmd/on-after-run;
+
+    // Tool Patch hooks
+    export ucode:hooks-tool-patch/on-before-apply;
+    export ucode:hooks-tool-patch/on-after-apply;
+
+    // Context hooks
+    export ucode:hooks-context/on-overflow;
+    export ucode:hooks-context/on-compaction;
+    export ucode:hooks-context/on-distilled;
+    export ucode:hooks-context/on-usage-updated;
+
+    // Agent hooks
+    export ucode:hooks-agent/on-spawned;
+    export ucode:hooks-agent/on-message;
+    export ucode:hooks-agent/on-completed;
+    export ucode:hooks-agent/on-failed;
+    export ucode:hooks-agent/on-cancelled;
+
+    // Approval hooks
+    export ucode:hooks-approval/on-required;
+    export ucode:hooks-approval/on-granted;
+    export ucode:hooks-approval/on-denied;
+    export ucode:hooks-approval/on-sandbox-decision;
+    export ucode:hooks-approval/on-permission-decision;
+
+    // Auth hooks
+    export ucode:hooks-auth/on-changed;
+    export ucode:hooks-auth/on-failed;
+    export ucode:hooks-auth/on-provider-switched;
+
+    // MCP hooks
+    export ucode:hooks-mcp/on-connected;
+    export ucode:hooks-mcp/on-disconnected;
+    export ucode:hooks-mcp/on-launch;
+    export ucode:hooks-mcp/on-restart;
+    export ucode:hooks-mcp/on-crash;
+    export ucode:hooks-mcp/on-tool-invoked;
+
+    // Skill hooks
+    export ucode:hooks-skill/on-activated;
+    export ucode:hooks-skill/on-deactivated;
+
+    // Plugin hooks
+    export ucode:hooks-plugin/on-loaded;
+    export ucode:hooks-plugin/on-unloaded;
+    export ucode:hooks-plugin/on-error;
+
+    // Checkpoint hooks
+    export ucode:hooks-checkpoint/on-created;
+    export ucode:hooks-checkpoint/on-restored;
+
+    // Budget hooks
+    export ucode:hooks-budget/on-warning;
+    export ucode:hooks-budget/on-reached;
+    export ucode:hooks-budget/on-cost-incurred;
+
+    // Job hooks
+    export ucode:hooks-job/on-state-changed;
+
+    // Command hooks
+    export ucode:hooks-command/on-invoked;
+    export ucode:hooks-command/on-palette-executed;
+
+    // Diagnostic hooks
+    export ucode:hooks-diagnostic/on-unhandled-error;
+}

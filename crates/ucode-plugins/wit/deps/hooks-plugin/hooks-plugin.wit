@@ -1,0 +1,16 @@
+package ucode:hooks-plugin;
+
+interface on-loaded {
+    use ucode:hooks-types/types.{hook-response, plugin-payload};
+    handle: func(payload: plugin-payload) -> hook-response;
+}
+
+interface on-unloaded {
+    use ucode:hooks-types/types.{hook-response, plugin-payload};
+    handle: func(payload: plugin-payload) -> hook-response;
+}
+
+interface on-error {
+    use ucode:hooks-types/types.{hook-response, plugin-error-payload};
+    handle: func(payload: plugin-error-payload) -> hook-response;
+}

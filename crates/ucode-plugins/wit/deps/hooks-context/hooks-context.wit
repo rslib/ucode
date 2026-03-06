@@ -1,0 +1,21 @@
+package ucode:hooks-context;
+
+interface on-overflow {
+    use ucode:hooks-types/types.{hook-response, context-overflow-payload};
+    handle: func(payload: context-overflow-payload) -> hook-response;
+}
+
+interface on-compaction {
+    use ucode:hooks-types/types.{hook-response, context-compaction-payload};
+    handle: func(payload: context-compaction-payload) -> hook-response;
+}
+
+interface on-distilled {
+    use ucode:hooks-types/types.{hook-response, context-distilled-payload};
+    handle: func(payload: context-distilled-payload) -> hook-response;
+}
+
+interface on-usage-updated {
+    use ucode:hooks-types/types.{hook-response, token-usage-payload};
+    handle: func(payload: token-usage-payload) -> hook-response;
+}

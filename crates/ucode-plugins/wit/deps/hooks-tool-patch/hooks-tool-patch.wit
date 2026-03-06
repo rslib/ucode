@@ -1,0 +1,11 @@
+package ucode:hooks-tool-patch;
+
+interface on-before-apply {
+    use ucode:hooks-types/types.{hook-response, before-apply-patch-payload};
+    handle: func(payload: before-apply-patch-payload) -> hook-response;
+}
+
+interface on-after-apply {
+    use ucode:hooks-types/types.{hook-response, after-apply-patch-payload};
+    handle: func(payload: after-apply-patch-payload) -> hook-response;
+}

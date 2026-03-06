@@ -1,0 +1,18 @@
+package ucode:plugin;
+
+interface lifecycle {
+    use ucode:hooks-types/types.{handshake-request, handshake-result};
+    handshake: func() -> handshake-request;
+    initialize: func(init-result: handshake-result) -> result<_, string>;
+    shutdown: func();
+}
+
+interface tool-provider {
+    use ucode:hooks-types/types.{tool-spec};
+    tool-specs: func() -> list<tool-spec>;
+    invoke-tool: func(name: string, args: string) -> result<string, string>;
+}
+
+interface host-log {
+    log: func(msg: string);
+}

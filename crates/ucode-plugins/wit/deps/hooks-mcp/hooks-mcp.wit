@@ -1,0 +1,31 @@
+package ucode:hooks-mcp;
+
+interface on-connected {
+    use ucode:hooks-types/types.{hook-response, mcp-server-payload};
+    handle: func(payload: mcp-server-payload) -> hook-response;
+}
+
+interface on-disconnected {
+    use ucode:hooks-types/types.{hook-response, mcp-server-reason-payload};
+    handle: func(payload: mcp-server-reason-payload) -> hook-response;
+}
+
+interface on-launch {
+    use ucode:hooks-types/types.{hook-response, mcp-server-payload};
+    handle: func(payload: mcp-server-payload) -> hook-response;
+}
+
+interface on-restart {
+    use ucode:hooks-types/types.{hook-response, mcp-server-reason-payload};
+    handle: func(payload: mcp-server-reason-payload) -> hook-response;
+}
+
+interface on-crash {
+    use ucode:hooks-types/types.{hook-response, mcp-server-error-payload};
+    handle: func(payload: mcp-server-error-payload) -> hook-response;
+}
+
+interface on-tool-invoked {
+    use ucode:hooks-types/types.{hook-response, mcp-tool-invoked-payload};
+    handle: func(payload: mcp-tool-invoked-payload) -> hook-response;
+}

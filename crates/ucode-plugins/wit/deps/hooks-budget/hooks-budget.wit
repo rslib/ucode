@@ -1,0 +1,16 @@
+package ucode:hooks-budget;
+
+interface on-warning {
+    use ucode:hooks-types/types.{hook-response, budget-warning-payload};
+    handle: func(payload: budget-warning-payload) -> hook-response;
+}
+
+interface on-reached {
+    use ucode:hooks-types/types.{hook-response, budget-reached-payload};
+    handle: func(payload: budget-reached-payload) -> hook-response;
+}
+
+interface on-cost-incurred {
+    use ucode:hooks-types/types.{hook-response, cost-incurred-payload};
+    handle: func(payload: cost-incurred-payload) -> hook-response;
+}

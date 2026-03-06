@@ -1,0 +1,16 @@
+package ucode:hooks-auth;
+
+interface on-changed {
+    use ucode:hooks-types/types.{hook-response, auth-changed-payload};
+    handle: func(payload: auth-changed-payload) -> hook-response;
+}
+
+interface on-failed {
+    use ucode:hooks-types/types.{hook-response, auth-failed-payload};
+    handle: func(payload: auth-failed-payload) -> hook-response;
+}
+
+interface on-provider-switched {
+    use ucode:hooks-types/types.{hook-response, provider-switched-payload};
+    handle: func(payload: provider-switched-payload) -> hook-response;
+}

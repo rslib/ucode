@@ -604,6 +604,178 @@ mod tests {
     }
 
     #[test]
+    fn test_policy_config_from_toml() {
+        let toml_str = r#"
+            [default_wasm]
+            filesystem_read = true
+            filesystem_write = false
+            workspace_bound = true
+            process_spawn = false
+            guarded_ui = false
+            max_override_class = "safe"
+            isolation_level = "full"
+            allowed_paths = []
+            allowed_hook_categories = []
+
+            [default_wasm.network]
+            allowed = false
+            domain_allowlist = []
+            domain_denylist = []
+            port_allowlist = []
+
+            [default_wasm.resource_limits]
+            max_memory_bytes = 8388608
+            max_fuel = 500000
+            max_instances = 1
+
+            [default_native]
+            filesystem_read = true
+            filesystem_write = true
+            workspace_bound = false
+            process_spawn = true
+            guarded_ui = true
+            max_override_class = "risky"
+            isolation_level = "ordered"
+            allowed_paths = []
+            allowed_hook_categories = []
+
+            [default_native.network]
+            allowed = true
+            domain_allowlist = []
+            domain_denylist = []
+            port_allowlist = []
+
+            [default_native.resource_limits]
+            max_memory_bytes = 9223372036854775807
+            max_fuel = 9223372036854775807
+            max_instances = 9223372036854775807
+        "#;
+        let config: PluginPolicyConfig = toml::from_str(toml_str).unwrap();
+        assert!(config.default_wasm.filesystem_read);
+        assert!(!config.default_wasm.filesystem_write);
+        assert_eq!(
+            config.default_wasm.resource_limits.max_memory_bytes,
+            8_388_608
+        );
+        assert_eq!(config.default_wasm.resource_limits.max_fuel, 500_000);
+        assert_eq!(
+            config.default_wasm.isolation_level,
+            PluginIsolationLevel::Full
+        );
+        assert_eq!(
+            config.default_native.isolation_level,
+            PluginIsolationLevel::Ordered
+        );
+    }
+
+    #[test]
+    fn test_policy_config_to_toml_roundtrip() {
+        // Use a config with bounded values (not usize::MAX) since TOML only supports i64.
+        let mut config = PluginPolicyConfig::default();
+        // Replace unlimited native limits with bounded values for TOML roundtrip.
+        config.default_native.resource_limits.max_memory_bytes = 64 * 1024 * 1024;
+        config.default_native.resource_limits.max_fuel = 10_000_000;
+        config.default_native.resource_limits.max_instances = 4;
+        let toml_str = toml::to_string_pretty(&config).unwrap();
+        let parsed: PluginPolicyConfig = toml::from_str(&toml_str).unwrap();
+        assert_eq!(
+            parsed.default_wasm.filesystem_read,
+            config.default_wasm.filesystem_read
+        );
+        assert_eq!(
+            parsed.default_wasm.resource_limits.max_fuel,
+            config.default_wasm.resource_limits.max_fuel
+        );
+        assert_eq!(
+            parsed.default_wasm.isolation_level,
+            config.default_wasm.isolation_level
+        );
+        assert_eq!(
+            parsed.default_native.isolation_level,
+            config.default_native.isolation_level
+        );
+    }
+
+    #[test]
+    fn test_policy_config_with_per_plugin_toml() {
+        let toml_str = r#"
+            [default_wasm]
+            filesystem_read = true
+            filesystem_write = false
+            workspace_bound = true
+            process_spawn = false
+            guarded_ui = false
+            max_override_class = "safe"
+            isolation_level = "full"
+            allowed_paths = []
+            allowed_hook_categories = []
+
+            [default_wasm.network]
+            allowed = false
+            domain_allowlist = []
+            domain_denylist = []
+            port_allowlist = []
+
+            [default_wasm.resource_limits]
+            max_memory_bytes = 16777216
+            max_fuel = 1000000
+            max_instances = 1
+
+            [default_native]
+            filesystem_read = true
+            filesystem_write = true
+            workspace_bound = false
+            process_spawn = true
+            guarded_ui = true
+            max_override_class = "risky"
+            isolation_level = "ordered"
+            allowed_paths = []
+            allowed_hook_categories = []
+
+            [default_native.network]
+            allowed = true
+            domain_allowlist = []
+            domain_denylist = []
+            port_allowlist = []
+
+            [default_native.resource_limits]
+            max_memory_bytes = 9223372036854775807
+            max_fuel = 9223372036854775807
+            max_instances = 9223372036854775807
+
+            [per_plugin."org.test.special"]
+            filesystem_read = true
+            filesystem_write = true
+            workspace_bound = false
+            process_spawn = false
+            guarded_ui = false
+            max_override_class = "guarded"
+            isolation_level = "ordered"
+            allowed_paths = []
+            allowed_hook_categories = ["session", "tool"]
+
+            [per_plugin."org.test.special".network]
+            allowed = true
+            domain_allowlist = ["api.example.com"]
+            domain_denylist = []
+            port_allowlist = []
+
+            [per_plugin."org.test.special".resource_limits]
+            max_memory_bytes = 33554432
+            max_fuel = 2000000
+            max_instances = 2
+        "#;
+        let config: PluginPolicyConfig = toml::from_str(toml_str).unwrap();
+        let special = config.per_plugin.get("org.test.special").unwrap();
+        assert!(special.filesystem_write);
+        assert_eq!(special.max_override_class, OverrideClass::Guarded);
+        assert_eq!(special.isolation_level, PluginIsolationLevel::Ordered);
+        assert!(special.allowed_hook_categories.contains("session"));
+        assert!(special.allowed_hook_categories.contains("tool"));
+        assert_eq!(special.resource_limits.max_memory_bytes, 33_554_432);
+    }
+
+    #[test]
     fn test_policy_config_resolve_per_plugin_override() {
         let mut config = PluginPolicyConfig::default();
         let mut override_policy = PluginPolicy::default_wasm();

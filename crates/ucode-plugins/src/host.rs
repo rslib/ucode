@@ -6,7 +6,9 @@ use crate::api::{
 };
 use crate::hooks::{HookEvent, HookRecord, OverrideClass};
 use crate::manifest::PluginToolDef;
-use crate::policy::{PluginIsolationLevel, PluginPolicy, PolicyCheckResult, override_class_level};
+use crate::policy::{
+    PluginIsolationLevel, PluginPolicy, PluginPolicyConfig, PolicyCheckResult, override_class_level,
+};
 
 /// Result of dispatching a hook to a single plugin.
 pub struct HookResult {
@@ -162,6 +164,34 @@ impl PluginHost {
             PluginInstance::Wasm(_) => { /* cleanup handled by Drop */ }
         }
         true
+    }
+
+    /// Reload plugin policies from a new config.
+    ///
+    /// Updates host-level policy checks immediately for all loaded plugins.
+    /// Per-plugin overrides take precedence; plugins without overrides get
+    /// the appropriate default (native or WASM).
+    ///
+    /// Note: WASI preopens are set at Store creation time and only take
+    /// effect on next plugin restart.
+    pub fn reload_policy_config(&mut self, config: &PluginPolicyConfig) {
+        for loaded in &mut self.plugins {
+            let new_policy = if let Some(override_policy) = config.per_plugin.get(&loaded.plugin_id)
+            {
+                override_policy.clone()
+            } else {
+                match &loaded.instance {
+                    #[cfg(feature = "wasm")]
+                    PluginInstance::Wasm(_) => config.default_wasm.clone(),
+                    _ => config.default_native.clone(),
+                }
+            };
+            tracing::info!(
+                plugin_id = %loaded.plugin_id,
+                "reloaded plugin policy"
+            );
+            loaded.policy = new_policy;
+        }
     }
 
     /// Override the policy for a loaded plugin.
@@ -925,5 +955,76 @@ mod tests {
         assert_eq!(results.len(), 2);
         assert!(matches!(results[0].response, HookResponse::Modify { .. }));
         assert!(matches!(results[1].response, HookResponse::Modify { .. }));
+    }
+
+    #[test]
+    fn test_reload_policy_config() {
+        let mut host = PluginHost::new();
+        host.load(TestPlugin::new("org.test.logger")).unwrap();
+
+        // Initial policy is default_native
+        let policy = host.plugin_policy("org.test.logger").unwrap();
+        assert!(policy.filesystem_write);
+
+        // Reload with restrictive per-plugin config
+        let mut config = PluginPolicyConfig::default();
+        let mut restrictive = PluginPolicy::default_wasm();
+        restrictive.filesystem_write = false;
+        config
+            .per_plugin
+            .insert("org.test.logger".into(), restrictive);
+        host.reload_policy_config(&config);
+
+        // Policy should be updated
+        let policy = host.plugin_policy("org.test.logger").unwrap();
+        assert!(!policy.filesystem_write);
+    }
+
+    #[test]
+    fn test_reload_policy_config_unaffected_plugins() {
+        let mut host = PluginHost::new();
+        host.load(TestPlugin::new("org.test.a")).unwrap();
+        host.load(TestPlugin::new("org.test.b")).unwrap();
+
+        let mut config = PluginPolicyConfig::default();
+        let mut restrictive = PluginPolicy::default_wasm();
+        restrictive.process_spawn = false;
+        config.per_plugin.insert("org.test.a".into(), restrictive);
+        host.reload_policy_config(&config);
+
+        // org.test.a should be restricted
+        assert!(!host.plugin_policy("org.test.a").unwrap().process_spawn);
+        // org.test.b should get default_native (native plugin with no override)
+        assert!(host.plugin_policy("org.test.b").unwrap().process_spawn);
+    }
+
+    #[test]
+    fn test_reload_policy_config_updates_isolation_level() {
+        let mut host = PluginHost::new();
+        host.load(TestPlugin::new("org.test.plugin")).unwrap();
+
+        // Initially native default = Ordered
+        assert_eq!(
+            host.plugin_policy("org.test.plugin")
+                .unwrap()
+                .isolation_level,
+            PluginIsolationLevel::Ordered
+        );
+
+        // Reload with Full isolation override
+        let mut config = PluginPolicyConfig::default();
+        let mut override_policy = PluginPolicy::default_wasm();
+        override_policy.isolation_level = PluginIsolationLevel::Full;
+        config
+            .per_plugin
+            .insert("org.test.plugin".into(), override_policy);
+        host.reload_policy_config(&config);
+
+        assert_eq!(
+            host.plugin_policy("org.test.plugin")
+                .unwrap()
+                .isolation_level,
+            PluginIsolationLevel::Full
+        );
     }
 }

@@ -6,6 +6,9 @@ use crate::keybinds::{KeybindPreset, KeybindResolver};
 use crate::layout::{InputState, SidebarState, TerminalSize};
 use crate::overlays::approval_modal::ApprovalModalState;
 use crate::overlays::diff_modal::DiffModalState;
+use crate::overlays::overlay_queue::{
+    ActiveOverlay, OverlayAction, OverlayNext, OverlayQueue, OverlayRequest,
+};
 use crate::overlays::palette::PaletteState;
 use crate::theme::{Density, UcodeTheme};
 
@@ -184,6 +187,7 @@ pub struct AppState {
     pub palette: PaletteState,
     pub diff_modal: DiffModalState,
     pub approval_modal: ApprovalModalState,
+    pub overlay_queue: OverlayQueue,
     /// Timestamp of the last Ctrl+C press, for double-Ctrl+C exit detection.
     pub last_ctrl_c: Option<Instant>,
     /// Transient hint set after the first Ctrl+C; cleared when the 2-second
@@ -220,6 +224,7 @@ impl AppState {
             palette: PaletteState::new(),
             diff_modal: DiffModalState::new(),
             approval_modal: ApprovalModalState::new(),
+            overlay_queue: OverlayQueue::new(),
             last_ctrl_c: None,
             ctrl_c_hint: None,
         }
@@ -347,19 +352,21 @@ impl AppState {
         self.mark_dirty();
     }
 
-    /// Push a patch proposal to the transcript and open the diff modal.
+    /// Push a patch proposal to the transcript and submit through the overlay queue.
     pub fn propose_patch(&mut self, file_path: String, raw_diff: String, patch_id: Option<String>) {
         self.transcript.push(TranscriptEntry::PatchProposed {
             file_path: file_path.clone(),
             raw_diff: raw_diff.clone(),
             patch_id: patch_id.clone(),
         });
-        self.diff_modal.open(file_path, &raw_diff, patch_id);
-        self.focus = FocusTarget::Overlay;
-        self.mark_dirty();
+        self.submit_overlay(OverlayRequest::Diff {
+            file_path,
+            raw_diff,
+            patch_id,
+        });
     }
 
-    /// Push a tool call with `PendingApproval` status and open the approval modal.
+    /// Push a tool call with `PendingApproval` status and submit through the overlay queue.
     pub fn request_approval(
         &mut self,
         tool_name: String,
@@ -376,10 +383,103 @@ impl AppState {
             None,
             None,
         );
-        self.approval_modal
-            .open_run_cmd(tool_name, command, cwd, sandbox_label, Some(index));
+        self.submit_overlay(OverlayRequest::Approval {
+            tool_name,
+            command,
+            cwd,
+            sandbox_label,
+            tool_call_index: Some(index),
+        });
+    }
+
+    /// Open an overlay request on the appropriate modal state struct.
+    fn open_overlay(&mut self, request: OverlayRequest) {
+        match request {
+            OverlayRequest::Approval {
+                tool_name,
+                command,
+                cwd,
+                sandbox_label,
+                tool_call_index,
+            } => {
+                self.approval_modal.open_run_cmd(
+                    tool_name,
+                    command,
+                    cwd,
+                    sandbox_label,
+                    tool_call_index,
+                );
+            }
+            OverlayRequest::Diff {
+                file_path,
+                raw_diff,
+                patch_id,
+            } => {
+                self.diff_modal.open(file_path, &raw_diff, patch_id);
+            }
+        }
         self.focus = FocusTarget::Overlay;
-        self.mark_dirty();
+    }
+
+    /// Suspend the currently active overlay (hide it without losing state).
+    fn suspend_active_overlay(&mut self) {
+        if self.diff_modal.visible {
+            self.diff_modal.visible = false;
+        }
+        if self.approval_modal.visible {
+            self.approval_modal.visible = false;
+        }
+    }
+
+    /// Resume a suspended overlay.
+    fn resume_overlay(&mut self, overlay: ActiveOverlay) {
+        match overlay {
+            ActiveOverlay::Diff => {
+                self.diff_modal.visible = true;
+            }
+            ActiveOverlay::Approval => {
+                self.approval_modal.visible = true;
+            }
+        }
+        self.focus = FocusTarget::Overlay;
+    }
+
+    /// Submit an overlay request through the queue. Handles open/preempt/queue.
+    pub fn submit_overlay(&mut self, request: OverlayRequest) {
+        let action = self.overlay_queue.submit(request);
+        match action {
+            OverlayAction::Open(req) => {
+                self.open_overlay(req);
+                self.mark_dirty();
+            }
+            OverlayAction::Preempt(req) => {
+                self.suspend_active_overlay();
+                self.open_overlay(req);
+                self.mark_dirty();
+            }
+            OverlayAction::Queued => {
+                self.mark_dirty();
+            }
+        }
+    }
+
+    /// Advance the overlay queue after the current overlay is dismissed.
+    /// Call this after closing any system-initiated modal.
+    pub fn advance_overlay_queue(&mut self) {
+        match self.overlay_queue.dismiss_active() {
+            Some(OverlayNext::Open(req)) => {
+                self.open_overlay(req);
+                self.mark_dirty();
+            }
+            Some(OverlayNext::Resume(overlay)) => {
+                self.resume_overlay(overlay);
+                self.mark_dirty();
+            }
+            None => {
+                self.focus = FocusTarget::Input;
+                self.mark_dirty();
+            }
+        }
     }
 
     // ------------------------------------------------------------------
@@ -436,6 +536,7 @@ impl Default for AppState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::overlays::overlay_queue::ActiveOverlay;
 
     #[test]
     fn streaming_message_push_token() {
@@ -635,6 +736,64 @@ mod tests {
             }
             other => panic!("expected ToolCall, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn propose_patch_uses_overlay_queue() {
+        let mut app = AppState::new();
+        app.propose_patch("f.rs".to_owned(), "+line".to_owned(), None);
+        assert!(app.diff_modal.visible);
+        assert_eq!(app.overlay_queue.active(), Some(ActiveOverlay::Diff));
+    }
+
+    #[test]
+    fn request_approval_preempts_diff() {
+        let mut app = AppState::new();
+        app.propose_patch("f.rs".to_owned(), "+line".to_owned(), None);
+        assert!(app.diff_modal.visible);
+
+        app.request_approval(
+            "run_cmd".to_owned(),
+            "cargo test".to_owned(),
+            "/tmp".to_owned(),
+            "workspace".to_owned(),
+        );
+        // Diff should be suspended (invisible), approval should be active
+        assert!(!app.diff_modal.visible);
+        assert!(app.approval_modal.visible);
+    }
+
+    #[test]
+    fn advance_queue_resumes_after_preemption() {
+        let mut app = AppState::new();
+        app.propose_patch("f.rs".to_owned(), "+line".to_owned(), None);
+        app.request_approval(
+            "run_cmd".to_owned(),
+            "cargo test".to_owned(),
+            "/tmp".to_owned(),
+            "workspace".to_owned(),
+        );
+
+        // Dismiss approval
+        app.approval_modal.close();
+        app.advance_overlay_queue();
+
+        // Diff should resume
+        assert!(app.diff_modal.visible);
+        assert!(!app.approval_modal.visible);
+        assert_eq!(app.focus, FocusTarget::Overlay);
+    }
+
+    #[test]
+    fn advance_queue_returns_to_input_when_empty() {
+        let mut app = AppState::new();
+        app.propose_patch("f.rs".to_owned(), "+line".to_owned(), None);
+
+        app.diff_modal.close();
+        app.advance_overlay_queue();
+
+        assert!(!app.diff_modal.visible);
+        assert_eq!(app.focus, FocusTarget::Input);
     }
 
     #[test]

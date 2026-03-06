@@ -254,22 +254,19 @@ fn handle_terminal_event(
                 match key.code {
                     crossterm::event::KeyCode::Esc => {
                         app.diff_modal.close();
-                        app.focus = FocusTarget::Input;
-                        app.mark_dirty();
+                        app.advance_overlay_queue();
                     }
                     crossterm::event::KeyCode::Char('a') => {
                         let path = app.diff_modal.file_path.clone();
                         app.diff_modal.approve();
                         app.push_system_message(format!("Patch approved: {path}"));
-                        app.focus = FocusTarget::Input;
-                        app.mark_dirty();
+                        app.advance_overlay_queue();
                     }
                     crossterm::event::KeyCode::Char('r') => {
                         let path = app.diff_modal.file_path.clone();
                         app.diff_modal.reject();
                         app.push_system_message(format!("Patch rejected: {path}"));
-                        app.focus = FocusTarget::Input;
-                        app.mark_dirty();
+                        app.advance_overlay_queue();
                     }
                     crossterm::event::KeyCode::Up | crossterm::event::KeyCode::Char('k') => {
                         app.diff_modal.scroll_up(1);
@@ -297,29 +294,25 @@ fn handle_terminal_event(
                 match key.code {
                     crossterm::event::KeyCode::Esc => {
                         app.approval_modal.close();
-                        app.focus = FocusTarget::Input;
-                        app.mark_dirty();
+                        app.advance_overlay_queue();
                     }
                     crossterm::event::KeyCode::Char('o') => {
                         let tool = app.approval_modal.tool_name.clone();
                         app.approval_modal.approve_once();
                         app.push_system_message(format!("Approved once: {tool}"));
-                        app.focus = FocusTarget::Input;
-                        app.mark_dirty();
+                        app.advance_overlay_queue();
                     }
                     crossterm::event::KeyCode::Char('s') => {
                         let tool = app.approval_modal.tool_name.clone();
                         app.approval_modal.approve_session();
                         app.push_system_message(format!("Approved for session: {tool}"));
-                        app.focus = FocusTarget::Input;
-                        app.mark_dirty();
+                        app.advance_overlay_queue();
                     }
                     crossterm::event::KeyCode::Char('d') => {
                         let tool = app.approval_modal.tool_name.clone();
                         app.approval_modal.deny();
                         app.push_system_message(format!("Denied: {tool}"));
-                        app.focus = FocusTarget::Input;
-                        app.mark_dirty();
+                        app.advance_overlay_queue();
                     }
                     _ => {}
                 }

@@ -38,8 +38,8 @@ use ucode_tui::event_loop::TuiEvent;
 // Second user message (TUI adds [7] UserMessage, [8] Streaming):
 //   [9]  ToolCall "Write"                <- tool_index = 9
 //   [10] SystemMessage
-//   [11] ToolCall "run_cmd" (via request_approval's internal push_tool_call)
-//   [12] PatchProposed
+//   [11] PatchProposed
+//   [12] ToolCall "run_cmd" (via request_approval's internal push_tool_call)
 //   [8]  finalized to AssistantMessage by StreamDone
 // ---------------------------------------------------------------------------
 
@@ -231,8 +231,21 @@ async fn run_sequence_two(tui_tx: &mpsc::UnboundedSender<TuiEvent>) {
         return;
     }
 
-    // Approval required for cargo test.
+    // Patch proposal — opens diff modal.
     tokio::time::sleep(Duration::from_millis(300)).await;
+    if tui_tx
+        .send(TuiEvent::PatchProposed {
+            file_path: "src/lib.rs".to_owned(),
+            raw_diff: PATCH_DIFF.to_owned(),
+            patch_id: Some("patch-001".to_owned()),
+        })
+        .is_err()
+    {
+        return;
+    }
+
+    // Approval required for cargo test — preempts diff modal, opens approval modal.
+    tokio::time::sleep(Duration::from_millis(500)).await;
     if tui_tx
         .send(TuiEvent::ApprovalRequired {
             tool_name: "run_cmd".to_owned(),
@@ -245,25 +258,12 @@ async fn run_sequence_two(tui_tx: &mpsc::UnboundedSender<TuiEvent>) {
         return;
     }
 
-    // Patch proposal.
-    tokio::time::sleep(Duration::from_millis(500)).await;
-    if tui_tx
-        .send(TuiEvent::PatchProposed {
-            file_path: "src/lib.rs".to_owned(),
-            raw_diff: PATCH_DIFF.to_owned(),
-            patch_id: Some("patch-001".to_owned()),
-        })
-        .is_err()
-    {
-        return;
-    }
-
     // Streaming response.
     tokio::time::sleep(Duration::from_millis(300)).await;
     stream_words(
         "I encountered a permission issue with the config file, but I've prepared a patch \
-         for `src/lib.rs`. Press `d` to view the diff, or `a`/`r` to approve/reject.\n\n\
-         I also need approval to run `cargo test`. Check the approval modal.",
+         for `src/lib.rs`. I also need approval to run `cargo test`.\n\n\
+         Handle the approval first, then the diff will resume automatically.",
         35,
         tui_tx,
     )

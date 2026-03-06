@@ -266,10 +266,45 @@ impl PluginHost {
         Err(format!("unknown tool: {fqn}"))
     }
 
+    /// Dispatch a hook and return individual results plus the aggregate response.
+    pub fn dispatch_hook_aggregated(
+        &mut self,
+        event: HookEvent,
+    ) -> (Vec<HookResult>, HookResponse) {
+        let results = self.dispatch_hook(event);
+        let aggregate = aggregate_hook_responses(&results);
+        (results, aggregate)
+    }
+
     /// Number of currently loaded plugins.
     pub fn loaded_count(&self) -> usize {
         self.plugins.len()
     }
+}
+
+/// Aggregate multiple plugin hook responses.
+///
+/// Resolution: Veto wins over Modify wins over Ok.
+/// First Veto wins (plugin load order). Modify changes from the first
+/// Modify response are used.
+pub fn aggregate_hook_responses(results: &[HookResult]) -> HookResponse {
+    // First Veto wins
+    for r in results {
+        if let HookResponse::Veto { reason } = &r.response {
+            return HookResponse::Veto {
+                reason: reason.clone(),
+            };
+        }
+    }
+    // First Modify wins
+    for r in results {
+        if let HookResponse::Modify { changes } = &r.response {
+            return HookResponse::Modify {
+                changes: changes.clone(),
+            };
+        }
+    }
+    HookResponse::Ok
 }
 
 fn validate_hook_response(
@@ -631,5 +666,93 @@ mod tests {
         host.load(TestPlugin::new("org.test.b")).unwrap();
         let policies = host.plugin_policies();
         assert_eq!(policies.len(), 2);
+    }
+
+    #[test]
+    fn test_aggregate_hook_responses_all_ok() {
+        let results = vec![
+            HookResult {
+                plugin_id: "a".into(),
+                response: HookResponse::Ok,
+            },
+            HookResult {
+                plugin_id: "b".into(),
+                response: HookResponse::Ok,
+            },
+        ];
+        let agg = aggregate_hook_responses(&results);
+        assert!(matches!(agg, HookResponse::Ok));
+    }
+
+    #[test]
+    fn test_aggregate_hook_responses_veto_wins() {
+        let results = vec![
+            HookResult {
+                plugin_id: "a".into(),
+                response: HookResponse::Modify {
+                    changes: serde_json::json!({"x": 1}),
+                },
+            },
+            HookResult {
+                plugin_id: "b".into(),
+                response: HookResponse::Veto {
+                    reason: "blocked".into(),
+                },
+            },
+        ];
+        let agg = aggregate_hook_responses(&results);
+        assert!(matches!(agg, HookResponse::Veto { .. }));
+        if let HookResponse::Veto { reason } = agg {
+            assert_eq!(reason, "blocked");
+        }
+    }
+
+    #[test]
+    fn test_aggregate_hook_responses_first_veto_wins() {
+        let results = vec![
+            HookResult {
+                plugin_id: "a".into(),
+                response: HookResponse::Veto {
+                    reason: "first".into(),
+                },
+            },
+            HookResult {
+                plugin_id: "b".into(),
+                response: HookResponse::Veto {
+                    reason: "second".into(),
+                },
+            },
+        ];
+        let agg = aggregate_hook_responses(&results);
+        if let HookResponse::Veto { reason } = agg {
+            assert_eq!(reason, "first");
+        } else {
+            panic!("expected Veto");
+        }
+    }
+
+    #[test]
+    fn test_aggregate_hook_responses_modify_over_ok() {
+        let results = vec![
+            HookResult {
+                plugin_id: "a".into(),
+                response: HookResponse::Ok,
+            },
+            HookResult {
+                plugin_id: "b".into(),
+                response: HookResponse::Modify {
+                    changes: serde_json::json!({"key": "val"}),
+                },
+            },
+        ];
+        let agg = aggregate_hook_responses(&results);
+        assert!(matches!(agg, HookResponse::Modify { .. }));
+    }
+
+    #[test]
+    fn test_aggregate_hook_responses_empty() {
+        let results: Vec<HookResult> = vec![];
+        let agg = aggregate_hook_responses(&results);
+        assert!(matches!(agg, HookResponse::Ok));
     }
 }

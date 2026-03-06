@@ -1,5 +1,7 @@
 use std::time::Instant;
 
+use tokio::sync::mpsc::UnboundedSender;
+
 use crate::keybinds::{KeybindPreset, KeybindResolver};
 use crate::layout::{InputState, SidebarState, TerminalSize};
 use crate::theme::{Density, UcodeTheme};
@@ -165,6 +167,10 @@ pub struct AppState {
     pub parent_title: Option<String>,
     /// Detected multiplexer name (e.g. "tmux", "zellij", "screen").
     pub multiplexer: Option<String>,
+    /// Optional channel to notify external systems when the user sends a message.
+    /// The real CLI uses this to forward prompts to the LLM.
+    #[allow(clippy::type_complexity)]
+    pub message_tx: Option<UnboundedSender<String>>,
 }
 
 impl AppState {
@@ -192,6 +198,7 @@ impl AppState {
             session_id: String::new(),
             parent_title: None,
             multiplexer: detect_multiplexer(),
+            message_tx: None,
         }
     }
 
@@ -254,6 +261,9 @@ impl AppState {
     // ------------------------------------------------------------------
 
     pub fn push_user_message(&mut self, msg: String) {
+        if let Some(tx) = &self.message_tx {
+            let _ = tx.send(msg.clone());
+        }
         self.transcript.push(TranscriptEntry::UserMessage(msg));
         self.mark_dirty();
     }

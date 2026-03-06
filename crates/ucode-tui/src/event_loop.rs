@@ -178,13 +178,40 @@ fn handle_terminal_event(
                 return dispatch_action(action, app, input_box);
             }
 
-            // No bound action — forward printable chars to the input box when
+            // No bound action — forward editing keys to the input box when
             // focus is on the input area.
-            if app.focus == FocusTarget::Input
-                && let crossterm::event::KeyCode::Char(c) = key.code
-            {
-                input_box.insert_char(c);
-                app.mark_dirty();
+            if app.focus == FocusTarget::Input {
+                match key.code {
+                    crossterm::event::KeyCode::Char(c) => {
+                        input_box.insert_char(c);
+                        app.mark_dirty();
+                    }
+                    crossterm::event::KeyCode::Backspace => {
+                        input_box.delete_char();
+                        app.mark_dirty();
+                    }
+                    crossterm::event::KeyCode::Delete => {
+                        input_box.delete_forward();
+                        app.mark_dirty();
+                    }
+                    crossterm::event::KeyCode::Left => {
+                        input_box.move_left();
+                        app.mark_dirty();
+                    }
+                    crossterm::event::KeyCode::Right => {
+                        input_box.move_right();
+                        app.mark_dirty();
+                    }
+                    crossterm::event::KeyCode::Home => {
+                        input_box.move_home();
+                        app.mark_dirty();
+                    }
+                    crossterm::event::KeyCode::End => {
+                        input_box.move_end();
+                        app.mark_dirty();
+                    }
+                    _ => {}
+                }
             }
         }
 
@@ -760,5 +787,80 @@ mod tests {
             }
             other => panic!("expected ToolCall, got {other:?}"),
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Input editing key forwarding
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn handle_input_editing_backspace() {
+        let mut app = AppState::new();
+        app.focus = FocusTarget::Input;
+        let mut input_box = InputBoxState::new();
+        let mut sidebar_data = SidebarData::new();
+
+        // Type "abc" then backspace.
+        input_box.insert_char('a');
+        input_box.insert_char('b');
+        input_box.insert_char('c');
+
+        let event = Event::Key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Backspace,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        handle_terminal_event(event, &mut app, &mut input_box, &mut sidebar_data);
+        assert_eq!(input_box.content, "ab");
+    }
+
+    #[test]
+    fn handle_input_editing_arrow_keys() {
+        let mut app = AppState::new();
+        app.focus = FocusTarget::Input;
+        let mut input_box = InputBoxState::new();
+        let mut sidebar_data = SidebarData::new();
+
+        input_box.insert_char('a');
+        input_box.insert_char('b');
+
+        // Move left, then type 'x' — should insert between a and b.
+        let left = Event::Key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Left,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        handle_terminal_event(left, &mut app, &mut input_box, &mut sidebar_data);
+
+        input_box.insert_char('x');
+        assert_eq!(input_box.content, "axb");
+    }
+
+    #[test]
+    fn handle_input_editing_home_end() {
+        let mut app = AppState::new();
+        app.focus = FocusTarget::Input;
+        let mut input_box = InputBoxState::new();
+        let mut sidebar_data = SidebarData::new();
+
+        input_box.insert_char('a');
+        input_box.insert_char('b');
+        input_box.insert_char('c');
+
+        // Home moves cursor to start.
+        let home = Event::Key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Home,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        handle_terminal_event(home, &mut app, &mut input_box, &mut sidebar_data);
+        input_box.insert_char('z');
+        assert_eq!(input_box.content, "zabc");
+
+        // End moves cursor to end.
+        let end = Event::Key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::End,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        handle_terminal_event(end, &mut app, &mut input_box, &mut sidebar_data);
+        input_box.insert_char('!');
+        assert_eq!(input_box.content, "zabc!");
     }
 }

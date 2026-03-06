@@ -363,6 +363,63 @@ fn handle_terminal_event(
                 return false;
             }
 
+            // When copy mode is active, route keys to it.
+            if app.copy_mode.active {
+                match key.code {
+                    crossterm::event::KeyCode::Esc => {
+                        app.copy_mode.exit();
+                        app.focus = FocusTarget::Input;
+                        app.mark_dirty();
+                    }
+                    crossterm::event::KeyCode::Up | crossterm::event::KeyCode::Char('k') => {
+                        app.copy_mode.move_up();
+                        if app.copy_mode.cursor < app.scroll_offset {
+                            app.scroll_offset = app.copy_mode.cursor;
+                        }
+                        app.mark_dirty();
+                    }
+                    crossterm::event::KeyCode::Down | crossterm::event::KeyCode::Char('j') => {
+                        let max_idx = app.transcript.len().saturating_sub(1);
+                        app.copy_mode.move_down(max_idx);
+                        app.mark_dirty();
+                    }
+                    crossterm::event::KeyCode::Char('y') => {
+                        let (start, end) = app.copy_mode.selection_range();
+                        let text = crate::overlays::copy_mode::collect_selection_text(
+                            &app.transcript,
+                            start,
+                            end,
+                        );
+                        let mut writer = std::io::stderr();
+                        match crate::clipboard::write_clipboard(
+                            &text,
+                            crate::clipboard::ClipboardMethod::default(),
+                            &mut writer,
+                        ) {
+                            Ok(()) => {
+                                let count = end - start + 1;
+                                let label = if count == 1 { "entry" } else { "entries" };
+                                app.toasts.push(
+                                    crate::components::toast::ToastLevel::Success,
+                                    format!("Copied {count} {label}"),
+                                );
+                            }
+                            Err(e) => {
+                                app.toasts.push(
+                                    crate::components::toast::ToastLevel::Error,
+                                    format!("Copy failed: {e}"),
+                                );
+                            }
+                        }
+                        app.copy_mode.exit();
+                        app.focus = FocusTarget::Input;
+                        app.mark_dirty();
+                    }
+                    _ => {}
+                }
+                return false;
+            }
+
             // When the palette is open, route keys to it.
             if app.palette.visible {
                 match key.code {
@@ -928,6 +985,61 @@ fn dispatch_action(action: Action, app: &mut AppState, input_box: &mut InputBoxS
                 app.scroll_offset = m.transcript_index;
             }
             app.mark_dirty();
+        }
+
+        Action::EnterCopyMode => {
+            if !app.transcript.is_empty() {
+                let idx = app
+                    .scroll_offset
+                    .min(app.transcript.len().saturating_sub(1));
+                app.copy_mode.enter(idx);
+                app.focus = FocusTarget::Transcript;
+                app.mark_dirty();
+            }
+        }
+
+        Action::SetMark => {
+            // Emacs-style: same as EnterCopyMode.
+            if !app.transcript.is_empty() {
+                let idx = app
+                    .scroll_offset
+                    .min(app.transcript.len().saturating_sub(1));
+                app.copy_mode.enter(idx);
+                app.focus = FocusTarget::Transcript;
+                app.mark_dirty();
+            }
+        }
+
+        Action::YankSelection | Action::CopySelection => {
+            if app.copy_mode.active {
+                let (start, end) = app.copy_mode.selection_range();
+                let text =
+                    crate::overlays::copy_mode::collect_selection_text(&app.transcript, start, end);
+                let mut writer = std::io::stderr();
+                match crate::clipboard::write_clipboard(
+                    &text,
+                    crate::clipboard::ClipboardMethod::default(),
+                    &mut writer,
+                ) {
+                    Ok(()) => {
+                        let count = end - start + 1;
+                        let label = if count == 1 { "entry" } else { "entries" };
+                        app.toasts.push(
+                            crate::components::toast::ToastLevel::Success,
+                            format!("Copied {count} {label}"),
+                        );
+                    }
+                    Err(e) => {
+                        app.toasts.push(
+                            crate::components::toast::ToastLevel::Error,
+                            format!("Copy failed: {e}"),
+                        );
+                    }
+                }
+                app.copy_mode.exit();
+                app.focus = FocusTarget::Input;
+                app.mark_dirty();
+            }
         }
 
         // Future phases — no-op for now.

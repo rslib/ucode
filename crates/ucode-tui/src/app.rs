@@ -8,6 +8,7 @@ use crate::components::toast::{ToastLevel, ToastState};
 use crate::keybinds::{KeybindPreset, KeybindResolver};
 use crate::layout::{InputState, SidebarState, TerminalSize};
 use crate::overlays::approval_modal::ApprovalModalState;
+use crate::overlays::copy_mode::CopyModeState;
 use crate::overlays::diff_modal::DiffModalState;
 use crate::overlays::keybind_overlay::KeybindOverlayState;
 use crate::overlays::overlay_queue::{
@@ -195,6 +196,7 @@ pub struct AppState {
     pub approval_modal: ApprovalModalState,
     pub keybind_overlay: KeybindOverlayState,
     pub search_overlay: SearchOverlayState,
+    pub copy_mode: CopyModeState,
     pub overlay_queue: OverlayQueue,
     /// Timestamp of the last Ctrl+C press, for double-Ctrl+C exit detection.
     pub last_ctrl_c: Option<Instant>,
@@ -239,6 +241,7 @@ impl AppState {
             approval_modal: ApprovalModalState::new(),
             keybind_overlay: KeybindOverlayState::new(),
             search_overlay: SearchOverlayState::new(),
+            copy_mode: CopyModeState::new(),
             overlay_queue: OverlayQueue::new(),
             last_ctrl_c: None,
             ctrl_c_hint: None,

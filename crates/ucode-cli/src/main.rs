@@ -220,8 +220,13 @@ async fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
+    use std::sync::Mutex;
 
     use super::*;
+
+    /// Tests that manipulate environment variables must hold this lock to
+    /// prevent races (env vars are process-global, tests run in parallel).
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     fn test_cli() -> Cli {
         Cli {
@@ -305,6 +310,7 @@ mod tests {
 
     #[test]
     fn resolve_defaults() {
+        let _lock = ENV_LOCK.lock().unwrap();
         let _l = EnvGuard::remove("UCODE_LOG_LEVEL");
         let _s = EnvGuard::remove("UCODE_LOG_STDERR");
         let _f = EnvGuard::remove("UCODE_LOG_FILE");
@@ -326,6 +332,7 @@ mod tests {
 
     #[test]
     fn resolve_cli_trace_flag() {
+        let _lock = ENV_LOCK.lock().unwrap();
         let cli = Cli {
             trace: true,
             ..test_cli()
@@ -336,6 +343,7 @@ mod tests {
 
     #[test]
     fn resolve_cli_log_level_overrides_env() {
+        let _lock = ENV_LOCK.lock().unwrap();
         let _guard = EnvGuard::set("UCODE_LOG_LEVEL", "debug");
         let cli = Cli {
             log_level: Some(LogLevel::Error),
@@ -347,6 +355,7 @@ mod tests {
 
     #[test]
     fn resolve_env_log_level_when_no_cli() {
+        let _lock = ENV_LOCK.lock().unwrap();
         let _guard = EnvGuard::set("UCODE_LOG_LEVEL", "debug");
         let cfg = resolve_log_config(&test_cli());
         assert_eq!(cfg.level, LogLevel::Debug);
@@ -354,6 +363,7 @@ mod tests {
 
     #[test]
     fn resolve_trace_beats_log_level() {
+        let _lock = ENV_LOCK.lock().unwrap();
         let cli = Cli {
             trace: true,
             log_level: Some(LogLevel::Error),
@@ -365,6 +375,7 @@ mod tests {
 
     #[test]
     fn resolve_cli_log_dir() {
+        let _lock = ENV_LOCK.lock().unwrap();
         let cli = Cli {
             log_dir: Some(PathBuf::from("/tmp/test-logs")),
             ..test_cli()
@@ -375,6 +386,7 @@ mod tests {
 
     #[test]
     fn resolve_env_stderr_false() {
+        let _lock = ENV_LOCK.lock().unwrap();
         let _guard = EnvGuard::set("UCODE_LOG_STDERR", "0");
         let cfg = resolve_log_config(&test_cli());
         assert!(!cfg.stderr);
@@ -382,6 +394,7 @@ mod tests {
 
     #[test]
     fn resolve_cli_stderr_overrides_env() {
+        let _lock = ENV_LOCK.lock().unwrap();
         let _guard = EnvGuard::set("UCODE_LOG_STDERR", "0");
         let cli = Cli {
             log_stderr: Some(true),

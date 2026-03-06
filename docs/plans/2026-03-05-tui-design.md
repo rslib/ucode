@@ -793,6 +793,82 @@ Ties to: PLANS.md Task 1.7 (session titles), Task 1.8 (session lineage), EPIC IS
 
 All keybinds overridable via `ucode.toml` `[tui.keybinds]` section.
 
+### Keybinding presets
+
+Three built-in presets. Default is `vscode` so mainstream users feel at home. Configurable via `ucode.toml`:
+
+```toml
+[tui.keybinds]
+preset = "vscode"   # "vscode" | "vim" | "emacs"
+```
+
+Individual overrides layer on top of the active preset.
+
+#### vscode preset (default)
+
+The tables above describe the vscode preset. This is the baseline.
+
+#### vim preset
+
+| Key | Action | Difference from vscode |
+|-----|--------|----------------------|
+| `Esc` | Return to normal mode (transcript focus) | Input requires `i`/`a`/`o` to enter |
+| `i` | Enter insert mode (focus input) | — |
+| `j` / `k` | Scroll transcript down/up | Replaces arrow keys as primary |
+| `gg` / `G` | Jump to top/bottom of transcript | — |
+| `Ctrl+U` / `Ctrl+D` | Half-page up/down | — |
+| `/` | Search transcript (same as Ctrl+F) | Vim-native search |
+| `n` / `N` | Next/prev search match | Same as vscode |
+| `:` | Open command palette | Replaces Ctrl+P |
+| `v` | Enter visual/copy mode | Same as vscode |
+| `y` | Yank selection | Same as vscode |
+| `Ctrl+P` | Open command palette (alias) | Kept for muscle memory |
+
+Normal mode is the default. `i` enters insert mode (input box focused). `Esc` returns to normal mode. Approval keys (`a`/`r`/`d`) work in normal mode when an approval block is focused.
+
+#### emacs preset
+
+| Key | Action | Difference from vscode |
+|-----|--------|----------------------|
+| `Meta+x` / `Alt+x` | Open command palette | Replaces Ctrl+P |
+| `Ctrl+P` | Open command palette (alias) | Kept for muscle memory |
+| `Ctrl+A` / `Ctrl+E` | Beginning/end of input line | Standard emacs line nav |
+| `Ctrl+N` / `Ctrl+P` (in transcript) | Scroll down/up | Emacs-native nav |
+| `Ctrl+V` / `Meta+V` | Page down/up | — |
+| `Ctrl+S` | Search transcript | Replaces Ctrl+F |
+| `Ctrl+R` | Reverse search transcript | — |
+| `Ctrl+G` | Cancel/dismiss overlay | Replaces Esc in overlays |
+| `Meta+W` | Copy selection | Replaces `y` |
+| `Ctrl+Space` | Set mark (start selection) | Replaces `v` |
+
+Input box always active (no modal insert/normal distinction). `Ctrl+G` is the universal cancel.
+
+---
+
+## Section 10b: Tmux Integration
+
+ucode must work seamlessly inside tmux (and other terminal multiplexers like zellij, screen). Users should be able to scroll, select, and copy without fighting the TUI.
+
+### Design principles
+
+1. **Detect tmux**: check `$TMUX` env var at startup. Surface in status bar as `[tmux]` indicator when detected.
+2. **Mouse passthrough**: when tmux mouse mode is on (`set -g mouse on`), tmux intercepts mouse events before they reach the app. ucode must remain fully usable with keyboard-only navigation. Mouse support is a convenience layer, never required.
+3. **Scroll compatibility**: ucode uses alternate screen (`smcup`/`rmcup`). In tmux, scrollback is per-pane. ucode's transcript scroll (arrow keys, PgUp/PgDn, vim `j`/`k`) works inside the alternate screen. Tmux's own scroll mode (`Ctrl+B [`) scrolls tmux's scrollback buffer, not ucode's transcript — this is expected and correct.
+4. **Clipboard integration**: use OSC 52 escape sequence for clipboard writes. This works through tmux (requires `set -g set-clipboard on` in tmux.conf, which is the default since tmux 3.3). Fallback: if OSC 52 is not supported, write to a file (`~/.local/share/ucode/clipboard`) and log a warning.
+5. **Copy mode coexistence**: ucode's `v` copy mode operates inside the alternate screen on the transcript content. Tmux's copy mode (`Ctrl+B [`) operates on tmux's scrollback. Both are valid — ucode's copy mode gives structured access to transcript content; tmux's copy mode gives raw terminal output. Document this distinction.
+6. **Terminal title**: set terminal title via OSC escape (`\033]0;ucode - session-name\007`). Tmux displays this in the pane title / window name.
+7. **True color**: detect `$COLORTERM=truecolor` or tmux's `Tc` / `RGB` terminal features. Fall back to 256-color palette if not available.
+8. **Resize handling**: handle `SIGWINCH` (terminal resize). Tmux sends this when panes are resized. Ratatui/crossterm handle this natively.
+
+### Config
+
+```toml
+[tui.terminal]
+clipboard = "osc52"       # "osc52" | "external" | "file"
+# external uses xclip/xsel/pbcopy; file writes to ~/.local/share/ucode/clipboard
+mouse = true              # enable mouse support (disable if fighting with tmux mouse mode)
+```
+
 ---
 
 ## Section 11: Plugin UI Extension API
@@ -921,9 +997,14 @@ width = 34                # default sidebar width in columns
 collapsed = []            # list of section ids to start collapsed, e.g. ["jobs", "mcp"]
 
 [tui.keybinds]
-# All keybinds overridable, e.g.:
+preset = "vscode"         # "vscode" | "vim" | "emacs"
+# Individual overrides layer on top of preset, e.g.:
 # palette = "ctrl+p"
 # session_switcher = "ctrl+s"
+
+[tui.terminal]
+clipboard = "osc52"       # "osc52" | "external" | "file"
+mouse = true              # enable mouse support (disable if fighting with tmux mouse mode)
 ```
 
 ---
@@ -957,7 +1038,8 @@ crates/ucode-tui/src/
   lib.rs                  # public API, App struct, run()
   app.rs                  # App state, event loop
   theme.rs                # color palette, density presets, transparency
-  keybinds.rs             # keybind definitions, override loading
+  keybinds.rs             # keybind definitions, preset system (vscode/vim/emacs), override loading
+  clipboard.rs            # OSC 52, external (xclip/pbcopy), file fallback
   layout.rs               # terminal size detection, pane sizing
   components/
     title_bar.rs

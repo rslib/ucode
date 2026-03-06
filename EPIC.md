@@ -791,9 +791,17 @@ Search:
 ### ISSUE 0701 — Ratatui fullscreen shell + panes (ucode-tui)
 
 **Goal:** Build base TUI: transcript, input box, sidebar, status bar.
+**Scope/Notes:**
+
+* Includes terminal compatibility: tmux/zellij/screen detection, alternate screen, true color detection, SIGWINCH resize (see Task 7.7)
+* Clipboard: OSC 52 with external/file fallback (see Task 7.7)
+* Mouse support toggle for tmux coexistence
+
 **Acceptance tests:**
 
 * Launch TUI; type prompt; see streaming output.
+* `[tmux]` indicator shows in status bar when inside tmux.
+* Clipboard works via OSC 52 inside tmux.
   **Owner:** TUI
 
 ### ISSUE 0702 — Command palette + keybinds (ucode-tui)
@@ -803,8 +811,13 @@ Search:
 
 * `Ctrl+P` palette
 * `/connect`, `/skills`, `/models`, `/tools`
-  **Acceptance tests:**
+* Keybinding presets: vscode (default), vim (modal), emacs (Meta+x) (see Task 7.8)
+* Config: `[tui.keybinds] preset = "vscode"` with individual override layering
+
+**Acceptance tests:**
+
 * Palette opens; commands execute.
+* `preset = "vim"` activates modal editing; `preset = "emacs"` activates emacs nav.
   **Owner:** TUI
 
 ### ISSUE 0703 — Diff viewer + apply/reject UX (ucode-tui)

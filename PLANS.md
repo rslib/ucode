@@ -683,6 +683,13 @@ Keybinds:
 * `Ctrl+T` run tests
 * `/connect` auth UI
 
+Terminal compatibility:
+
+* Tmux/zellij/screen detection and seamless operation (see Task 7.7)
+* Alternate screen (`smcup`/`rmcup`) with proper cleanup on exit/crash
+* True color detection (`$COLORTERM`, tmux `Tc`/`RGB`) with 256-color fallback
+* `SIGWINCH` resize handling (native via crossterm)
+
 ### Task 7.2 Approvals UX
 
 * Diff modal: approve/apply, reject
@@ -766,6 +773,42 @@ Keybinds:
 * `v` enters copy mode; `y` copies selected text to clipboard.
 * `Ctrl+F` opens search; matches highlighted; `n`/`N` navigate between matches.
 * `?` shows full keybind reference overlay.
+
+### Task 7.7 Tmux / terminal multiplexer integration (ucode-tui)
+
+> See `docs/plans/2026-03-05-tui-design.md` §10b (Tmux Integration).
+
+* Detect `$TMUX` / `$ZELLIJ` / `$STY` at startup; surface `[tmux]` indicator in status bar
+* OSC 52 clipboard writes (works through tmux ≥3.3 with `set-clipboard on`)
+* Fallback clipboard: `xclip`/`xsel`/`pbcopy` external, then file (`~/.local/share/ucode/clipboard`)
+* Mouse support toggle (`[tui.terminal] mouse = true/false`) for tmux mouse-mode coexistence
+* True color detection (`$COLORTERM`, tmux `Tc`/`RGB`) with 256-color fallback
+* Terminal title via OSC (`\033]0;ucode - session\007`)
+* `SIGWINCH` resize handling (native via crossterm)
+
+**Acceptance**
+
+* `[tmux]` shows in status bar when `$TMUX` is set.
+* Copy in ucode copy mode writes to system clipboard via OSC 52 inside tmux.
+* Fallback clipboard works when OSC 52 is unavailable.
+* `mouse = false` config disables mouse capture, allowing tmux mouse passthrough.
+
+### Task 7.8 Keybinding presets (ucode-tui)
+
+> See `docs/plans/2026-03-05-tui-design.md` §10 (Keybinding presets).
+
+* Three built-in presets: `vscode` (default), `vim` (modal), `emacs` (Meta+x)
+* Config: `[tui.keybinds] preset = "vscode"` in `ucode.toml`
+* Individual key overrides layer on top of active preset
+* vim preset: `Esc`/`i` for normal/insert mode, `j`/`k` scroll, `:` palette, `gg`/`G` jump
+* emacs preset: `Meta+x` palette, `Ctrl+N`/`Ctrl+P` scroll, `Ctrl+S` search, `Ctrl+G` cancel
+
+**Acceptance**
+
+* `preset = "vim"` activates modal editing with `i`/`Esc` mode switching.
+* `preset = "emacs"` activates emacs-style navigation and `Meta+x` palette.
+* Individual overrides (e.g., `palette = "ctrl+shift+p"`) work on top of any preset.
+* Default preset is `vscode` when no config is set.
 
 ---
 

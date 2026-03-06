@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crossterm::event::{Event, EventStream, KeyEventKind, MouseEvent};
 use crossterm::execute;
@@ -154,9 +154,16 @@ pub async fn run_event_loop(
                 }
             }
 
-            // Render tick — only draw when dirty or streaming.
-            _ = render_tick.tick(), if app.dirty || app.streaming => {
+            // Render tick — only draw when dirty, streaming, or hint is active.
+            _ = render_tick.tick(), if app.dirty || app.streaming || app.ctrl_c_hint.is_some() => {
                 frame_counter = frame_counter.wrapping_add(1);
+                // Expire the Ctrl+C hint once the 2-second window closes.
+                if let Some(last) = app.last_ctrl_c
+                    && last.elapsed().as_millis() >= 2000
+                {
+                    app.ctrl_c_hint = None;
+                    app.last_ctrl_c = None;
+                }
                 terminal.draw(|f| render_frame(f, app, input_box, sidebar_data, frame_counter))?;
                 app.dirty = false;
             }
@@ -248,39 +255,195 @@ fn handle_terminal_event(
                     return false;
                 }
 
-                // Editing keys go to input box, not keybind resolver.
-                match key.code {
-                    crossterm::event::KeyCode::Backspace => {
-                        input_box.delete_char();
-                        app.mark_dirty();
-                        return false;
+                // Bare (no-modifier) editing keys go to input box.
+                if key.modifiers == crossterm::event::KeyModifiers::NONE {
+                    match key.code {
+                        crossterm::event::KeyCode::Backspace => {
+                            input_box.delete_char();
+                            app.mark_dirty();
+                            return false;
+                        }
+                        crossterm::event::KeyCode::Delete => {
+                            input_box.delete_forward();
+                            app.mark_dirty();
+                            return false;
+                        }
+                        crossterm::event::KeyCode::Left => {
+                            input_box.move_left();
+                            app.mark_dirty();
+                            return false;
+                        }
+                        crossterm::event::KeyCode::Right => {
+                            input_box.move_right();
+                            app.mark_dirty();
+                            return false;
+                        }
+                        crossterm::event::KeyCode::Home => {
+                            input_box.move_home();
+                            app.mark_dirty();
+                            return false;
+                        }
+                        crossterm::event::KeyCode::End => {
+                            input_box.move_end();
+                            app.mark_dirty();
+                            return false;
+                        }
+                        crossterm::event::KeyCode::Up => {
+                            input_box.move_up();
+                            app.mark_dirty();
+                            return false;
+                        }
+                        crossterm::event::KeyCode::Down => {
+                            input_box.move_down();
+                            app.mark_dirty();
+                            return false;
+                        }
+                        _ => {} // fall through to readline / keybind resolution
                     }
-                    crossterm::event::KeyCode::Delete => {
-                        input_box.delete_forward();
-                        app.mark_dirty();
-                        return false;
+                }
+
+                // Modified arrow/backspace keys for word-level navigation and deletion.
+                let is_ctrl = key.modifiers == crossterm::event::KeyModifiers::CONTROL;
+                let is_alt = key.modifiers == crossterm::event::KeyModifiers::ALT;
+                if is_ctrl || is_alt {
+                    match key.code {
+                        crossterm::event::KeyCode::Left => {
+                            input_box.move_word_left();
+                            app.mark_dirty();
+                            return false;
+                        }
+                        crossterm::event::KeyCode::Right => {
+                            input_box.move_word_right();
+                            app.mark_dirty();
+                            return false;
+                        }
+                        crossterm::event::KeyCode::Backspace => {
+                            input_box.delete_word_back();
+                            app.mark_dirty();
+                            return false;
+                        }
+                        _ => {} // fall through
                     }
-                    crossterm::event::KeyCode::Left => {
-                        input_box.move_left();
-                        app.mark_dirty();
-                        return false;
+                }
+
+                // Readline-style Ctrl/Alt bindings — intercepted before the
+                // app-level keybind resolver when focus is on the input box.
+                // Ctrl+C, Ctrl+P, Ctrl+L, Ctrl+O are intentionally excluded
+                // so they still reach the keybind resolver.
+                if key.modifiers == crossterm::event::KeyModifiers::CONTROL {
+                    match key.code {
+                        crossterm::event::KeyCode::Char('a') => {
+                            input_box.move_home();
+                            app.mark_dirty();
+                            return false;
+                        }
+                        crossterm::event::KeyCode::Char('e') => {
+                            input_box.move_end();
+                            app.mark_dirty();
+                            return false;
+                        }
+                        crossterm::event::KeyCode::Char('b') => {
+                            input_box.move_left();
+                            app.mark_dirty();
+                            return false;
+                        }
+                        crossterm::event::KeyCode::Char('f') => {
+                            input_box.move_right();
+                            app.mark_dirty();
+                            return false;
+                        }
+                        crossterm::event::KeyCode::Char('d') => {
+                            // Only consume if input is non-empty; otherwise fall
+                            // through so Ctrl+D can still mean Exit.
+                            if !input_box.is_empty() {
+                                input_box.delete_forward();
+                                app.mark_dirty();
+                                return false;
+                            }
+                        }
+                        crossterm::event::KeyCode::Char('h') => {
+                            input_box.delete_char();
+                            app.mark_dirty();
+                            return false;
+                        }
+                        crossterm::event::KeyCode::Char('k') => {
+                            input_box.kill_to_end();
+                            app.mark_dirty();
+                            return false;
+                        }
+                        crossterm::event::KeyCode::Char('u') => {
+                            input_box.kill_to_start();
+                            app.mark_dirty();
+                            return false;
+                        }
+                        crossterm::event::KeyCode::Char('w') => {
+                            input_box.delete_word_back();
+                            app.mark_dirty();
+                            return false;
+                        }
+                        crossterm::event::KeyCode::Char('t') => {
+                            input_box.transpose_chars();
+                            app.mark_dirty();
+                            return false;
+                        }
+                        crossterm::event::KeyCode::Char('y') => {
+                            input_box.yank();
+                            app.mark_dirty();
+                            return false;
+                        }
+                        crossterm::event::KeyCode::Char('p') => {
+                            input_box.move_up();
+                            app.mark_dirty();
+                            return false;
+                        }
+                        crossterm::event::KeyCode::Char('n') => {
+                            input_box.move_down();
+                            app.mark_dirty();
+                            return false;
+                        }
+                        _ => {} // fall through to keybind resolver
                     }
-                    crossterm::event::KeyCode::Right => {
-                        input_box.move_right();
-                        app.mark_dirty();
-                        return false;
+                }
+
+                if key.modifiers == crossterm::event::KeyModifiers::ALT {
+                    match key.code {
+                        crossterm::event::KeyCode::Char('b') => {
+                            input_box.move_word_left();
+                            app.mark_dirty();
+                            return false;
+                        }
+                        crossterm::event::KeyCode::Char('f') => {
+                            input_box.move_word_right();
+                            app.mark_dirty();
+                            return false;
+                        }
+                        crossterm::event::KeyCode::Char('d') => {
+                            input_box.delete_word_forward();
+                            app.mark_dirty();
+                            return false;
+                        }
+                        crossterm::event::KeyCode::Char('t') => {
+                            input_box.transpose_words();
+                            app.mark_dirty();
+                            return false;
+                        }
+                        crossterm::event::KeyCode::Char('u') => {
+                            input_box.upcase_word();
+                            app.mark_dirty();
+                            return false;
+                        }
+                        crossterm::event::KeyCode::Char('l') => {
+                            input_box.downcase_word();
+                            app.mark_dirty();
+                            return false;
+                        }
+                        crossterm::event::KeyCode::Char('c') => {
+                            input_box.capitalize_word();
+                            app.mark_dirty();
+                            return false;
+                        }
+                        _ => {} // fall through to keybind resolver
                     }
-                    crossterm::event::KeyCode::Home => {
-                        input_box.move_home();
-                        app.mark_dirty();
-                        return false;
-                    }
-                    crossterm::event::KeyCode::End => {
-                        input_box.move_end();
-                        app.mark_dirty();
-                        return false;
-                    }
-                    _ => {} // fall through to keybind resolution
                 }
             }
 
@@ -380,8 +543,17 @@ fn dispatch_action(action: Action, app: &mut AppState, input_box: &mut InputBoxS
         }
 
         Action::CancelGeneration => {
-            // Signal is sent externally; here we just mark dirty so the UI
-            // can reflect the cancellation once the stream ends.
+            let now = Instant::now();
+            if let Some(last) = app.last_ctrl_c
+                && now.duration_since(last).as_millis() < 2000
+            {
+                // Double Ctrl+C within 2 seconds → exit.
+                app.ctrl_c_hint = None;
+                return true;
+            }
+            app.last_ctrl_c = Some(now);
+            app.ctrl_c_hint = Some("Press Ctrl+C again to exit".into());
+            // TODO: actually cancel active generation when we have one.
             app.mark_dirty();
         }
 
@@ -511,6 +683,10 @@ pub fn render_frame(
 // ---------------------------------------------------------------------------
 
 /// Build a `StatusBarState` from the current app and sidebar state.
+///
+/// Also responsible for expiring the Ctrl+C hint: if `last_ctrl_c` is older
+/// than 2 seconds the hint is omitted (the caller holds `&AppState` so we
+/// cannot mutate it here; expiry mutation happens in `render_frame`).
 fn build_status_bar_state(app: &AppState, sidebar_data: &SidebarData) -> StatusBarState {
     let stream_tok_per_sec = if app.streaming {
         app.transcript.last().and_then(|e| {
@@ -525,9 +701,16 @@ fn build_status_bar_state(app: &AppState, sidebar_data: &SidebarData) -> StatusB
         None
     };
 
+    // Show the hint only while still within the 2-second Ctrl+C window.
+    let hint_message = app.ctrl_c_hint.clone().filter(|_| {
+        app.last_ctrl_c
+            .is_some_and(|t| t.elapsed().as_millis() < 2000)
+    });
+
     StatusBarState {
         streaming: app.streaming,
         stream_tok_per_sec,
+        hint_message,
         model_name: sidebar_data.router.model_name.clone(),
         model_group: sidebar_data.router.model_group,
         sandbox_tier: sidebar_data.router.sandbox_tier,
@@ -1035,5 +1218,326 @@ mod tests {
         terminal
             .draw(|f| render_frame(f, &app, &input_box, &sidebar_data, 0))
             .expect("draw");
+    }
+
+    // -----------------------------------------------------------------------
+    // Readline keybinding tests (Part 2)
+    // -----------------------------------------------------------------------
+
+    fn make_key_event(
+        code: crossterm::event::KeyCode,
+        modifiers: crossterm::event::KeyModifiers,
+    ) -> Event {
+        Event::Key(crossterm::event::KeyEvent::new(code, modifiers))
+    }
+
+    #[test]
+    fn handle_readline_ctrl_a_moves_home() {
+        let mut app = AppState::new();
+        app.focus = FocusTarget::Input;
+        let mut input_box = InputBoxState::new();
+        let mut sidebar_data = SidebarData::new();
+
+        for c in "hello".chars() {
+            input_box.insert_char(c);
+        }
+        // cursor is at end; Ctrl+A should move to start
+        let ev = make_key_event(
+            crossterm::event::KeyCode::Char('a'),
+            crossterm::event::KeyModifiers::CONTROL,
+        );
+        handle_terminal_event(ev, &mut app, &mut input_box, &mut sidebar_data);
+        // insert 'z' at cursor (now at start)
+        input_box.insert_char('z');
+        assert_eq!(input_box.content, "zhello");
+    }
+
+    #[test]
+    fn handle_readline_ctrl_e_moves_end() {
+        let mut app = AppState::new();
+        app.focus = FocusTarget::Input;
+        let mut input_box = InputBoxState::new();
+        let mut sidebar_data = SidebarData::new();
+
+        for c in "hello".chars() {
+            input_box.insert_char(c);
+        }
+        // move to start first
+        input_box.move_home();
+        // Ctrl+E should move to end
+        let ev = make_key_event(
+            crossterm::event::KeyCode::Char('e'),
+            crossterm::event::KeyModifiers::CONTROL,
+        );
+        handle_terminal_event(ev, &mut app, &mut input_box, &mut sidebar_data);
+        input_box.insert_char('!');
+        assert_eq!(input_box.content, "hello!");
+    }
+
+    #[test]
+    fn handle_readline_ctrl_k_kills_to_end() {
+        let mut app = AppState::new();
+        app.focus = FocusTarget::Input;
+        let mut input_box = InputBoxState::new();
+        let mut sidebar_data = SidebarData::new();
+
+        for c in "hello world".chars() {
+            input_box.insert_char(c);
+        }
+        // move cursor to position 5 (after "hello")
+        input_box.move_home();
+        for _ in 0..5 {
+            input_box.move_right();
+        }
+        let ev = make_key_event(
+            crossterm::event::KeyCode::Char('k'),
+            crossterm::event::KeyModifiers::CONTROL,
+        );
+        handle_terminal_event(ev, &mut app, &mut input_box, &mut sidebar_data);
+        assert_eq!(input_box.content, "hello");
+    }
+
+    #[test]
+    fn handle_readline_ctrl_w_deletes_word() {
+        let mut app = AppState::new();
+        app.focus = FocusTarget::Input;
+        let mut input_box = InputBoxState::new();
+        let mut sidebar_data = SidebarData::new();
+
+        for c in "hello world".chars() {
+            input_box.insert_char(c);
+        }
+        let ev = make_key_event(
+            crossterm::event::KeyCode::Char('w'),
+            crossterm::event::KeyModifiers::CONTROL,
+        );
+        handle_terminal_event(ev, &mut app, &mut input_box, &mut sidebar_data);
+        assert_eq!(input_box.content, "hello ");
+    }
+
+    #[test]
+    fn handle_readline_alt_left_moves_word() {
+        let mut app = AppState::new();
+        app.focus = FocusTarget::Input;
+        let mut input_box = InputBoxState::new();
+        let mut sidebar_data = SidebarData::new();
+
+        for c in "hello world".chars() {
+            input_box.insert_char(c);
+        }
+        // cursor at end; Alt+Left should move to start of "world" (pos 6)
+        let ev = make_key_event(
+            crossterm::event::KeyCode::Left,
+            crossterm::event::KeyModifiers::ALT,
+        );
+        handle_terminal_event(ev, &mut app, &mut input_box, &mut sidebar_data);
+        input_box.insert_char('X');
+        assert_eq!(input_box.content, "hello Xworld");
+    }
+
+    #[test]
+    fn handle_readline_ctrl_right_moves_word() {
+        let mut app = AppState::new();
+        app.focus = FocusTarget::Input;
+        let mut input_box = InputBoxState::new();
+        let mut sidebar_data = SidebarData::new();
+
+        for c in "hello world".chars() {
+            input_box.insert_char(c);
+        }
+        input_box.move_home();
+        // Ctrl+Right from start should move to end of "hello" (pos 5)
+        let ev = make_key_event(
+            crossterm::event::KeyCode::Right,
+            crossterm::event::KeyModifiers::CONTROL,
+        );
+        handle_terminal_event(ev, &mut app, &mut input_box, &mut sidebar_data);
+        input_box.insert_char('X');
+        assert_eq!(input_box.content, "helloX world");
+    }
+
+    #[test]
+    fn handle_readline_alt_backspace_deletes_word() {
+        let mut app = AppState::new();
+        app.focus = FocusTarget::Input;
+        let mut input_box = InputBoxState::new();
+        let mut sidebar_data = SidebarData::new();
+
+        for c in "hello world".chars() {
+            input_box.insert_char(c);
+        }
+        // cursor at end; Alt+Backspace should delete "world"
+        let ev = make_key_event(
+            crossterm::event::KeyCode::Backspace,
+            crossterm::event::KeyModifiers::ALT,
+        );
+        handle_terminal_event(ev, &mut app, &mut input_box, &mut sidebar_data);
+        assert_eq!(input_box.content, "hello ");
+    }
+
+    #[test]
+    fn handle_readline_ctrl_p_moves_up() {
+        let mut app = AppState::new();
+        app.focus = FocusTarget::Input;
+        let mut input_box = InputBoxState::new();
+        let mut sidebar_data = SidebarData::new();
+
+        for c in "abc\ndef".chars() {
+            if c == '\n' {
+                input_box.insert_newline();
+            } else {
+                input_box.insert_char(c);
+            }
+        }
+        // cursor is at end of line 1 (after 'f')
+        let ev = make_key_event(
+            crossterm::event::KeyCode::Char('p'),
+            crossterm::event::KeyModifiers::CONTROL,
+        );
+        handle_terminal_event(ev, &mut app, &mut input_box, &mut sidebar_data);
+        // cursor should now be on line 0 at col 3 (after 'c')
+        input_box.insert_char('X');
+        assert_eq!(input_box.content, "abcX\ndef");
+    }
+
+    #[test]
+    fn handle_readline_up_arrow_moves_up_in_input() {
+        let mut app = AppState::new();
+        app.focus = FocusTarget::Input;
+        let mut input_box = InputBoxState::new();
+        let mut sidebar_data = SidebarData::new();
+
+        for c in "abc\ndef".chars() {
+            if c == '\n' {
+                input_box.insert_newline();
+            } else {
+                input_box.insert_char(c);
+            }
+        }
+        // cursor is at end of line 1 (after 'f')
+        let ev = make_key_event(
+            crossterm::event::KeyCode::Up,
+            crossterm::event::KeyModifiers::NONE,
+        );
+        handle_terminal_event(ev, &mut app, &mut input_box, &mut sidebar_data);
+        // cursor should now be on line 0 at col 3 (after 'c')
+        input_box.insert_char('X');
+        assert_eq!(input_box.content, "abcX\ndef");
+    }
+
+    #[test]
+    fn handle_readline_ctrl_d_empty_falls_through() {
+        let mut app = AppState::new();
+        app.focus = FocusTarget::Input;
+        let mut input_box = InputBoxState::new();
+        let mut sidebar_data = SidebarData::new();
+
+        // Ctrl+D is no longer bound to Exit in the vscode preset (it was removed to
+        // avoid confusion with readline delete-forward). On empty input it falls through
+        // to the keybind resolver, but finds no binding, so it does NOT exit.
+        let ev = make_key_event(
+            crossterm::event::KeyCode::Char('d'),
+            crossterm::event::KeyModifiers::CONTROL,
+        );
+        let exited = handle_terminal_event(ev, &mut app, &mut input_box, &mut sidebar_data);
+        assert!(
+            !exited,
+            "Ctrl+D no longer exits; use Ctrl+Q or double Ctrl+C"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Ctrl+Q universal exit
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn handle_ctrl_q_exits() {
+        let mut app = AppState::new();
+        let mut input_box = InputBoxState::new();
+        let mut sidebar_data = SidebarData::new();
+
+        let ev = make_key_event(
+            crossterm::event::KeyCode::Char('q'),
+            crossterm::event::KeyModifiers::CONTROL,
+        );
+        let exited = handle_terminal_event(ev, &mut app, &mut input_box, &mut sidebar_data);
+        assert!(exited, "Ctrl+Q should exit unconditionally");
+    }
+
+    #[test]
+    fn handle_ctrl_q_exits_with_nonempty_input() {
+        let mut app = AppState::new();
+        app.focus = FocusTarget::Input;
+        let mut input_box = InputBoxState::new();
+        let mut sidebar_data = SidebarData::new();
+
+        // Even with text in the input box, Ctrl+Q must exit.
+        for c in "some text".chars() {
+            input_box.insert_char(c);
+        }
+        let ev = make_key_event(
+            crossterm::event::KeyCode::Char('q'),
+            crossterm::event::KeyModifiers::CONTROL,
+        );
+        let exited = handle_terminal_event(ev, &mut app, &mut input_box, &mut sidebar_data);
+        assert!(exited, "Ctrl+Q should exit even when input is non-empty");
+    }
+
+    // -----------------------------------------------------------------------
+    // Double Ctrl+C exit
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn handle_single_ctrl_c_does_not_exit() {
+        let mut app = AppState::new();
+        let mut input_box = InputBoxState::new();
+        let mut sidebar_data = SidebarData::new();
+
+        let ev = make_key_event(
+            crossterm::event::KeyCode::Char('c'),
+            crossterm::event::KeyModifiers::CONTROL,
+        );
+        let exited = handle_terminal_event(ev, &mut app, &mut input_box, &mut sidebar_data);
+        assert!(!exited, "single Ctrl+C should not exit");
+        assert!(app.last_ctrl_c.is_some(), "last_ctrl_c should be recorded");
+    }
+
+    #[test]
+    fn handle_ctrl_c_shows_hint() {
+        let mut app = AppState::new();
+        let mut input_box = InputBoxState::new();
+        let mut sidebar_data = SidebarData::new();
+
+        let ev = make_key_event(
+            crossterm::event::KeyCode::Char('c'),
+            crossterm::event::KeyModifiers::CONTROL,
+        );
+        handle_terminal_event(ev, &mut app, &mut input_box, &mut sidebar_data);
+        assert_eq!(
+            app.ctrl_c_hint.as_deref(),
+            Some("Press Ctrl+C again to exit"),
+            "hint should be set after first Ctrl+C"
+        );
+    }
+
+    #[test]
+    fn handle_double_ctrl_c_exits() {
+        let mut app = AppState::new();
+        let mut input_box = InputBoxState::new();
+        let mut sidebar_data = SidebarData::new();
+
+        let ctrl_c = make_key_event(
+            crossterm::event::KeyCode::Char('c'),
+            crossterm::event::KeyModifiers::CONTROL,
+        );
+
+        // First press — should not exit.
+        let first =
+            handle_terminal_event(ctrl_c.clone(), &mut app, &mut input_box, &mut sidebar_data);
+        assert!(!first, "first Ctrl+C should not exit");
+
+        // Second press immediately after — should exit.
+        let second = handle_terminal_event(ctrl_c, &mut app, &mut input_box, &mut sidebar_data);
+        assert!(second, "second Ctrl+C within 2 s should exit");
     }
 }

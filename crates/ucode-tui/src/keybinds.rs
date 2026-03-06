@@ -120,7 +120,7 @@ pub fn default_vscode_bindings() -> KeybindMap {
         KeyCombo::new(K::Char('c'), Mod::CONTROL),
         A::CancelGeneration,
     );
-    m.insert(KeyCombo::new(K::Char('d'), Mod::CONTROL), A::Exit);
+    m.insert(KeyCombo::new(K::Char('q'), Mod::CONTROL), A::Exit);
 
     // Bare keys
     m.insert(KeyCombo::new(K::Esc, Mod::NONE), A::Dismiss);
@@ -214,8 +214,9 @@ pub fn default_vim_bindings() -> KeybindMap {
         A::ClearTranscript,
     );
 
-    // Exit
+    // Exit — bare q (normal mode) and Ctrl+Q (universal)
     m.insert(KeyCombo::new(K::Char('q'), Mod::NONE), A::Exit);
+    m.insert(KeyCombo::new(K::Char('q'), Mod::CONTROL), A::Exit);
 
     // Copy mode
     m.insert(KeyCombo::new(K::Char('v'), Mod::NONE), A::EnterCopyMode);
@@ -298,7 +299,7 @@ pub fn default_emacs_bindings() -> KeybindMap {
     );
 
     // Exit
-    m.insert(KeyCombo::new(K::Char('d'), Mod::CONTROL), A::Exit);
+    m.insert(KeyCombo::new(K::Char('q'), Mod::CONTROL), A::Exit);
 
     // Selection / copy — emacs mark-and-copy
     m.insert(KeyCombo::new(K::Char(' '), Mod::CONTROL), A::SetMark);
@@ -503,6 +504,49 @@ mod tests {
             let has_exit = bindings.values().any(|&a| a == Action::Exit);
             assert!(has_exit, "{preset:?} has no Exit binding");
         }
+    }
+
+    #[test]
+    fn all_presets_have_ctrl_q_exit() {
+        // Ctrl+Q is the universal exit binding across all presets.
+        let ctrl_q = KeyCombo::new(KeyCode::Char('q'), KeyModifiers::CONTROL);
+        for preset in [
+            KeybindPreset::Vscode,
+            KeybindPreset::Vim,
+            KeybindPreset::Emacs,
+        ] {
+            let bindings = bindings_for_preset(preset);
+            assert_eq!(
+                bindings.get(&ctrl_q).copied(),
+                Some(Action::Exit),
+                "{preset:?} does not map Ctrl+Q to Exit"
+            );
+        }
+    }
+
+    #[test]
+    fn vim_has_both_q_and_ctrl_q_exit() {
+        let bindings = default_vim_bindings();
+        let bare_q = KeyCombo::new(KeyCode::Char('q'), KeyModifiers::NONE);
+        let ctrl_q = KeyCombo::new(KeyCode::Char('q'), KeyModifiers::CONTROL);
+        assert_eq!(bindings.get(&bare_q).copied(), Some(Action::Exit));
+        assert_eq!(bindings.get(&ctrl_q).copied(), Some(Action::Exit));
+    }
+
+    #[test]
+    fn vscode_ctrl_d_no_longer_exits() {
+        // Ctrl+D was removed from vscode; it now falls through to readline delete-forward.
+        let bindings = default_vscode_bindings();
+        let ctrl_d = KeyCombo::new(KeyCode::Char('d'), KeyModifiers::CONTROL);
+        assert_ne!(bindings.get(&ctrl_d).copied(), Some(Action::Exit));
+    }
+
+    #[test]
+    fn emacs_ctrl_d_no_longer_exits() {
+        // Ctrl+D was removed from emacs; it now falls through to readline delete-forward.
+        let bindings = default_emacs_bindings();
+        let ctrl_d = KeyCombo::new(KeyCode::Char('d'), KeyModifiers::CONTROL);
+        assert_ne!(bindings.get(&ctrl_d).copied(), Some(Action::Exit));
     }
 
     #[test]

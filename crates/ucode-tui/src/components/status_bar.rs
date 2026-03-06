@@ -11,6 +11,8 @@ use crate::theme::{ModelGroup, SandboxTier, UcodeTheme};
 #[derive(Debug, Clone)]
 pub struct StatusBarState {
     pub keybind_hints: Vec<String>,
+    /// Transient hint message shown temporarily (e.g. "Press Ctrl+C again to exit").
+    pub hint_message: Option<String>,
     pub log_level: String,
     pub branch: String,
     pub is_forked: bool,
@@ -31,6 +33,7 @@ impl Default for StatusBarState {
     fn default() -> Self {
         Self {
             keybind_hints: vec!["^P".into(), "^O".into(), "^E".into()],
+            hint_message: None,
             log_level: "INFO".into(),
             branch: "main".into(),
             is_forked: false,
@@ -93,6 +96,12 @@ fn build_segments<'a>(state: &'a StatusBarState, theme: &'a UcodeTheme) -> Vec<V
     if !state.keybind_hints.is_empty() {
         let hints = state.keybind_hints.join(" ");
         segments.push(vec![Span::styled(hints, theme.muted_style())]);
+    }
+
+    // 1b. Transient hint (high-priority: inserted right after keybind hints so
+    //     it remains visible even on narrow terminals).
+    if let Some(hint) = &state.hint_message {
+        segments.push(vec![Span::styled(hint.clone(), theme.warning_style())]);
     }
 
     // 2. Log level
@@ -407,5 +416,25 @@ mod tests {
     fn status_bar_zero_width_does_not_panic() {
         let state = StatusBarState::default();
         let _ = render_to_buf(&state, 0);
+    }
+
+    #[test]
+    fn status_bar_no_hint_by_default() {
+        let state = StatusBarState::default();
+        assert!(state.hint_message.is_none());
+    }
+
+    #[test]
+    fn status_bar_hint_message_rendered() {
+        let state = StatusBarState {
+            hint_message: Some("Press Ctrl+C again to exit".into()),
+            ..StatusBarState::default()
+        };
+        let buf = render_to_buf(&state, 120);
+        let text = buf_text(&buf);
+        assert!(
+            text.contains("Press Ctrl+C again to exit"),
+            "expected hint in: {text:?}"
+        );
     }
 }

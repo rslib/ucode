@@ -173,6 +173,11 @@ pub struct AppState {
     #[allow(clippy::type_complexity)]
     pub message_tx: Option<UnboundedSender<String>>,
     pub palette: PaletteState,
+    /// Timestamp of the last Ctrl+C press, for double-Ctrl+C exit detection.
+    pub last_ctrl_c: Option<Instant>,
+    /// Transient hint set after the first Ctrl+C; cleared when the 2-second
+    /// window expires or when the double-Ctrl+C exit fires.
+    pub ctrl_c_hint: Option<String>,
 }
 
 impl AppState {
@@ -202,6 +207,8 @@ impl AppState {
             multiplexer: detect_multiplexer(),
             message_tx: None,
             palette: PaletteState::new(),
+            last_ctrl_c: None,
+            ctrl_c_hint: None,
         }
     }
 

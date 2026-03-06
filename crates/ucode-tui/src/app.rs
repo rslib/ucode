@@ -91,6 +91,8 @@ pub enum TranscriptEntry {
         status: ToolCallStatus,
         duration_ms: Option<u64>,
         summary: Option<String>,
+        thinking: Option<String>,
+        output: Option<String>,
     },
     /// e.g. "rate-limit on anthropic -> openai/gpt-4o"
     RouterEvent(String),
@@ -297,6 +299,8 @@ impl AppState {
             status: ToolCallStatus::Running,
             duration_ms: None,
             summary: None,
+            thinking: None,
+            output: None,
         });
         self.mark_dirty();
         index
@@ -312,17 +316,23 @@ impl AppState {
         status: ToolCallStatus,
         duration_ms: Option<u64>,
         summary: Option<String>,
+        thinking: Option<String>,
+        output: Option<String>,
     ) {
         if let Some(TranscriptEntry::ToolCall {
             status: s,
             duration_ms: d,
             summary: sum,
+            thinking: th,
+            output: out,
             ..
         }) = self.transcript.get_mut(index)
         {
             *s = status;
             *d = duration_ms;
             *sum = summary;
+            *th = thinking;
+            *out = output;
             self.dirty = true;
         }
     }
@@ -358,7 +368,14 @@ impl AppState {
         sandbox_label: String,
     ) {
         let index = self.push_tool_call(tool_name.clone());
-        self.update_tool_call(index, ToolCallStatus::PendingApproval, None, None);
+        self.update_tool_call(
+            index,
+            ToolCallStatus::PendingApproval,
+            None,
+            None,
+            None,
+            None,
+        );
         self.approval_modal
             .open_run_cmd(tool_name, command, cwd, sandbox_label, Some(index));
         self.focus = FocusTarget::Overlay;
@@ -539,6 +556,8 @@ mod tests {
             ToolCallStatus::Success,
             Some(42),
             Some("wrote 3 lines".to_owned()),
+            None,
+            None,
         );
         match &app.transcript[idx] {
             TranscriptEntry::ToolCall {
@@ -592,6 +611,29 @@ mod tests {
                 assert_eq!(*status, ToolCallStatus::PendingApproval);
             }
             _ => panic!("expected ToolCall"),
+        }
+    }
+
+    #[test]
+    fn update_tool_call_with_thinking_and_output() {
+        let mut app = AppState::new();
+        let idx = app.push_tool_call("search".to_owned());
+        app.update_tool_call(
+            idx,
+            ToolCallStatus::Success,
+            Some(150),
+            Some("query=foo".to_owned()),
+            Some("Let me search for foo".to_owned()),
+            Some("Found 5 matches".to_owned()),
+        );
+        match &app.transcript[idx] {
+            TranscriptEntry::ToolCall {
+                thinking, output, ..
+            } => {
+                assert_eq!(thinking.as_deref(), Some("Let me search for foo"));
+                assert_eq!(output.as_deref(), Some("Found 5 matches"));
+            }
+            other => panic!("expected ToolCall, got {other:?}"),
         }
     }
 

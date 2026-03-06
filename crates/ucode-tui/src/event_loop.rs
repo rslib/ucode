@@ -38,6 +38,8 @@ pub enum TuiEvent {
         status: ToolCallStatus,
         duration_ms: Option<u64>,
         summary: Option<String>,
+        thinking: Option<String>,
+        output: Option<String>,
     },
     RouterEvent(String),
     SystemMessage(String),
@@ -719,8 +721,10 @@ fn handle_tui_event(event: TuiEvent, app: &mut AppState) -> bool {
             status,
             duration_ms,
             summary,
+            thinking,
+            output,
         } => {
-            app.update_tool_call(index, status, duration_ms, summary);
+            app.update_tool_call(index, status, duration_ms, summary, thinking, output);
         }
         TuiEvent::RouterEvent(msg) => app.push_router_event(msg),
         TuiEvent::SystemMessage(msg) => app.push_system_message(msg),
@@ -959,6 +963,8 @@ mod tests {
             status: ToolCallStatus::Success,
             duration_ms: Some(42),
             summary: Some("done".to_owned()),
+            thinking: None,
+            output: None,
         };
         let _ = TuiEvent::RouterEvent("rerouted".to_owned());
         let _ = TuiEvent::SystemMessage("info".to_owned());
@@ -1216,6 +1222,8 @@ mod tests {
                 status: ToolCallStatus::Success,
                 duration_ms: Some(100),
                 summary: Some("read 5 lines".to_owned()),
+                thinking: None,
+                output: None,
             },
             &mut app,
         );

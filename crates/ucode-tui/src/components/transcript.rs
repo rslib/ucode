@@ -111,7 +111,18 @@ fn entry_lines<'a>(
             status,
             duration_ms,
             summary,
-        } => render_tool_call(name, status, *duration_ms, summary.as_deref(), theme, width),
+            thinking,
+            output,
+        } => render_tool_call(
+            name,
+            status,
+            *duration_ms,
+            summary.as_deref(),
+            thinking.as_deref(),
+            output.as_deref(),
+            theme,
+            width,
+        ),
         TranscriptEntry::RouterEvent(text) => render_router_event(text, theme),
         TranscriptEntry::SystemMessage(text) => render_system_message(text, theme),
         TranscriptEntry::PatchProposed { file_path, .. } => {
@@ -196,13 +207,16 @@ fn render_streaming_message<'a>(
     lines
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_tool_call<'a>(
     name: &str,
     status: &ToolCallStatus,
     duration_ms: Option<u64>,
     summary: Option<&str>,
+    thinking: Option<&str>,
+    output: Option<&str>,
     theme: &'a UcodeTheme,
-    _width: u16,
+    width: u16,
 ) -> Vec<Line<'a>> {
     let (icon, icon_style) = match status {
         ToolCallStatus::Running => ("\u{27f3}", theme.accent_style()),
@@ -241,7 +255,43 @@ fn render_tool_call<'a>(
         spans.push(Span::styled(" pending approval", theme.warning_style()));
     }
 
-    vec![Line::from(spans)]
+    let mut lines = vec![Line::from(spans)];
+
+    // Thinking summary line (dim). Prefix "    ⊙⊙ " = 7 chars.
+    if let Some(thought) = thinking.filter(|s| !s.is_empty()) {
+        let max_len = (width as usize).saturating_sub(7);
+        let first_line = thought.lines().next().unwrap_or("");
+        let truncated: String = if first_line.chars().count() > max_len {
+            let mut s: String = first_line.chars().take(max_len.saturating_sub(3)).collect();
+            s.push_str("...");
+            s
+        } else {
+            first_line.to_owned()
+        };
+        lines.push(Line::from(vec![
+            Span::styled("    \u{2299}\u{2299} ", theme.dim_style()),
+            Span::styled(truncated, theme.dim_style()),
+        ]));
+    }
+
+    // Output summary line (muted). Prefix "    ▮▮ " = 7 chars.
+    if let Some(out) = output.filter(|s| !s.is_empty()) {
+        let max_len = (width as usize).saturating_sub(7);
+        let first_line = out.lines().next().unwrap_or("");
+        let truncated: String = if first_line.chars().count() > max_len {
+            let mut s: String = first_line.chars().take(max_len.saturating_sub(3)).collect();
+            s.push_str("...");
+            s
+        } else {
+            first_line.to_owned()
+        };
+        lines.push(Line::from(vec![
+            Span::styled("    \u{25ae}\u{25ae} ", theme.muted_style()),
+            Span::styled(truncated, theme.muted_style()),
+        ]));
+    }
+
+    lines
 }
 
 fn render_router_event<'a>(text: &str, theme: &'a UcodeTheme) -> Vec<Line<'a>> {
@@ -338,7 +388,16 @@ pub fn entry_height(entry: &TranscriptEntry, width: u16) -> usize {
             let body_w = width.saturating_sub(2);
             wrap_text(&msg.content, body_w).len().max(1)
         }
-        TranscriptEntry::ToolCall { .. } => 1, // single line now
+        TranscriptEntry::ToolCall {
+            thinking, output, ..
+        } => {
+            1 + thinking
+                .as_ref()
+                .map_or(0, |s| if s.is_empty() { 0 } else { 1 })
+                + output
+                    .as_ref()
+                    .map_or(0, |s| if s.is_empty() { 0 } else { 1 })
+        }
         TranscriptEntry::RouterEvent(_) => 1,
         TranscriptEntry::SystemMessage(_) => 1,
         TranscriptEntry::PatchProposed { .. } => 1,
@@ -464,6 +523,8 @@ mod tests {
             &ToolCallStatus::Success,
             Some(42),
             Some("read 10 lines"),
+            None,
+            None,
             &t,
             80,
         );
@@ -492,6 +553,8 @@ mod tests {
             &ToolCallStatus::PendingApproval,
             None,
             None,
+            None,
+            None,
             &t,
             80,
         );
@@ -514,7 +577,16 @@ mod tests {
     #[test]
     fn render_tool_call_running() {
         let t = theme();
-        let lines = render_tool_call("search", &ToolCallStatus::Running, None, None, &t, 80);
+        let lines = render_tool_call(
+            "search",
+            &ToolCallStatus::Running,
+            None,
+            None,
+            None,
+            None,
+            &t,
+            80,
+        );
         let text = lines_text(&lines);
         assert!(
             text.contains('\u{27f3}'),
@@ -586,6 +658,8 @@ mod tests {
             status: ToolCallStatus::Success,
             duration_ms: None,
             summary: None,
+            thinking: None,
+            output: None,
         };
         assert_eq!(entry_height(&entry4, 80), 1, "tool call should be 1 line");
     }
@@ -625,6 +699,8 @@ mod tests {
                 status: ToolCallStatus::Success,
                 duration_ms: Some(100),
                 summary: Some("did stuff".to_owned()),
+                thinking: None,
+                output: None,
             },
             TranscriptEntry::RouterEvent("rerouted".to_owned()),
             TranscriptEntry::SystemMessage("info".to_owned()),
@@ -726,6 +802,121 @@ mod tests {
         assert!(
             !rendered.contains('\u{2193}'),
             "expected no ↓ indicator when auto_scroll=true"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // render_tool_call with thinking/output blocks
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn render_tool_call_with_thinking() {
+        let t = theme();
+        let lines = render_tool_call(
+            "sequential_thinking",
+            &ToolCallStatus::Success,
+            Some(100),
+            Some("analyzing problem"),
+            Some("Let me analyze the code structure..."),
+            None,
+            &t,
+            80,
+        );
+        let text = lines_text(&lines);
+        assert!(
+            text.contains('\u{2299}'),
+            "expected ⊙ thinking icon, got: {text:?}"
+        );
+        assert!(
+            text.contains("Let me analyze"),
+            "expected thinking content, got: {text:?}"
+        );
+        assert_eq!(lines.len(), 2, "tool call with thinking should be 2 lines");
+    }
+
+    #[test]
+    fn render_tool_call_with_output() {
+        let t = theme();
+        let lines = render_tool_call(
+            "read_file",
+            &ToolCallStatus::Success,
+            Some(50),
+            Some("path=README.md"),
+            None,
+            Some("# Project Title\nSome content here"),
+            &t,
+            80,
+        );
+        let text = lines_text(&lines);
+        assert!(
+            text.contains('\u{25ae}'),
+            "expected ▮ output icon, got: {text:?}"
+        );
+        assert!(
+            text.contains("# Project Title"),
+            "expected output first line, got: {text:?}"
+        );
+        assert_eq!(lines.len(), 2, "tool call with output should be 2 lines");
+    }
+
+    #[test]
+    fn render_tool_call_with_thinking_and_output() {
+        let t = theme();
+        let lines = render_tool_call(
+            "search",
+            &ToolCallStatus::Success,
+            Some(200),
+            None,
+            Some("I need to find the config file"),
+            Some("Found 3 matches in src/"),
+            &t,
+            80,
+        );
+        assert_eq!(
+            lines.len(),
+            3,
+            "tool call with both thinking and output should be 3 lines"
+        );
+    }
+
+    #[test]
+    fn render_tool_call_without_thinking_or_output() {
+        let t = theme();
+        let lines = render_tool_call(
+            "read_file",
+            &ToolCallStatus::Success,
+            Some(42),
+            Some("path=foo.rs"),
+            None,
+            None,
+            &t,
+            80,
+        );
+        assert_eq!(
+            lines.len(),
+            1,
+            "tool call without thinking/output should be 1 line"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // entry_height with thinking/output
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn entry_height_tool_call_with_thinking_and_output() {
+        let entry = TranscriptEntry::ToolCall {
+            name: "search".to_owned(),
+            status: ToolCallStatus::Success,
+            duration_ms: Some(100),
+            summary: None,
+            thinking: Some("analyzing...".to_owned()),
+            output: Some("found 3 results".to_owned()),
+        };
+        assert_eq!(
+            entry_height(&entry, 80),
+            3,
+            "1 main + 1 thinking + 1 output"
         );
     }
 }

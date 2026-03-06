@@ -8,6 +8,7 @@ use crossterm::terminal::{
 use futures_util::StreamExt;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
+use tokio::sync::mpsc;
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::time;
 
@@ -105,7 +106,20 @@ pub async fn run_event_loop(
     let backend = CrosstermBackend::new(std::io::stderr());
     let mut terminal = Terminal::new(backend)?;
 
-    let mut event_stream = EventStream::new();
+    // Spawn a dedicated task to read terminal events and forward them over
+    // a channel. This decouples event reading from the render loop so that
+    // fast typing naturally batches — the reader pushes events as fast as
+    // they arrive, and the main loop drains the channel on each iteration.
+    let (term_tx, mut term_rx) = mpsc::unbounded_channel::<Event>();
+    let reader_handle = tokio::spawn(async move {
+        let mut reader = EventStream::new();
+        while let Some(Ok(event)) = reader.next().await {
+            if term_tx.send(event).is_err() {
+                break;
+            }
+        }
+    });
+
     let mut render_tick = time::interval(Duration::from_millis(RENDER_INTERVAL_MS));
     // Don't burst-render on startup.
     render_tick.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
@@ -118,17 +132,23 @@ pub async fn run_event_loop(
 
     loop {
         tokio::select! {
-            // Terminal input events.
-            maybe_event = event_stream.next() => {
+            // Biased: drain all pending input before rendering.
+            biased;
+
+            // Terminal input events (highest priority).
+            maybe_event = term_rx.recv() => {
                 match maybe_event {
-                    Some(Ok(event)) => {
+                    Some(event) => {
                         if handle_terminal_event(event, app, input_box, sidebar_data) {
                             break;
                         }
-                    }
-                    Some(Err(_)) => {
-                        // I/O error on the terminal — exit cleanly.
-                        break;
+                        // Drain any remaining buffered events from the channel
+                        // so we batch multiple keystrokes into one render frame.
+                        while let Ok(event) = term_rx.try_recv() {
+                            if handle_terminal_event(event, app, input_box, sidebar_data) {
+                                break;
+                            }
+                        }
                     }
                     None => break,
                 }
@@ -149,14 +169,14 @@ pub async fn run_event_loop(
                             break;
                         }
                     }
-                    None => {
-                        // Sender dropped — treat as quit.
-                        break;
-                    }
+                    None => break,
                 }
             }
         }
     }
+
+    // Clean up the reader task.
+    reader_handle.abort();
 
     Ok(())
 }
@@ -209,44 +229,64 @@ fn handle_terminal_event(
                 return false;
             }
 
-            if let Some(action) = app.keybinds.resolve(&key) {
-                return dispatch_action(action, app, input_box);
-            }
-
-            // No bound action — forward editing keys to the input box when
-            // focus is on the input area.
+            // When focus is on the input box, send characters and editing
+            // keys directly to it. Only Ctrl/Alt modified keys and
+            // non-character keys (Enter, Esc, arrows, etc.) go through
+            // keybind resolution. This prevents bare-letter bindings
+            // (e.g. 'a' -> ApproveAction) from eating typed text.
             if app.focus == FocusTarget::Input {
-                match key.code {
-                    crossterm::event::KeyCode::Char(c) => {
+                let is_bare_char = matches!(key.code, crossterm::event::KeyCode::Char(_))
+                    && key.modifiers == crossterm::event::KeyModifiers::NONE;
+                let is_shift_char = matches!(key.code, crossterm::event::KeyCode::Char(_))
+                    && key.modifiers == crossterm::event::KeyModifiers::SHIFT;
+
+                if is_bare_char || is_shift_char {
+                    if let crossterm::event::KeyCode::Char(c) = key.code {
                         input_box.insert_char(c);
                         app.mark_dirty();
                     }
+                    return false;
+                }
+
+                // Editing keys go to input box, not keybind resolver.
+                match key.code {
                     crossterm::event::KeyCode::Backspace => {
                         input_box.delete_char();
                         app.mark_dirty();
+                        return false;
                     }
                     crossterm::event::KeyCode::Delete => {
                         input_box.delete_forward();
                         app.mark_dirty();
+                        return false;
                     }
                     crossterm::event::KeyCode::Left => {
                         input_box.move_left();
                         app.mark_dirty();
+                        return false;
                     }
                     crossterm::event::KeyCode::Right => {
                         input_box.move_right();
                         app.mark_dirty();
+                        return false;
                     }
                     crossterm::event::KeyCode::Home => {
                         input_box.move_home();
                         app.mark_dirty();
+                        return false;
                     }
                     crossterm::event::KeyCode::End => {
                         input_box.move_end();
                         app.mark_dirty();
+                        return false;
                     }
-                    _ => {}
+                    _ => {} // fall through to keybind resolution
                 }
+            }
+
+            // Keybind resolution for modified keys and non-input-focus contexts.
+            if let Some(action) = app.keybinds.resolve(&key) {
+                return dispatch_action(action, app, input_box);
             }
         }
 

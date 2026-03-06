@@ -122,4 +122,7 @@ pub enum SkillError {
 
     #[error("missing required field '{field}' in '{path}'")]
     MissingField { path: PathBuf, field: String },
+
+    #[error("skill not found: '{name}'")]
+    NotFound { name: String },
 }

@@ -594,15 +594,19 @@ This ensures consistent behavior, no runtime dependency on installed binaries, a
 * Expired checkpoints are pruned according to retention policy.
   **Owner:** Tools/Core/TUI
 
-### ISSUE 0412 — Background job controller + interactive cancel/kill (ucode-tools + ucode-core + ucode-tui) [P0]
+### ISSUE 0412 — Background job controller + interactive cancel/kill (ucode-tools + ucode-core + ucode-tui) [P0] [DONE]
 
 **Goal:** Support detached long-running operations with explicit lifecycle control, including interactive kill from TUI.
 **Scope/Notes:**
 
-* Background job APIs: start/list/status/cancel/kill
-* Job states: queued/running/completed/failed/cancelled/killed
-* TUI background jobs panel with keyboard actions for cancel/kill
-* Clear distinction between graceful cancel and force kill in logs/UI
+* `JobController`: start/list/status/cancel/kill/wait/prune_completed
+* `JobState`: Queued/Running/Completed/Failed/Cancelled/Killed with `is_terminal()`
+* Graceful cancel (cancel_tx) vs force kill (cancel_tx + kill_tx) signals
+* One-shot result consumption via `wait()`, prevents double-await
+* State set before signal sent (prevents race with task completion)
+* Task only updates state if not already terminal (cancel/kill wins over natural completion)
+* 15 tests
+* TUI background jobs panel deferred to TUI phase
   **Acceptance tests:**
 * Long-running job can be detached and monitored while chat remains responsive.
 * User can cancel and force-kill jobs interactively from TUI.
@@ -628,7 +632,7 @@ This ensures consistent behavior, no runtime dependency on installed binaries, a
 
 ## EPIC 5 — MCP client + integration
 
-### ISSUE 0501 — MCP client (stdio transport) (ucode-mcp)
+### ISSUE 0501 — MCP client (stdio transport) (ucode-mcp) [DONE]
 
 **Goal:** Implement MCP client able to discover and call tools over stdio.
 **Scope/Notes:**
@@ -639,13 +643,17 @@ This ensures consistent behavior, no runtime dependency on installed binaries, a
 * Connect to a dummy MCP server and call a tool successfully.
   **Owner:** MCP
 
-### ISSUE 0502 — MCP registry integration (ucode-tools)
+### ISSUE 0502 — MCP registry integration (ucode-tools) [DONE]
 
 **Goal:** Expose MCP tools through ToolRegistry with namespacing.
 **Scope/Notes:**
 
 * Names: `mcp.<server>.<tool>`
 * Collision handling
+* `McpBridge` facade + `McpToolHandler` implementing `ToolHandler`
+* `register_tool_defs()` testable free function (no live server needed)
+* `parse_namespaced()` for reverse lookup
+* 16 tests
   **Acceptance tests:**
 * `list_tools` includes MCP tool; invoking it works.
   **Owner:** MCP/Tools
@@ -721,7 +729,7 @@ This ensures consistent behavior, no runtime dependency on installed binaries, a
 
 ## EPIC 6 — Skills (Claude Code/OpenCode compatible)
 
-### ISSUE 0601 — SKILL.md discovery (ucode-skills)
+### ISSUE 0601 — SKILL.md discovery (ucode-skills) [DONE]
 
 **Goal:** Discover skills from common paths.
 **Scope/Notes:**
@@ -735,7 +743,7 @@ Search:
 * Put a sample SKILL.md in each path; tool lists them.
   **Owner:** Skills
 
-### ISSUE 0602 — SKILL.md parsing (YAML frontmatter + markdown body) (ucode-skills)
+### ISSUE 0602 — SKILL.md parsing (YAML frontmatter + markdown body) (ucode-skills) [DONE]
 
 **Goal:** Parse `name`, `description` (min) and instruction body.
 **Scope/Notes:**
@@ -746,11 +754,17 @@ Search:
 * Parse sample; unknown keys don’t break.
   **Owner:** Skills
 
-### ISSUE 0603 — Skill execution binding (ucode-core + skills)
+### ISSUE 0603 — Skill execution binding (ucode-core + skills) [DONE]
 
 **Goal:** Use skill instructions as prompt prefix; enforce skill tool policy.
-**Acceptance tests:**
+**Scope/Notes:**
 
+* `SkillBinding`: system prompt prefix, tool filter, routing hints, preferred model group
+* `SkillManager`: activate/deactivate/switch skills, active tool filter, active system prefix
+* `ToolFilter::AllowAll | AllowList(HashSet)` with `is_allowed()` check
+* Empty allowlist = all tools permitted
+* 16 tests
+  **Acceptance tests:**
 * Selecting a skill changes system prompt; tool allowlist enforced.
   **Owner:** Skills/Core
 

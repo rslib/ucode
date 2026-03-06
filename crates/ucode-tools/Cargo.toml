@@ -17,6 +17,7 @@ ast-grep-core = { workspace = true }
 ast-grep-language = { workspace = true }
 chrono = { workspace = true }
 gix = { workspace = true }
+ucode-mcp = { version = "0.1.0", path = "../ucode-mcp" }
 
 [dev-dependencies]
 tempfile = { workspace = true }

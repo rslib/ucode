@@ -1,8 +1,10 @@
 //! ucode-skills: SKILL.md discovery and parsing (Claude Code + OpenCode compatible)
 
+pub mod binding;
 pub mod discovery;
 pub mod parser;
 
+pub use binding::{SkillBinding, SkillManager, ToolFilter};
 pub use discovery::discover_skills;
 pub use parser::{SkillError, load_all_skills, parse_skill};
 

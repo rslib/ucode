@@ -42,4 +42,7 @@ pub enum CoreError {
 
     #[error("tool error: {0}")]
     Tool(String),
+
+    #[error("job error: {message}")]
+    Job { message: String },
 }

@@ -6,6 +6,7 @@ pub mod comm;
 pub mod directive;
 pub mod error;
 pub mod event;
+pub mod jobs;
 pub mod logging;
 pub mod message;
 pub mod router;
@@ -23,6 +24,7 @@ pub use comm::{AgentMessage, CommBus, CommError, CommPolicy};
 pub use directive::{Directive, ParsedInput, Span, parse_input};
 pub use error::{AuthErrorKind, CoreError};
 pub use event::{Event, EventStream};
+pub use jobs::{JobController, JobId, JobInfo, JobResult, JobState};
 pub use logging::{
     LogConfig, LogGuard, LogLevel, default_config_home, default_log_dir, init_logging,
 };

@@ -5,6 +5,7 @@ pub mod ast_tool;
 pub mod cmd_tool;
 pub mod fs_tools;
 pub mod git;
+pub mod mcp_bridge;
 pub mod patch_tool;
 pub mod policy;
 pub mod registry;
@@ -24,6 +25,7 @@ pub use git::{
     register_git_reset_tool, register_git_restore_tool, register_git_show_tool,
     register_git_stash_tool, register_git_status_tool, register_git_tag_tool,
 };
+pub use mcp_bridge::McpBridge;
 pub use patch_tool::register_patch_tool;
 pub use policy::{
     Capabilities, EffectivePolicy, NetworkCheckResult, NetworkPolicy, PolicyLayer, PolicyStack,

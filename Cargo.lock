@@ -3574,6 +3574,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "ucode-core",
+ "ucode-mcp",
  "ucode-providers",
 ]
 

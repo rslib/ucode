@@ -512,12 +512,13 @@ CLI:
 * Command-induced mutations can be rolled back.
 * Retention pruning follows configured policy.
 
-### Task 4.10 Background jobs with interactive cancel/kill (ucode-tools + ucode-core + ucode-tui) [P0]
+### Task 4.10 Background jobs with interactive cancel/kill (ucode-tools + ucode-core + ucode-tui) [P0] [DONE]
 
-* Add background job runtime: start/list/status/cancel/kill
-* Persist job states: queued/running/completed/failed/cancelled/killed
-* Add TUI background jobs panel with keyboard shortcuts for cancel and force-kill
-* Keep chat responsive while jobs run detached
+* Background job runtime: start/list/status/cancel/kill via `JobController`
+* Job states: queued/running/completed/failed/cancelled/killed with `is_terminal()`
+* Graceful cancel (cancel_tx) and force kill (cancel_tx + kill_tx) signals
+* `wait()` with one-shot result consumption, `prune_completed()` for cleanup
+* TUI background jobs panel deferred to TUI phase
 
 **Acceptance**
 
@@ -548,17 +549,18 @@ CLI:
 
 # Phase 5 — MCP client (external tools)
 
-### Task 5.1 MCP client library (ucode-mcp)
+### Task 5.1 MCP client library (ucode-mcp) [DONE]
 
 * stdio transport first
 * tool discovery + tool execution
 * schema conversion → ToolSpec
 
-### Task 5.2 MCP registry integration (ucode-tools)
+### Task 5.2 MCP registry integration (ucode-tools) [DONE]
 
-* namespacing strategy
-* collision handling
+* namespacing strategy: `mcp.<server>.<tool>`
+* collision handling: error on duplicate names
 * tool call routing (built-in vs MCP)
+* `McpBridge` + `McpToolHandler` + `register_tool_defs()` testable free function
 
 ### Task 5.3 Native MCP launcher manager (ucode-mcp)
 
@@ -628,7 +630,7 @@ CLI:
 
 # Phase 6 — Skills (Claude Code + OpenCode compatible)
 
-### Task 6.1 Skill discovery + parsing (ucode-skills)
+### Task 6.1 Skill discovery + parsing (ucode-skills) [DONE]
 
 Load from:
 
@@ -644,10 +646,13 @@ Parse:
 * ignore unknown keys
 * support optional `ucode:` namespace for extras (permissions, routing hints, tool allowlists)
 
-### Task 6.2 Skill selection/execution
+### Task 6.2 Skill selection/execution [DONE]
 
 * active skill becomes prompt prefix + tool constraints + routing hints
 * switch skill from TUI
+* `SkillBinding` (system prompt prefix, tool filter, routing hints)
+* `SkillManager` (activate/deactivate/switch, tool filter, system prefix)
+* `ToolFilter::AllowAll | AllowList(HashSet)` with `is_allowed()` check
 
 **Acceptance**
 

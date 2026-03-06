@@ -938,6 +938,32 @@ Search:
 
 **Completed:** 446 TUI tests, 3 phases (0709a-0709c). Keybind reference overlay with grouped bindings and preset-aware title. Search overlay with preset-aware key handling (vim: Enter closes, emacs: Ctrl+S/Ctrl+R/Ctrl+G, vscode: Enter=next match). Copy mode with anchor/cursor selection, j/k navigation, y to yank to clipboard via OSC 52/external/file fallback chain.
 
+### ISSUE 0710 — Markdown rendering in transcript (ucode-tui) [DONE]
+
+**Goal:** Render assistant messages with rich markdown formatting (bold, italic, code blocks, headers, tables, lists, links).
+
+**Scope/Notes:**
+
+* Uses `pulldown-cmark` (v0.13.1, minimal features) for parsing
+* Event-driven state machine (`RenderCtx`) processes pulldown-cmark events into styled ratatui `Line`/`Span` vectors
+* Inline styles: Bold (`BOLD`), Italic (`ITALIC`), Strikethrough (`CROSSED_OUT`), inline code (accent fg + surface bg)
+* Code blocks: language label in dim, content with surface background, no word-wrap
+* Headers: H1 (accent+bold+underline), H2 (accent+bold), H3-H6 (accent)
+* Lists: bullet (`- `) and numbered (`1. `) with nesting support
+* Tables: measured column widths, bold header row, muted pipe separators
+* Links: accent+underline text, dim URL in parentheses
+* Graceful fallback to plain text wrapping
+
+**Acceptance tests:**
+
+* Assistant messages render markdown formatting correctly.
+* Streaming messages render markdown incrementally.
+* `entry_height` uses `markdown_height` for correct virtual scrolling.
+* Plain text without markdown renders identically to before.
+  **Owner:** TUI
+
+**Completed:** 493 TUI tests (47 new markdown tests). Created `components/markdown.rs` (1,544 lines) with `render_markdown` and `markdown_height` public API. Integrated into `render_assistant_message`, `render_streaming_message`, and `entry_height`. Removed dead `render_indented_text` helper. Updated demo with markdown-rich responses (headers, tables, code blocks, inline styles, links).
+
 ---
 
 ## EPIC 8 — Plugins + hooks (user customization)

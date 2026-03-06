@@ -4,13 +4,15 @@
 //!
 //! Type a message and press Enter to trigger a simulated AI interaction that
 //! showcases all TUI features: tool calls (with thinking/output), router events,
-//! system messages, patch proposals, approval modals, and streaming responses.
+//! system messages, patch proposals, approval modals, streaming responses,
+//! system-triggered toasts, search overlay, keybind overlay, and copy mode.
 //!
-//! - First message: tool calls + streaming response
-//! - Second message: failed tool, approval modal, patch proposal + streaming
+//! - First message: tool calls + streaming response + checkpoint/agent toasts
+//! - Second message: failed tool, approval modal, patch proposal + budget/failure toasts
 //! - Third+ messages: simple echo
 //!
 //! F6 toggles theme, F7 toggles density. Ctrl+P opens command palette.
+//! ? opens keybind reference. Ctrl+F opens search. v enters copy mode.
 
 use std::time::Duration;
 
@@ -181,13 +183,27 @@ async fn run_sequence_one(tui_tx: &mpsc::UnboundedSender<TuiEvent>) {
         return;
     }
 
-    // Streaming response.
+    // Streaming response — showcases markdown rendering.
     tokio::time::sleep(Duration::from_millis(200)).await;
     stream_words(
-        "I've analyzed the codebase. Here's what I found:\n\n\
-         1. The main entry point is in `src/main.rs`\n\
-         2. There are 3 TODO items across 2 files\n\
-         3. The project structure follows standard Rust conventions\n\n\
+        "## Analysis Results\n\n\
+         I've analyzed the codebase. Here's what I found:\n\n\
+         - The main entry point is in `src/main.rs`\n\
+         - There are **3 TODO items** across *2 files*\n\
+         - The project structure follows standard Rust conventions\n\n\
+         ### TODO Summary\n\n\
+         | File | Line | Description |\n\
+         |------|------|-------------|\n\
+         | src/lib.rs | 42 | Initialize subsystems |\n\
+         | src/config.rs | 15 | Load from env |\n\
+         | src/config.rs | 28 | Validate schema |\n\n\
+         ```rust\n\
+         // Example fix for the first TODO:\n\
+         pub fn init() -> Result<(), Box<dyn std::error::Error>> {\n\
+             config::load()?;\n\
+             Ok(())\n\
+         }\n\
+         ```\n\n\
          Would you like me to address any of the TODO items?",
         35,
         tui_tx,
@@ -195,6 +211,17 @@ async fn run_sequence_one(tui_tx: &mpsc::UnboundedSender<TuiEvent>) {
     .await;
 
     let _ = tui_tx.send(TuiEvent::StreamDone);
+
+    // System-triggered toasts: checkpoint saved, agent completed.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let _ = tui_tx.send(TuiEvent::CheckpointCreated {
+        name: "auto-save-1".to_owned(),
+    });
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let _ = tui_tx.send(TuiEvent::AgentCompleted {
+        agent_id: "agent-001".to_owned(),
+        name: "code-analyzer".to_owned(),
+    });
 }
 
 /// Second-message sequence: failed tool, system message, approval modal, patch, streaming.
@@ -262,28 +289,51 @@ async fn run_sequence_two(tui_tx: &mpsc::UnboundedSender<TuiEvent>) {
         return;
     }
 
-    // Streaming response.
+    // Streaming response — showcases markdown with inline styles.
     tokio::time::sleep(Duration::from_millis(300)).await;
     stream_words(
-        "I encountered a permission issue with the config file, but I've prepared a patch \
-         for `src/lib.rs`. I also need approval to run `cargo test`.\n\n\
-         Handle the approval first, then the diff will resume automatically.",
+        "### Permission Issue\n\n\
+         I encountered a **permission denied** error with `src/config.rs` \
+         (sandbox: *workspace*). However, I've prepared a patch for `src/lib.rs`.\n\n\
+         **Next steps:**\n\n\
+         1. Handle the ~~pending~~ approval for `cargo test`\n\
+         2. Review the diff for `src/lib.rs`\n\
+         3. The diff will resume automatically after approval\n\n\
+         See [Rust sandbox docs](https://doc.rust-lang.org/cargo/) for details.",
         35,
         tui_tx,
     )
     .await;
 
     let _ = tui_tx.send(TuiEvent::StreamDone);
+
+    // System-triggered toasts: budget warning, agent failure.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let _ = tui_tx.send(TuiEvent::BudgetWarning {
+        used_pct: 75.0,
+        message: "Token budget at 75%".to_owned(),
+    });
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let _ = tui_tx.send(TuiEvent::AgentFailed {
+        agent_id: "agent-002".to_owned(),
+        name: "test-runner".to_owned(),
+        error: "timeout after 30s".to_owned(),
+    });
 }
 
-/// Third-and-beyond sequence: simple echo.
+/// Third-and-beyond sequence: echo with markdown formatting.
 async fn run_sequence_echo(user_msg: &str, tui_tx: &mpsc::UnboundedSender<TuiEvent>) {
     tokio::time::sleep(Duration::from_millis(300)).await;
 
     let response = format!(
-        "You said: \"{user_msg}\"\n\n\
-         This is a simple echo response. The first two messages demonstrated all \
-         TUI features. Type more to keep echoing."
+        "You said: *\"{user_msg}\"*\n\n\
+         ### Keyboard Shortcuts\n\n\
+         | Key | Action |\n\
+         |-----|--------|\n\
+         | `?` | Keybind reference |\n\
+         | `Ctrl+F` | Search transcript |\n\
+         | `v` | Copy mode |\n\
+         | `Ctrl+P` | Command palette |"
     );
 
     stream_words(&response, 35, tui_tx).await;
@@ -304,7 +354,7 @@ async fn fake_llm(
     if tui_tx
         .send(TuiEvent::SystemMessage(
             "Demo mode -- showcasing all TUI features. Type any message to trigger a simulated \
-             AI interaction. F6 toggles theme, F7 toggles density."
+             AI interaction.\n\nKeys: F6 theme, F7 density, ? keybinds, Ctrl+F search, v copy mode, Ctrl+P palette"
                 .to_owned(),
         ))
         .is_err()
@@ -356,14 +406,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     app.palette = PaletteState::from_registry(&app.command_registry);
     app.message_tx = Some(user_tx);
 
-    // Demo toasts — visible immediately on startup.
+    // Startup toast — visible immediately on startup.
+    // Checkpoint and budget toasts are demonstrated via system-triggered events in the sequences.
     app.toast(ToastLevel::Info, "Session started");
-    app.toast(ToastLevel::Success, "Checkpoint created");
-    app.toast_with_body(
-        ToastLevel::Warning,
-        "Budget warning",
-        "75% of token budget used",
-    );
 
     let mut input_box = ucode_tui::components::input::InputBoxState::new();
     let mut sidebar_data = ucode_tui::components::sidebar::SidebarData::new();

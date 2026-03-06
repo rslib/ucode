@@ -161,8 +161,23 @@ fn render_user_message<'a>(text: &str, theme: &'a UcodeTheme, width: u16) -> Vec
 }
 
 fn render_assistant_message<'a>(text: &str, theme: &'a UcodeTheme, width: u16) -> Vec<Line<'a>> {
-    // Plain indented text, no header.
-    let mut lines = render_indented_text(text, theme, width);
+    let content_width = width.saturating_sub(2);
+    let md_lines = super::markdown::render_markdown(text, theme, content_width);
+
+    let mut lines: Vec<Line<'a>> = md_lines
+        .into_iter()
+        .map(|line| {
+            let mut spans = Vec::with_capacity(line.spans.len() + 1);
+            spans.push(Span::raw("  "));
+            spans.extend(line.spans);
+            Line::from(spans)
+        })
+        .collect();
+
+    if lines.is_empty() {
+        lines.push(Line::from(Span::raw("  ")));
+    }
+
     // Blank line after for visual separation.
     lines.push(Line::from(""));
     lines
@@ -174,34 +189,28 @@ fn render_streaming_message<'a>(
     width: u16,
     show_cursor: bool,
 ) -> Vec<Line<'a>> {
-    let content_width = width.saturating_sub(2); // 2-space indent
-    let wrapped = wrap_text(&msg.content, content_width);
+    let content_width = width.saturating_sub(2);
+    let md_lines = super::markdown::render_markdown(&msg.content, theme, content_width);
 
-    let mut lines = Vec::new();
-
-    if wrapped.is_empty() {
-        // No content yet — show cursor on a blank indented line.
+    if md_lines.is_empty() {
         let cursor = if show_cursor { "\u{258c}" } else { "" };
-        lines.push(Line::from(vec![
+        return vec![Line::from(vec![
             Span::raw("  "),
-            Span::styled(cursor, theme.text_style()),
-        ]));
-    } else {
-        for (i, chunk) in wrapped.iter().enumerate() {
-            let is_last = i == wrapped.len() - 1;
-            if is_last && show_cursor {
-                lines.push(Line::from(vec![
-                    Span::raw("  "),
-                    Span::styled(chunk.clone(), theme.text_style()),
-                    Span::styled("\u{258c}", theme.text_style()),
-                ]));
-            } else {
-                lines.push(Line::from(vec![
-                    Span::raw("  "),
-                    Span::styled(chunk.clone(), theme.text_style()),
-                ]));
-            }
+            Span::styled(cursor.to_owned(), theme.text_style()),
+        ])];
+    }
+
+    let mut lines: Vec<Line<'a>> = Vec::with_capacity(md_lines.len());
+    let last_idx = md_lines.len() - 1;
+
+    for (i, line) in md_lines.into_iter().enumerate() {
+        let mut spans = Vec::with_capacity(line.spans.len() + 2);
+        spans.push(Span::raw("  "));
+        spans.extend(line.spans);
+        if i == last_idx && show_cursor {
+            spans.push(Span::styled("\u{258c}".to_owned(), theme.text_style()));
         }
+        lines.push(Line::from(spans));
     }
 
     lines
@@ -350,24 +359,6 @@ fn wrap_text(text: &str, width: u16) -> Vec<String> {
     lines
 }
 
-/// Render `text` as indented lines (2-space indent), wrapping at `width`.
-fn render_indented_text<'a>(text: &str, theme: &'a UcodeTheme, width: u16) -> Vec<Line<'a>> {
-    let content_width = width.saturating_sub(2);
-    let wrapped = wrap_text(text, content_width);
-    if wrapped.is_empty() {
-        return vec![Line::from(Span::raw("  "))];
-    }
-    wrapped
-        .into_iter()
-        .map(|chunk| {
-            Line::from(vec![
-                Span::raw("  "),
-                Span::styled(chunk, theme.text_style()),
-            ])
-        })
-        .collect()
-}
-
 // ---------------------------------------------------------------------------
 // entry_height — virtual scrolling helper
 // ---------------------------------------------------------------------------
@@ -382,11 +373,11 @@ pub fn entry_height(entry: &TranscriptEntry, width: u16) -> usize {
         }
         TranscriptEntry::AssistantMessage(text) => {
             let body_w = width.saturating_sub(2);
-            wrap_text(text, body_w).len().max(1) + 1 // +1 for blank separator
+            super::markdown::markdown_height(text, body_w).max(1) + 1 // +1 for blank separator
         }
         TranscriptEntry::Streaming(msg) => {
             let body_w = width.saturating_sub(2);
-            wrap_text(&msg.content, body_w).len().max(1)
+            super::markdown::markdown_height(&msg.content, body_w).max(1)
         }
         TranscriptEntry::ToolCall {
             thinking, output, ..

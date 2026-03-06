@@ -12,6 +12,7 @@ serde = { workspace = true }
 thiserror = { workspace = true }
 unicode-width = { workspace = true }
 ucode-core = { version = "0.1.0", path = "../ucode-core" }
+pulldown-cmark = { version = "0.13.1", default-features = false }
 
 [dev-dependencies]
 tempfile = { workspace = true }

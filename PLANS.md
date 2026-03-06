@@ -774,6 +774,28 @@ Terminal compatibility:
 * `Ctrl+F` opens search; matches highlighted; `n`/`N` navigate between matches.
 * `?` shows full keybind reference overlay.
 
+### Task 7.6b Markdown rendering in transcript (ucode-tui) [DONE]
+
+> Renders assistant messages with rich markdown formatting using `pulldown-cmark`.
+
+* Bold, italic, strikethrough, inline code with ratatui modifiers
+* Code blocks with language label and surface-colored background
+* Headers (H1-H6) with accent color and appropriate modifiers
+* Bullet and numbered lists with proper indentation
+* Tables with measured column widths, bold headers, pipe separators
+* Links rendered as accent-colored text with dim URL
+* Word-wrapping for paragraphs; no wrapping inside code blocks
+* Graceful fallback to plain text if markdown parsing produces no events
+* Integrated into `render_assistant_message`, `render_streaming_message`, and `entry_height`
+
+**Acceptance**
+
+* Assistant messages render markdown formatting (bold, italic, code, headers, tables, lists).
+* Streaming messages also render markdown incrementally.
+* `entry_height` uses `markdown_height` for correct virtual scrolling.
+* Plain text without markdown renders identically to before.
+* 47 markdown-specific tests, 493 total TUI tests.
+
 ### Task 7.7 Tmux / terminal multiplexer integration (ucode-tui)
 
 > See `docs/plans/2026-03-05-tui-design.md` §10b (Tmux Integration).

@@ -1073,7 +1073,9 @@ Override classes matrix enforced by host policy:
 
 **Owner:** Plugins/Core
 
-### ISSUE 0803 — Plugin API contract, tool registration, and Rust SDK (ucode-plugins)
+### ISSUE 0803 — Plugin API contract, tool registration, and Rust SDK (ucode-plugins) -- DONE
+
+**Status:** DONE. 95 plugin tests (52 new), 506 TUI tests, 0 clippy warnings.
 
 **Goal:** Define the v1 plugin API as Rust traits, expand hook surface to 64 events, implement tool registration with namespacing, and provide an in-process example plugin. Traits-first approach; WASM/WIT deferred to ISSUE 0805.
 

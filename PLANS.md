@@ -961,7 +961,9 @@ Override classes matrix:
 * Plugin-proposed model fallback override is applied only when policy-safe.
 * Risky plugin override path requires explicit user approval.
 
-### Task 8.3 Plugin API contract + SDKs (ucode-plugins)
+### Task 8.3 Plugin API contract + SDKs (ucode-plugins) -- DONE
+
+DONE. 95 plugin tests (52 new), 506 TUI tests, 0 clippy warnings. Implemented: manifest id/required_features, 64 hook events, Plugin/HookHandler/ToolProvider traits, PluginHost with load/unload/dispatch/tool registration.
 
 Traits-first approach: define the v1 API as Rust traits, test with in-process plugins. WASM/WIT deferred to Task 8.4.
 

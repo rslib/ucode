@@ -3,6 +3,10 @@ name = "ucode-plugins"
 version.workspace = true
 edition.workspace = true
 
+[features]
+default = []
+wasm = ["dep:wasmtime", "dep:wasmtime-wasi"]
+
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -10,6 +14,8 @@ thiserror = { workspace = true }
 chrono = { workspace = true }
 toml = "0.8"
 semver = { version = "1.0.27", features = ["serde"] }
+wasmtime = { workspace = true, optional = true }
+wasmtime-wasi = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

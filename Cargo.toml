@@ -77,6 +77,10 @@ gix = { version = "0.80", default-features = false, features = ["status", "blob-
 # unicode width (for text measurement in TUI)
 unicode-width = "0.2"
 
+# WASM plugin runtime
+wasmtime = { version = "42", features = ["component-model"] }
+wasmtime-wasi = "42"
+
 # intra-workspace
 ucode-core = { path = "crates/ucode-core" }
 ucode-auth = { path = "crates/ucode-auth" }

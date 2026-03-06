@@ -19,3 +19,6 @@ pub use manifest::{
     parse_manifest_file, validate_manifest,
 };
 pub use ui_api::{PluginUiCall, UiCallClass, UiCallDenied, check_ui_call};
+
+#[cfg(feature = "wasm")]
+pub mod wasm;

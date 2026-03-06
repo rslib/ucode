@@ -249,6 +249,35 @@ fn handle_terminal_event(
 ) -> bool {
     match event {
         Event::Key(key) if key.kind == KeyEventKind::Press => {
+            // When the keybind overlay is open, route keys to it.
+            if app.keybind_overlay.visible {
+                match key.code {
+                    crossterm::event::KeyCode::Esc => {
+                        app.keybind_overlay.close();
+                        app.focus = FocusTarget::Input;
+                        app.mark_dirty();
+                    }
+                    crossterm::event::KeyCode::Up | crossterm::event::KeyCode::Char('k') => {
+                        app.keybind_overlay.scroll_up(1);
+                        app.mark_dirty();
+                    }
+                    crossterm::event::KeyCode::Down | crossterm::event::KeyCode::Char('j') => {
+                        app.keybind_overlay.scroll_down(1);
+                        app.mark_dirty();
+                    }
+                    crossterm::event::KeyCode::PageUp => {
+                        app.keybind_overlay.scroll_up(10);
+                        app.mark_dirty();
+                    }
+                    crossterm::event::KeyCode::PageDown => {
+                        app.keybind_overlay.scroll_down(10);
+                        app.mark_dirty();
+                    }
+                    _ => {}
+                }
+                return false;
+            }
+
             // When the palette is open, route keys to it.
             if app.palette.visible {
                 match key.code {
@@ -739,6 +768,13 @@ fn dispatch_action(action: Action, app: &mut AppState, input_box: &mut InputBoxS
             app.mark_dirty();
         }
 
+        Action::ShowKeybindOverlay => {
+            let resolver = app.keybinds.clone();
+            app.keybind_overlay.open(&resolver);
+            app.focus = FocusTarget::Overlay;
+            app.mark_dirty();
+        }
+
         Action::ShowDiff => {
             // Re-open the diff modal for the last PatchProposed in the transcript.
             if let Some(TranscriptEntry::PatchProposed {
@@ -953,6 +989,12 @@ pub fn render_frame(
     if app.approval_modal.visible {
         use crate::overlays::approval_modal::ApprovalModal;
         f.render_widget(ApprovalModal::new(&app.approval_modal, &app.theme), area);
+    }
+
+    // Keybind reference overlay.
+    if app.keybind_overlay.visible {
+        use crate::overlays::keybind_overlay::KeybindOverlay;
+        f.render_widget(KeybindOverlay::new(&app.keybind_overlay, &app.theme), area);
     }
 
     // Toast notifications (rendered last, on top of everything).
@@ -2757,5 +2799,192 @@ mod tests {
         assert_eq!(toast.level, ToastLevel::Warning);
         assert_eq!(toast.title, "Auth expired: github");
         assert!(toast.body.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // Keybind overlay integration (ISSUE 0709a)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn dispatch_show_keybind_overlay_opens_overlay() {
+        let mut app = AppState::new();
+        let mut input_box = InputBoxState::new();
+        assert!(!app.keybind_overlay.visible);
+
+        dispatch_action(Action::ShowKeybindOverlay, &mut app, &mut input_box);
+
+        assert!(app.keybind_overlay.visible);
+        assert_eq!(app.focus, FocusTarget::Overlay);
+        assert!(!app.keybind_overlay.entries.is_empty());
+    }
+
+    #[test]
+    fn dispatch_show_keybind_overlay_does_not_exit() {
+        let mut app = AppState::new();
+        let mut input_box = InputBoxState::new();
+        let exited = dispatch_action(Action::ShowKeybindOverlay, &mut app, &mut input_box);
+        assert!(!exited);
+    }
+
+    #[test]
+    fn keybind_overlay_esc_closes() {
+        let mut app = AppState::new();
+        let mut input_box = InputBoxState::new();
+        let mut sidebar_data = SidebarData::new();
+
+        dispatch_action(Action::ShowKeybindOverlay, &mut app, &mut input_box);
+        assert!(app.keybind_overlay.visible);
+
+        let esc = Event::Key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Esc,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        let exited = handle_terminal_event(esc, &mut app, &mut input_box, &mut sidebar_data);
+        assert!(!exited);
+        assert!(!app.keybind_overlay.visible);
+        assert_eq!(app.focus, FocusTarget::Input);
+    }
+
+    #[test]
+    fn keybind_overlay_up_scrolls() {
+        let mut app = AppState::new();
+        let mut input_box = InputBoxState::new();
+        let mut sidebar_data = SidebarData::new();
+
+        dispatch_action(Action::ShowKeybindOverlay, &mut app, &mut input_box);
+        // Scroll down first so we can scroll up.
+        app.keybind_overlay.scroll_down(5);
+        let before = app.keybind_overlay.scroll_offset;
+
+        let up = Event::Key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Up,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        handle_terminal_event(up, &mut app, &mut input_box, &mut sidebar_data);
+        assert!(app.keybind_overlay.scroll_offset < before);
+    }
+
+    #[test]
+    fn keybind_overlay_down_scrolls() {
+        let mut app = AppState::new();
+        let mut input_box = InputBoxState::new();
+        let mut sidebar_data = SidebarData::new();
+
+        dispatch_action(Action::ShowKeybindOverlay, &mut app, &mut input_box);
+        let before = app.keybind_overlay.scroll_offset;
+
+        let down = Event::Key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Down,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        handle_terminal_event(down, &mut app, &mut input_box, &mut sidebar_data);
+        assert!(app.keybind_overlay.scroll_offset > before);
+    }
+
+    #[test]
+    fn keybind_overlay_k_scrolls_up() {
+        let mut app = AppState::new();
+        let mut input_box = InputBoxState::new();
+        let mut sidebar_data = SidebarData::new();
+
+        dispatch_action(Action::ShowKeybindOverlay, &mut app, &mut input_box);
+        app.keybind_overlay.scroll_down(5);
+        let before = app.keybind_overlay.scroll_offset;
+
+        let k = Event::Key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('k'),
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        handle_terminal_event(k, &mut app, &mut input_box, &mut sidebar_data);
+        assert!(app.keybind_overlay.scroll_offset < before);
+    }
+
+    #[test]
+    fn keybind_overlay_j_scrolls_down() {
+        let mut app = AppState::new();
+        let mut input_box = InputBoxState::new();
+        let mut sidebar_data = SidebarData::new();
+
+        dispatch_action(Action::ShowKeybindOverlay, &mut app, &mut input_box);
+        let before = app.keybind_overlay.scroll_offset;
+
+        let j = Event::Key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('j'),
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        handle_terminal_event(j, &mut app, &mut input_box, &mut sidebar_data);
+        assert!(app.keybind_overlay.scroll_offset > before);
+    }
+
+    #[test]
+    fn keybind_overlay_page_up_scrolls() {
+        let mut app = AppState::new();
+        let mut input_box = InputBoxState::new();
+        let mut sidebar_data = SidebarData::new();
+
+        dispatch_action(Action::ShowKeybindOverlay, &mut app, &mut input_box);
+        app.keybind_overlay.scroll_down(15);
+        let before = app.keybind_overlay.scroll_offset;
+
+        let pgup = Event::Key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::PageUp,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        handle_terminal_event(pgup, &mut app, &mut input_box, &mut sidebar_data);
+        assert!(app.keybind_overlay.scroll_offset < before);
+    }
+
+    #[test]
+    fn keybind_overlay_page_down_scrolls() {
+        let mut app = AppState::new();
+        let mut input_box = InputBoxState::new();
+        let mut sidebar_data = SidebarData::new();
+
+        dispatch_action(Action::ShowKeybindOverlay, &mut app, &mut input_box);
+        let before = app.keybind_overlay.scroll_offset;
+
+        let pgdn = Event::Key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::PageDown,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        handle_terminal_event(pgdn, &mut app, &mut input_box, &mut sidebar_data);
+        assert!(app.keybind_overlay.scroll_offset > before);
+    }
+
+    #[test]
+    fn keybind_overlay_other_keys_ignored() {
+        let mut app = AppState::new();
+        let mut input_box = InputBoxState::new();
+        let mut sidebar_data = SidebarData::new();
+
+        dispatch_action(Action::ShowKeybindOverlay, &mut app, &mut input_box);
+        assert!(app.keybind_overlay.visible);
+
+        // 'x' should be ignored (not close the overlay, not exit).
+        let x = Event::Key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('x'),
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        let exited = handle_terminal_event(x, &mut app, &mut input_box, &mut sidebar_data);
+        assert!(!exited);
+        assert!(
+            app.keybind_overlay.visible,
+            "overlay should still be visible"
+        );
+    }
+
+    #[test]
+    fn render_frame_with_keybind_overlay() {
+        let backend = TestBackend::new(120, 40);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+
+        let mut app = AppState::new();
+        let mut input_box = InputBoxState::new();
+        dispatch_action(Action::ShowKeybindOverlay, &mut app, &mut input_box);
+
+        let sidebar_data = SidebarData::new();
+        terminal
+            .draw(|f| render_frame(f, &app, &input_box, &sidebar_data, 0))
+            .expect("render with keybind overlay must not panic");
     }
 }

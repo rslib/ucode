@@ -427,6 +427,11 @@ impl KeybindResolver {
     pub fn set_mode(&mut self, mode: InputMode) {
         self.mode = mode;
     }
+
+    /// Iterate over all (KeyCombo, Action) pairs in the active binding map.
+    pub fn bindings(&self) -> impl Iterator<Item = (&KeyCombo, &Action)> {
+        self.bindings.iter()
+    }
 }
 
 // ---------------------------------------------------------------------------

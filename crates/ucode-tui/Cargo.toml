@@ -5,8 +5,9 @@ edition.workspace = true
 
 [dependencies]
 ratatui = { workspace = true }
-crossterm = { workspace = true }
+crossterm = { workspace = true, features = ["event-stream"] }
 tokio = { workspace = true }
+futures-util = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
 unicode-width = { workspace = true }

@@ -113,3 +113,11 @@ world maximal-plugin {
     // Diagnostic hooks
     export ucode:hooks-diagnostic/on-unhandled-error;
 }
+
+/// Minimal world for plugins that only need lifecycle + logging.
+/// Plugin authors who want hook interfaces should create their own world.wit
+/// that exports the specific hook interfaces they need.
+world minimal-plugin {
+    import ucode:plugin/host-log;
+    export ucode:plugin/lifecycle;
+}

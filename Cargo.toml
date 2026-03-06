@@ -7,8 +7,10 @@ members = [
     "crates/ucode-mcp",
     "crates/ucode-skills",
     "crates/ucode-plugins",
+    "crates/ucode-plugin-sdk",
     "crates/ucode-tui",
     "crates/ucode-cli",
+    "examples/plugins/hello-wasm",
 ]
 resolver = "2"
 
@@ -80,6 +82,9 @@ unicode-width = "0.2"
 # WASM plugin runtime
 wasmtime = { version = "42", features = ["component-model"] }
 wasmtime-wasi = "42"
+
+# WASM guest SDK (for plugin authors)
+wit-bindgen = "0.53"
 
 # intra-workspace
 ucode-core = { path = "crates/ucode-core" }

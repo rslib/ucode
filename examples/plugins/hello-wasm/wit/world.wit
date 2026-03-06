@@ -1,0 +1,7 @@
+package ucode:hello-wasm@1.0.0;
+
+world hello-plugin {
+    import ucode:plugin/host-log;
+    export ucode:plugin/lifecycle;
+    export ucode:hooks-session/on-start;
+}

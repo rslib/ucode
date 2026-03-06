@@ -1,0 +1,11 @@
+[package]
+name = "ucode-plugin-sdk"
+version.workspace = true
+edition.workspace = true
+description = "Guest SDK for writing ucode WASM plugins"
+
+[dependencies]
+wit-bindgen = { workspace = true }
+
+[lib]
+crate-type = ["cdylib", "rlib"]

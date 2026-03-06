@@ -27,6 +27,9 @@ enum PluginInstance {
     WithHooks(Box<dyn PluginWithHooks>),
     /// Plugin with tool provision capability.
     WithTools(Box<dyn PluginWithTools>, Vec<PluginToolDef>),
+    /// WASM component plugin.
+    #[cfg(feature = "wasm")]
+    Wasm(crate::wasm::WasmPlugin),
 }
 
 struct LoadedPlugin {
@@ -112,6 +115,32 @@ impl PluginHost {
         Ok(())
     }
 
+    /// Load a WASM component plugin from a `.wasm` file.
+    ///
+    /// The plugin ID is taken from the component after handshake; until then the
+    /// file stem is used as a fallback so the plugin can be referenced by `unload`.
+    #[cfg(feature = "wasm")]
+    pub fn load_wasm(
+        &mut self,
+        path: &std::path::Path,
+    ) -> Result<(), crate::wasm::WasmPluginError> {
+        let plugin = crate::wasm::WasmPlugin::from_file(path)?;
+        let plugin_id = if plugin.plugin_id().is_empty() {
+            path.file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("unknown-wasm-plugin")
+                .to_string()
+        } else {
+            plugin.plugin_id().to_string()
+        };
+        self.plugins.push(LoadedPlugin {
+            plugin_id,
+            instance: PluginInstance::Wasm(plugin),
+            tool_fqns: vec![],
+        });
+        Ok(())
+    }
+
     /// Call `shutdown` on the plugin and remove it. Returns `false` if not found.
     pub fn unload(&mut self, plugin_id: &str) -> bool {
         let Some(pos) = self.plugins.iter().position(|p| p.plugin_id == plugin_id) else {
@@ -121,6 +150,8 @@ impl PluginHost {
         match &mut loaded.instance {
             PluginInstance::WithHooks(p) => p.shutdown(),
             PluginInstance::WithTools(p, _) => p.shutdown(),
+            #[cfg(feature = "wasm")]
+            PluginInstance::Wasm(_) => { /* cleanup handled by Drop */ }
         }
         true
     }
@@ -140,6 +171,18 @@ impl PluginHost {
                 }
                 // WithTools plugins only require Plugin + ToolProvider, not HookHandler. Skip.
                 PluginInstance::WithTools(_, _) => {}
+                #[cfg(feature = "wasm")]
+                PluginInstance::Wasm(wasm_plugin) => {
+                    let event_name = record.event.event_name();
+                    if wasm_plugin.handles_event(event_name) {
+                        // Actual WASM function dispatch requires component instantiation,
+                        // which will be wired up once a guest plugin exists to test against.
+                        results.push(HookResult {
+                            plugin_id: loaded.plugin_id.clone(),
+                            response: HookResponse::Ok,
+                        });
+                    }
+                }
             }
         }
         results
@@ -397,5 +440,18 @@ mod tests {
         let mut host = PluginHost::new();
         let result = host.invoke_plugin_tool("org.ghost.tool", serde_json::json!({}));
         assert!(result.is_err());
+    }
+
+    #[cfg(feature = "wasm")]
+    #[test]
+    fn test_load_wasm_nonexistent_file_errors() {
+        let mut host = PluginHost::new();
+        let path = std::path::Path::new("/nonexistent/plugin.wasm");
+        let err = host.load_wasm(path).unwrap_err();
+        // ComponentLoad wraps the wasmtime I/O error; just verify we get an error.
+        assert!(matches!(
+            err,
+            crate::wasm::WasmPluginError::ComponentLoad(_)
+        ));
     }
 }

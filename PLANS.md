@@ -1212,8 +1212,16 @@ the actual context-management strategies on top.
 
 ### Task 8.8 Native context management system (ucode-context crate) [P0]
 
+> Design doc: `docs/plans/2026-03-06-context-management-design.md`
+
 Native context management as a core crate — not a plugin. Combines strategies from opencode-dcp,
 rlm-skill, and context-mode. Runs directly in the LLM call path with zero serialization overhead.
+
+**Architecture:** Strategy Pipeline — each strategy implements `ContextStrategy` trait, chained
+in a `ContextPipeline`. Knowledge base and session continuity are separate infrastructure modules.
+Strategies need per-instance state (dedup tracks file hashes, purge tracks turn counts), and there
+are 4 concrete implementations (dedup, supersede, purge, sandbox) — meets the 3+ threshold for a
+trait. Mirrors the transform pipeline pattern from Task 8.6.
 
 **Why native, not plugin:** The automatic strategies (dedup/supersede/purge) are pure algorithmic
 message rewrites. The knowledge base is core infrastructure. Session continuity is inherently a
@@ -1237,6 +1245,16 @@ benefit. External plugins (Task 8.6) can still hook into the system for custom s
   knowledge_base = true             # on by default
   session_continuity = true         # on by default
 
+  [context_management.knowledge_base]
+  enabled = true
+  embedding = "auto"                # "auto" | "local" | "endpoint" | "none"
+
+  # Custom embedding endpoint (OpenAI-compatible API)
+  [context_management.knowledge_base.embedding_endpoint]
+  url = "http://localhost:11434/v1/embeddings"
+  model = "all-minilm"
+  dimensions = 384
+
   [context_management.pruning]
   enabled = true                    # LLM-driven pruning tools
   trigger_threshold_pct = 60        # trigger when context > 60% capacity
@@ -1258,53 +1276,86 @@ benefit. External plugins (Task 8.6) can still hook into the system for custom s
 **8.8.2 Automatic zero-cost strategies (from opencode-dcp)**
 
 * **Deduplication:** Remove duplicate tool reads of the same file within a session.
-  Track file content hashes; on duplicate, replace with `[already in context]` placeholder.
+  Track file content hashes (`DefaultHasher`); on duplicate, replace with
+  `[already in context — see earlier read of {path}]` placeholder.
 * **Supersede-writes:** When a file is written then later read, remove the earlier write's
-  full content (the read has the current state).
+  full content (the read has the current state). Replace with
+  `[superseded by later read of {path}]`.
 * **Purge-errors:** After N turns (configurable, default 3), remove errored tool call
-  inputs/outputs (they're no longer actionable).
-* All strategies run as a native message transform pass before each LLM call.
-* Zero LLM cost — pure algorithmic message rewriting in Rust.
+  inputs/outputs (they're no longer actionable). Also purges the corresponding `ToolCall`
+  args to save additional tokens.
+* All strategies implement `ContextStrategy` trait and run in `ContextPipeline` before
+  each LLM call. Zero LLM cost — pure algorithmic message rewriting in Rust.
 
 **8.8.3 Sandbox execution (from rlm-skill / context-mode)**
 
+* `SandboxInterceptor` implements `ContextStrategy`. Runs after dedup/supersede/purge
+  (so we don't sandbox content that would have been deduped anyway).
 * Intercept large tool outputs (Read, Bash, WebFetch) before they enter context.
 * Configurable threshold (default: 2000 chars). Outputs above threshold are:
-  * Stored in knowledge base (Task 8.8.5)
-  * Replaced in context with metadata summary (line count, file type, first/last lines)
-* LLM sees summary + can retrieve full content via knowledge base search tool.
-* Opt-out per tool via config.
+  * Stored in knowledge base (Task 8.8.5) with metadata (tool name, file path, content type)
+  * Replaced in context with metadata summary (line count, content type, first/last 3 lines)
+* LLM sees summary + can retrieve full content via `knowledge_search` tool.
 
 **8.8.4 Smart LLM-driven pruning tools (from opencode-dcp, improved)**
 
-* Register built-in tools the LLM can call to manage its own context:
+* Register 5 built-in tools the LLM can call to manage its own context:
   * `context_distill` — Summarize a range of messages into a compact digest
   * `context_compress` — Replace verbose tool outputs with key findings
   * `context_prune` — Remove messages by index/range that are no longer relevant
+  * `knowledge_search` — Query knowledge base (always available regardless of pruning config)
+  * `knowledge_store` — Explicitly index content in knowledge base (always available)
 * System prompt injection tells LLM these tools exist and when to use them.
 * **Smart triggering:** Only inject pruning instructions when context exceeds threshold
   (default 60% of model's context window). Below threshold, no system prompt overhead.
 * **Per-model control:** Disable entirely for expensive models (Opus), enable for cheaper
   models (Sonnet/Haiku). Configurable via `[context_management.pruning.overrides]`.
 * **Cheaper-model delegation:** Option to route pruning tool calls to a cheaper model
-  (e.g., Haiku summarizes, Opus keeps working). Avoids Opus spending output tokens on summaries.
+  (e.g., Haiku summarizes, Opus keeps working). Initial implementation: `"auto"` only.
 * Tools are registered as native built-in tools (not via plugin tool registration).
 
-**8.8.5 FTS5 knowledge base (from rlm-skill / context-mode)**
+**8.8.5 Hybrid knowledge base — FTS5 + sqlite-vec (from rlm-skill / context-mode)**
 
-* SQLite FTS5 index for content that was sandboxed out of context.
-* Porter stemming + trigram substring matching for fuzzy search.
-* `knowledge_search` tool registered for LLM to query indexed content.
-* `knowledge_store` tool for LLM to explicitly index important findings.
-* Per-session database file in session directory.
+* **Dual search** in one SQLite database per session (`{session_dir}/knowledge.db`):
+  * **FTS5** (always available): keyword search with Porter stemming + BM25 ranking.
+    Zero additional dependencies beyond rusqlite.
+  * **sqlite-vec** (when embeddings available): semantic vector search with cosine
+    similarity. Finds conceptually related content even with different words.
+* **Embedder abstraction** (`trait Embedder`): pluggable embedding source.
+  * `EndpointEmbedder` — any OpenAI-compatible API (Ollama, LiteLLM, vLLM, custom)
+  * `ProviderEmbedder` — session provider's embedding API (OpenAI, etc.)
+  * `LocalEmbedder` — fastembed with all-MiniLM-L6-v2, behind `local-embeddings` feature flag
+* **Embedding resolution** for `embedding = "auto"`:
+  1. Custom `embedding_endpoint` if configured
+  2. Session provider embedding API if available
+  3. Fall back to FTS5 keyword search only
+* **Hybrid ranking** via Reciprocal Rank Fusion (RRF) when both FTS5 and vector
+  results are available: `RRF(doc) = 1/(k + rank_fts5) + 1/(k + rank_vec)`, k=60.
+* `knowledge_search` and `knowledge_store` tools registered for LLM.
 
 **8.8.6 Session continuity (from context-mode)**
 
-* Capture significant events (file changes, test results, decisions) after tool use.
-* Event log persisted to session directory.
-* Create compaction snapshot (summary of session state before compaction).
-* Restore context from previous compaction snapshot on session resume.
-* Enables sessions to survive multiple compaction cycles without losing critical state.
+* Capture significant events after tool use. Event types:
+  * `GoalEstablished` — user stated or refined their goal
+  * `FileChanged` — file created or modified during session
+  * `TestResult` — test/build/lint result
+  * `Decision` — architectural or implementation decision
+  * `ToolOutput` — significant tool output worth remembering
+  * `ErrorEncountered` — approach tried and failed (with reason)
+  * `GitCommit` — git commit made during session
+  * `ConfigChanged` — model or skill switched
+* **Compaction snapshot** created before each compaction, containing:
+  * `user_goals` — what the user is trying to accomplish
+  * `working_set` — files actively being edited
+  * `reference_files` — files read for reference
+  * `pending_tasks` — unfinished work items
+  * `key_decisions` — important decisions and rationale
+  * `error_history` — failed approaches and why (avoid repeating mistakes)
+  * `git_state` — branch name, commits made during session
+* Event log persisted to `{session_dir}/continuity_events.json`.
+* Snapshot persisted to `{session_dir}/continuity.json`.
+* On session resume, snapshot injected as system message prefix with structured
+  context restoration.
 
 **Acceptance**
 
@@ -1312,8 +1363,12 @@ benefit. External plugins (Task 8.6) can still hook into the system for custom s
 * Large tool outputs are sandboxed and retrievable via knowledge base search.
 * LLM-driven pruning is configurable per model; disabled for Opus by default.
 * Pruning can delegate to a cheaper model when configured.
-* Knowledge base search returns relevant results with fuzzy matching.
-* Session survives compaction and resumes with prior state context.
+* Knowledge base search returns relevant results via FTS5 keyword search.
+* When embeddings are available (endpoint/provider/local), hybrid FTS5+vector search
+  returns semantically relevant results via RRF ranking.
+* Custom embedding endpoint (Ollama, LiteLLM, etc.) works with OpenAI-compatible API.
+* Session survives compaction and resumes with prior state context including goals,
+  working set, error history, and git state.
 * All strategies respect `ucode.toml` configuration and per-model overrides.
 
 ### Task 8.7 Remote plugin install/update distribution with trust verification (ucode-plugins + security) [P1]

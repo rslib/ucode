@@ -1215,44 +1215,56 @@ Design doc: `docs/plans/2026-03-06-wasm-runtime-design.md`
 
 ### ISSUE 0808 — Native context management system (ucode-context crate) [P0]
 
+> Design doc: `docs/plans/2026-03-06-context-management-design.md`
+
 **Goal:** Native context management as a core crate combining strategies from opencode-dcp, rlm-skill, and context-mode. Runs directly in the LLM call path — not through the plugin system. Per-model configurable so users can tune strategies per model (e.g., disable LLM pruning for Opus, enable for Sonnet).
 **Scope/Notes:**
 
+* **Architecture:** Strategy Pipeline — `ContextStrategy` trait with `ContextPipeline` chaining strategies in order. Knowledge base and session continuity are separate infrastructure modules. 4 concrete strategy implementations (dedup, supersede, purge, sandbox).
 * **Native, not plugin:** Automatic strategies are pure Rust message rewrites in the call path. Knowledge base and session continuity are core infrastructure. No WASM boundary overhead. External plugins (ISSUE 0806) can still add custom strategies.
 * **Per-model configuration** via `ucode.toml`:
   * Global toggle + per-strategy toggles (dedup, supersede, purge, sandbox, pruning)
   * `[context_management.pruning.overrides."model-name"]` for per-model LLM pruning control
   * Disable LLM pruning for expensive models (Opus), enable for cheaper ones (Sonnet/Haiku)
   * Option to delegate pruning to a cheaper model (e.g., Haiku summarizes while Opus works)
+  * Knowledge base embedding config: `embedding = "auto" | "local" | "endpoint" | "none"`
+  * Custom embedding endpoint config for Ollama/LiteLLM/vLLM (OpenAI-compatible API)
 * **Automatic zero-cost strategies** (from opencode-dcp):
-  * Deduplication — remove duplicate file reads within session
+  * Deduplication — remove duplicate file reads within session (content hash tracking)
   * Supersede-writes — remove earlier writes when file was subsequently read
-  * Purge-errors — remove errored tool inputs after N turns (default 3)
-  * All run as native message transform pass, zero LLM cost
+  * Purge-errors — remove errored tool inputs/outputs after N turns (default 3)
+  * All implement `ContextStrategy` trait, run in `ContextPipeline`, zero LLM cost
 * **Sandbox execution** (from rlm-skill / context-mode):
+  * `SandboxInterceptor` implements `ContextStrategy`, runs after dedup/supersede/purge
   * Intercept large tool outputs (>2000 chars configurable)
   * Store full content in knowledge base, replace in context with metadata summary
-  * LLM retrieves via knowledge base search tool
+  * LLM retrieves via `knowledge_search` tool
 * **Smart LLM-driven pruning** (from opencode-dcp, improved):
-  * `context_distill`, `context_compress`, `context_prune` as native built-in tools
+  * 5 native built-in tools: `context_distill`, `context_compress`, `context_prune`, `knowledge_search`, `knowledge_store`
   * Smart triggering: only inject pruning instructions when context > threshold (default 60%)
   * Per-model control: disable for Opus (rely on automatic strategies), enable for Sonnet
-  * Cheaper-model delegation: route pruning calls to Haiku while session runs on Opus
-* **FTS5 knowledge base** (from rlm-skill / context-mode):
-  * SQLite FTS5 with Porter stemming + trigram matching
-  * `knowledge_search` and `knowledge_store` tools for LLM
-  * Per-session database in session directory
+  * `knowledge_search` and `knowledge_store` always available regardless of pruning config
+  * Cheaper-model delegation: initial implementation `"auto"` only, delegation is future enhancement
+* **Hybrid knowledge base — FTS5 + sqlite-vec** (from rlm-skill / context-mode):
+  * Dual search in one SQLite database per session (`{session_dir}/knowledge.db`)
+  * FTS5 (always available): keyword search with Porter stemming + BM25 ranking, zero extra deps
+  * sqlite-vec (when embeddings available): semantic vector search with cosine similarity
+  * `Embedder` trait with 3 implementations: `EndpointEmbedder` (OpenAI-compatible API), `ProviderEmbedder` (session provider), `LocalEmbedder` (fastembed, behind `local-embeddings` feature flag)
+  * Embedding resolution for `"auto"`: custom endpoint > provider API > FTS5 only
+  * Hybrid ranking via Reciprocal Rank Fusion (RRF) when both search modes available
 * **Session continuity** (from context-mode):
-  * Capture significant events; create compaction snapshots
-  * Restore context on session resume
-  * Sessions survive multiple compaction cycles
+  * 8 event types: GoalEstablished, FileChanged, TestResult, Decision, ToolOutput, ErrorEncountered, GitCommit, ConfigChanged
+  * Compaction snapshot with: user_goals, working_set, reference_files, pending_tasks, key_decisions, error_history, git_state
+  * Snapshot injected as system message prefix on session resume
+  * Sessions survive multiple compaction cycles without losing critical state
   **Acceptance tests:**
 * Dedup/supersede/purge measurably reduce message array on repeated file ops.
 * Large tool outputs sandboxed and retrievable via knowledge base.
 * LLM pruning configurable per model; disabled for Opus by default.
-* Pruning delegates to cheaper model when configured.
-* Knowledge base search returns relevant results with fuzzy matching.
-* Session survives compaction and resumes with prior state.
+* Knowledge base FTS5 keyword search returns relevant results.
+* When embeddings available, hybrid FTS5+vector search returns semantically relevant results via RRF.
+* Custom embedding endpoint (Ollama, LiteLLM, etc.) works with OpenAI-compatible API.
+* Session survives compaction and resumes with prior state (goals, working set, error history, git state).
 * All strategies respect `ucode.toml` config and per-model overrides.
   **Owner:** Core/Context
 

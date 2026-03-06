@@ -41,6 +41,9 @@ pub struct PluginCapabilities {
     /// Whether the plugin needs to spawn processes.
     #[serde(default)]
     pub process_spawn: bool,
+    /// Whether the plugin may issue guarded UI calls (modals, prompts, transcript injection).
+    #[serde(default)]
+    pub guarded_ui: bool,
 }
 
 /// Errors from manifest parsing.
@@ -174,11 +177,13 @@ mod tests {
             filesystem = true
             network = true
             process_spawn = false
+            guarded_ui = true
         "#;
         let m = parse_manifest(toml).unwrap();
         assert!(m.capabilities.filesystem);
         assert!(m.capabilities.network);
         assert!(!m.capabilities.process_spawn);
+        assert!(m.capabilities.guarded_ui);
     }
 
     #[test]

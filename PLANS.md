@@ -665,7 +665,7 @@ Parse:
 
 > **Design spec:** `docs/plans/2026-03-05-tui-design.md` — full component inventory, visual system, plugin UI API, and ASCII layout sketches. All tasks in this phase implement that spec.
 
-### Task 7.1 TUI foundation (ucode-tui)
+### Task 7.1 TUI foundation (ucode-tui) [DONE]
 
 Panes:
 

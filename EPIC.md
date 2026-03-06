@@ -788,7 +788,7 @@ Search:
 
 > **Design spec:** `docs/plans/2026-03-05-tui-design.md` — full component inventory, visual system, plugin UI API, and ASCII layout sketches. All issues in this epic implement that spec.
 
-### ISSUE 0701 — Ratatui fullscreen shell + panes (ucode-tui)
+### ISSUE 0701 — Ratatui fullscreen shell + panes (ucode-tui) [DONE]
 
 **Goal:** Build base TUI: transcript, input box, sidebar, status bar.
 **Scope/Notes:**
@@ -803,6 +803,8 @@ Search:
 * `[tmux]` indicator shows in status bar when inside tmux.
 * Clipboard works via OSC 52 inside tmux.
   **Owner:** TUI
+
+**Completed:** 742 tests, 5 phases (0701a–0701e), 11 modules.
 
 ### ISSUE 0702 — Command palette + keybinds (ucode-tui)
 

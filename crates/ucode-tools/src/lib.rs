@@ -26,8 +26,8 @@ pub use git::{
 };
 pub use patch_tool::register_patch_tool;
 pub use policy::{
-    Capabilities, EffectivePolicy, PolicyLayer, PolicyStack, SandboxTier,
-    check_path_within_workspace,
+    Capabilities, EffectivePolicy, NetworkCheckResult, NetworkPolicy, PolicyLayer, PolicyStack,
+    SandboxTier, check_path_within_workspace,
 };
 pub use registry::{RegisteredTool, ToolHandler, ToolRegistry, ToolSpec};
 pub use search_tool::register_search_tool;

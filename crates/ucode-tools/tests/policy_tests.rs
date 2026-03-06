@@ -3,7 +3,7 @@ use std::os::unix::fs::symlink;
 
 use tempfile::TempDir;
 use ucode_tools::policy::{
-    Capabilities, EffectivePolicy, PolicyLayer, PolicyStack, SandboxTier,
+    Capabilities, EffectivePolicy, NetworkPolicy, PolicyLayer, PolicyStack, SandboxTier,
     check_path_within_workspace,
 };
 
@@ -112,6 +112,7 @@ fn multiple_layers_merge_correctly() {
         cmd_exec: Some(false),
         network: Some(false),
         spawn_process: Some(false),
+        network_policy: None,
     });
     // Layer 2: session — tries to grant network (should be blocked by layer 1).
     stack.push(PolicyLayer {
@@ -206,6 +207,7 @@ fn check_file_read_allowed() {
             ..Capabilities::default()
         },
         workspace_root: dir.path().to_path_buf(),
+        network_policy: NetworkPolicy::allow_all(),
     };
 
     assert!(policy.check_file_access(&file, false).is_ok());
@@ -223,6 +225,7 @@ fn check_file_write_denied() {
         tier: SandboxTier::Workspace,
         capabilities: Capabilities::default(), // file_write = false
         workspace_root: dir.path().to_path_buf(),
+        network_policy: NetworkPolicy::allow_all(),
     };
 
     let result = policy.check_file_access(&file, true);
@@ -240,6 +243,7 @@ fn check_cmd_exec_denied() {
         tier: SandboxTier::Workspace,
         capabilities: Capabilities::default(), // cmd_exec = false
         workspace_root: dir.path().to_path_buf(),
+        network_policy: NetworkPolicy::allow_all(),
     };
 
     let result = policy.check_cmd_exec();
@@ -257,6 +261,7 @@ fn check_network_denied() {
         tier: SandboxTier::Workspace,
         capabilities: Capabilities::default(), // network = false
         workspace_root: dir.path().to_path_buf(),
+        network_policy: NetworkPolicy::allow_all(),
     };
 
     let result = policy.check_network();

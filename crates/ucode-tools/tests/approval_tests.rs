@@ -4,7 +4,7 @@ use tempfile::TempDir;
 use ucode_tools::approval::{
     ApprovalAction, ApprovalDecision, ApprovalScope, ApprovalStore, BoundaryGate,
 };
-use ucode_tools::policy::{Capabilities, EffectivePolicy, SandboxTier};
+use ucode_tools::policy::{Capabilities, EffectivePolicy, NetworkPolicy, SandboxTier};
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -19,6 +19,7 @@ fn permissive_policy(workspace: &TempDir) -> EffectivePolicy {
             spawn_process: true,
         },
         workspace_root: workspace.path().to_path_buf(),
+        network_policy: NetworkPolicy::allow_all(),
     }
 }
 
@@ -27,6 +28,7 @@ fn readonly_policy(workspace: &TempDir) -> EffectivePolicy {
         tier: SandboxTier::Workspace,
         capabilities: Capabilities::default(), // file_read=true, rest=false
         workspace_root: workspace.path().to_path_buf(),
+        network_policy: NetworkPolicy::allow_all(),
     }
 }
 
@@ -220,6 +222,7 @@ fn network_check_delegates_to_policy() {
             ..Capabilities::default()
         },
         workspace_root: ws.path().to_path_buf(),
+        network_policy: NetworkPolicy::deny_all(),
     };
     let gate = BoundaryGate::new(no_net);
     let err = gate.check_network().unwrap_err();
@@ -234,6 +237,7 @@ fn network_check_delegates_to_policy() {
             ..Capabilities::default()
         },
         workspace_root: ws.path().to_path_buf(),
+        network_policy: NetworkPolicy::allow_all(),
     };
     let gate2 = BoundaryGate::new(net_ok);
     assert!(gate2.check_network().is_ok());

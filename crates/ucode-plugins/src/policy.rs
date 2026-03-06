@@ -1,5 +1,6 @@
 //! Per-plugin runtime policy and enforcement.
 
+use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::PathBuf;
 
@@ -230,6 +231,38 @@ pub(crate) fn override_class_level(class: &OverrideClass) -> u8 {
     }
 }
 
+/// Host-side configuration for plugin policies.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PluginPolicyConfig {
+    pub default_wasm: PluginPolicy,
+    pub default_native: PluginPolicy,
+    #[serde(default)]
+    pub per_plugin: HashMap<String, PluginPolicy>,
+}
+
+impl Default for PluginPolicyConfig {
+    fn default() -> Self {
+        Self {
+            default_wasm: PluginPolicy::default_wasm(),
+            default_native: PluginPolicy::default_native(),
+            per_plugin: HashMap::new(),
+        }
+    }
+}
+
+impl PluginPolicyConfig {
+    /// Resolve the effective policy for a WASM plugin.
+    ///
+    /// If a per-plugin override exists, use it. Otherwise, compute from
+    /// capabilities intersected with the default WASM policy.
+    pub fn resolve_wasm(&self, plugin_id: &str, caps: &PluginCapabilities) -> PluginPolicy {
+        if let Some(override_policy) = self.per_plugin.get(plugin_id) {
+            return override_policy.clone();
+        }
+        PluginPolicy::from_capabilities(caps)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -431,5 +464,49 @@ mod tests {
             policy.check_network("example.com", None),
             PolicyCheckResult::Denied { .. }
         ));
+    }
+
+    #[test]
+    fn test_policy_config_default() {
+        let config = PluginPolicyConfig::default();
+        assert!(config.default_wasm.workspace_bound);
+        assert!(!config.default_wasm.filesystem_write);
+        assert!(config.default_native.filesystem_write);
+        assert!(config.per_plugin.is_empty());
+    }
+
+    #[test]
+    fn test_policy_config_resolve_wasm_default() {
+        let config = PluginPolicyConfig::default();
+        let caps = PluginCapabilities {
+            filesystem: true,
+            network: false,
+            ..Default::default()
+        };
+        let policy = config.resolve_wasm("org.test.plugin", &caps);
+        assert!(policy.filesystem_read);
+        assert!(!policy.network.allowed);
+    }
+
+    #[test]
+    fn test_policy_config_resolve_per_plugin_override() {
+        let mut config = PluginPolicyConfig::default();
+        let mut override_policy = PluginPolicy::default_wasm();
+        override_policy.filesystem_write = true;
+        config
+            .per_plugin
+            .insert("org.test.special".into(), override_policy);
+
+        let caps = PluginCapabilities {
+            filesystem: true,
+            ..Default::default()
+        };
+        let policy = config.resolve_wasm("org.test.special", &caps);
+        // Per-plugin override grants write
+        assert!(policy.filesystem_write);
+
+        // Other plugins get default
+        let policy2 = config.resolve_wasm("org.test.other", &caps);
+        assert!(!policy2.filesystem_write);
     }
 }

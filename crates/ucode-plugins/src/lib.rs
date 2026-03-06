@@ -19,7 +19,7 @@ pub use manifest::{
     ManifestError, PluginCapabilities, PluginManifest, PluginToolDef, parse_manifest,
     parse_manifest_file, validate_manifest,
 };
-pub use policy::{PluginNetworkPolicy, PluginPolicy, PolicyCheckResult};
+pub use policy::{PluginNetworkPolicy, PluginPolicy, PluginPolicyConfig, PolicyCheckResult};
 pub use ui_api::{PluginUiCall, UiCallClass, UiCallDenied, check_ui_call};
 
 #[cfg(feature = "wasm")]

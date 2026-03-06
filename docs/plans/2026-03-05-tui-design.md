@@ -1083,6 +1083,151 @@ crates/ucode-tui/src/
 
 ---
 
+## Section 16: Performance Architecture
+
+Ratatui provides built-in double buffering (two `Buffer`s diffed on each `draw()`, only changed cells written to terminal). We do NOT implement custom double buffering. Instead, we focus on six performance-critical patterns:
+
+### 16.1 Event-driven rendering with dirty flag
+
+Never render at a fixed FPS when nothing changed. A static 60fps loop burns 7-50% CPU on idle.
+
+```rust
+struct App {
+    dirty: bool,
+    // ...
+}
+```
+
+- Set `dirty = true` on any state mutation (new token, user input, resize, sidebar update, toast)
+- Only call `terminal.draw()` when `dirty == true`
+- Reset `dirty = false` after each draw
+
+### 16.2 Adaptive frame rate with render tick
+
+Use an adaptive render tick — fast during streaming, idle when nothing changes:
+
+- **Streaming active:** `tokio::time::interval(Duration::from_millis(16))` (60fps cap). Tokens arrive frequently; high frame rate keeps the typewriter effect smooth.
+- **Idle:** No tick. Render immediately and only on state change (input, resize, toast). CPU usage drops to ~0%.
+- Transition: set `streaming = true` when first token arrives, `streaming = false` on stream-end event. Adjust interval accordingly.
+
+The render tick is a MAXIMUM frame rate, not a minimum. If the model is slow (e.g., one token every 200ms), we still render each token within one frame (~16ms latency). If the model is fast (tokens every 5ms), multiple tokens land in `StreamingMessage.content` before the next frame draws — the frame simply renders the current string state. This is implicit coalescing from the frame rate cap, not explicit batching. There is no separate batch buffer.
+
+This is the same principle as browser `requestAnimationFrame`: React state updates between frames are "batched" not because React has a batching buffer, but because the DOM only repaints at ~60fps.
+
+### 16.3 Streaming typewriter UX
+
+The goal: text appears naturally, like someone typing fast. No artificial delays, no explicit batching. Tokens are appended to state immediately; the render tick draws whatever state exists.
+
+**How it works:**
+
+1. Token arrives from LLM → appended to `StreamingMessage.content` immediately → `dirty = true`. No intermediate buffer.
+2. On the next render tick (within 16ms), the transcript re-renders showing the current `content` string. If multiple tokens arrived since the last frame, they all appear at once — this is a natural consequence of the frame rate, not explicit batching.
+3. A blinking block cursor `█` is rendered at the end of the streaming text to indicate "still generating."
+4. When the stream completes, the cursor disappears and the message is finalized into the transcript history.
+
+**Auto-scroll during streaming:**
+
+- While streaming AND the user has not manually scrolled up, the transcript auto-scrolls to keep the latest line visible (pinned to bottom).
+- If the user scrolls up during streaming (to read earlier context), auto-scroll disengages. A `↓ New content below` indicator appears at the bottom.
+- Pressing `End` or `G` (vim) re-engages auto-scroll and jumps to bottom.
+
+**Token granularity:**
+
+- Tokens are appended raw as received — no word-boundary buffering. A token might be `"hel"` followed by `"lo "` followed by `"world"`. This matches how ChatGPT/Claude web render.
+- Markdown rendering (bold, code blocks, headers) is applied incrementally. Partial markdown (e.g., opening `` ``` `` without closing) is rendered as plain text until the closing delimiter arrives.
+
+**Streaming indicator in status bar:**
+
+- While streaming: status bar shows `streaming... ●` with a pulsing dot and elapsed time.
+- Token rate displayed: e.g., `42 tok/s` updated every second.
+
+```rust
+struct StreamingMessage {
+    content: String,          // accumulated tokens
+    started_at: Instant,      // for elapsed time display
+    token_count: usize,       // for tok/s calculation
+    is_complete: bool,        // false while streaming, true when done
+}
+```
+
+### 16.4 Virtual scrolling for transcript
+
+Sessions can grow to thousands of messages. Never iterate the full transcript on each frame.
+
+- Maintain `scroll_offset: usize` and `viewport_height: u16`
+- On draw, compute only the visible slice: `messages[scroll_offset..scroll_offset + viewport_height]`
+- Line wrapping computed lazily per visible message (cache wrapped line count per message to avoid recomputation)
+- Scroll position clamped to `0..=max(0, total_lines - viewport_height)`
+
+### 16.5 Async event loop with `tokio::select!`
+
+Multiple concurrent event sources multiplexed in one loop:
+
+```rust
+loop {
+    tokio::select! {
+        // Terminal input (crossterm EventStream)
+        Some(event) = event_stream.next() => {
+            app.handle_terminal_event(event?);
+        }
+        // Render tick (adaptive: 60fps during streaming, idle otherwise)
+        _ = render_tick.tick(), if app.streaming || app.dirty => {
+            if app.dirty {
+                execute!(stderr, BeginSynchronizedUpdate)?;
+                terminal.draw(|f| app.render(f))?;
+                execute!(stderr, EndSynchronizedUpdate)?;
+                app.dirty = false;
+            }
+        }
+        // LLM streaming tokens — append immediately, mark dirty
+        Some(token) = llm_rx.recv() => {
+            app.push_token(token); // appends to StreamingMessage, sets dirty
+        }
+        // Stream completion
+        Some(()) = stream_done_rx.recv() => {
+            app.finalize_streaming(); // cursor disappears, message committed
+        }
+        // MCP / agent / system events
+        Some(event) = system_rx.recv() => {
+            app.handle_system_event(event);
+        }
+    }
+}
+```
+
+When `app.streaming` is false and `app.dirty` is false, the render tick branch is disabled entirely — zero CPU.
+
+### 16.6 Synchronized output
+
+Wrap frame writes with crossterm's synchronized update to prevent partial-frame flicker. Already shown in the event loop above (§16.5). Supported by modern terminals (kitty, iTerm2, WezTerm, foot, tmux 3.3+). Terminals that don't support it silently ignore the escape sequences.
+
+### 16.7 Cross-platform key filtering
+
+Windows emits both `KeyEventKind::Press` and `KeyEventKind::Release` for each keypress. Filter to `Press` only:
+
+```rust
+if let Event::Key(key) = event {
+    if key.kind != KeyEventKind::Press {
+        return; // ignore Release/Repeat on Windows
+    }
+    // handle key
+}
+```
+
+### Performance budget
+
+| Operation | Target | Notes |
+|-----------|--------|-------|
+| Idle CPU | <1% | dirty flag + disabled render tick when idle |
+| Streaming render | 60fps cap | ~16ms per frame, tokens appear within one frame |
+| Token-to-screen latency | <16ms | token appended immediately, rendered on next tick |
+| Input latency | <16ms | immediate dirty + next render tick |
+| Transcript scroll | <5ms per frame | virtual scrolling, visible slice only |
+| Startup to first frame | <100ms | no heavy init in render path |
+| Auto-scroll disengage | instant | user scroll-up immediately stops auto-scroll |
+
+---
+
 ## Document End
 
 This design document serves as the canonical reference specification for the ucode TUI. All implementation against Phase 7 tasks (PLANS.md Task 7.1–7.4) and corresponding EPIC 7 issues (ISSUE 0701–0709) should follow these specifications precisely. The document includes visual mockups, component definitions, keybinds, color semantics, plugin API surface, config schema, and Ratatui module structure.

@@ -8,6 +8,7 @@ use crossterm::terminal::{
 use futures_util::StreamExt;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
+use ratatui::layout::Rect;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::time;
@@ -249,6 +250,90 @@ fn handle_terminal_event(
 ) -> bool {
     match event {
         Event::Key(key) if key.kind == KeyEventKind::Press => {
+            // When the search overlay is open, route keys to it.
+            if app.search_overlay.visible {
+                let preset = app.keybinds.preset;
+                match key.code {
+                    crossterm::event::KeyCode::Esc => {
+                        app.search_overlay.close();
+                        app.focus = FocusTarget::Input;
+                        app.mark_dirty();
+                    }
+                    crossterm::event::KeyCode::Enter => match preset {
+                        crate::keybinds::KeybindPreset::Vscode => {
+                            app.search_overlay.next_match();
+                            if let Some(m) = app.search_overlay.current_match_info() {
+                                app.scroll_offset = m.transcript_index;
+                            }
+                            app.mark_dirty();
+                        }
+                        crate::keybinds::KeybindPreset::Vim
+                        | crate::keybinds::KeybindPreset::Emacs => {
+                            app.search_overlay.close();
+                            app.focus = FocusTarget::Input;
+                            app.mark_dirty();
+                        }
+                    },
+                    crossterm::event::KeyCode::Down => {
+                        app.search_overlay.next_match();
+                        if let Some(m) = app.search_overlay.current_match_info() {
+                            app.scroll_offset = m.transcript_index;
+                        }
+                        app.mark_dirty();
+                    }
+                    crossterm::event::KeyCode::Up => {
+                        app.search_overlay.prev_match();
+                        if let Some(m) = app.search_overlay.current_match_info() {
+                            app.scroll_offset = m.transcript_index;
+                        }
+                        app.mark_dirty();
+                    }
+                    crossterm::event::KeyCode::Backspace => {
+                        app.search_overlay.delete_char();
+                        let transcript = app.transcript.clone();
+                        app.search_overlay.search(&transcript);
+                        app.mark_dirty();
+                    }
+                    crossterm::event::KeyCode::Char(c) => {
+                        if preset == crate::keybinds::KeybindPreset::Emacs
+                            && key.modifiers == crossterm::event::KeyModifiers::CONTROL
+                        {
+                            match c {
+                                's' => {
+                                    app.search_overlay.next_match();
+                                    if let Some(m) = app.search_overlay.current_match_info() {
+                                        app.scroll_offset = m.transcript_index;
+                                    }
+                                    app.mark_dirty();
+                                }
+                                'r' => {
+                                    app.search_overlay.prev_match();
+                                    if let Some(m) = app.search_overlay.current_match_info() {
+                                        app.scroll_offset = m.transcript_index;
+                                    }
+                                    app.mark_dirty();
+                                }
+                                'g' => {
+                                    app.search_overlay.close();
+                                    app.focus = FocusTarget::Input;
+                                    app.mark_dirty();
+                                }
+                                _ => {}
+                            }
+                        } else if key.modifiers.is_empty()
+                            || key.modifiers == crossterm::event::KeyModifiers::SHIFT
+                        {
+                            app.search_overlay.insert_char(c);
+                            let transcript = app.transcript.clone();
+                            app.search_overlay.search(&transcript);
+                            app.mark_dirty();
+                        }
+                    }
+                    _ => {}
+                }
+                return false;
+            }
+
             // When the keybind overlay is open, route keys to it.
             if app.keybind_overlay.visible {
                 match key.code {
@@ -823,6 +908,28 @@ fn dispatch_action(action: Action, app: &mut AppState, input_box: &mut InputBoxS
             app.mark_dirty();
         }
 
+        Action::SearchTranscript => {
+            app.search_overlay.open(app.keybinds.preset);
+            app.focus = FocusTarget::Overlay;
+            app.mark_dirty();
+        }
+
+        Action::NextSearchMatch => {
+            app.search_overlay.next_match();
+            if let Some(m) = app.search_overlay.current_match_info() {
+                app.scroll_offset = m.transcript_index;
+            }
+            app.mark_dirty();
+        }
+
+        Action::PrevSearchMatch => {
+            app.search_overlay.prev_match();
+            if let Some(m) = app.search_overlay.current_match_info() {
+                app.scroll_offset = m.transcript_index;
+            }
+            app.mark_dirty();
+        }
+
         // Future phases — no-op for now.
         _ => {}
     }
@@ -995,6 +1102,19 @@ pub fn render_frame(
     if app.keybind_overlay.visible {
         use crate::overlays::keybind_overlay::KeybindOverlay;
         f.render_widget(KeybindOverlay::new(&app.keybind_overlay, &app.theme), area);
+    }
+
+    // Search overlay bar (1 row at the top of the transcript area).
+    if app.search_overlay.visible {
+        use crate::overlays::search_overlay::SearchOverlay;
+        let search_area = Rect {
+            height: 1,
+            ..areas.transcript
+        };
+        f.render_widget(
+            SearchOverlay::new(&app.search_overlay, &app.theme),
+            search_area,
+        );
     }
 
     // Toast notifications (rendered last, on top of everything).
@@ -2986,5 +3106,303 @@ mod tests {
         terminal
             .draw(|f| render_frame(f, &app, &input_box, &sidebar_data, 0))
             .expect("render with keybind overlay must not panic");
+    }
+
+    // -----------------------------------------------------------------------
+    // Search overlay integration (ISSUE 0709b)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn dispatch_search_transcript_opens_overlay() {
+        let mut app = AppState::new();
+        let mut input_box = InputBoxState::new();
+        assert!(!app.search_overlay.visible);
+
+        dispatch_action(Action::SearchTranscript, &mut app, &mut input_box);
+
+        assert!(app.search_overlay.visible);
+        assert_eq!(app.focus, FocusTarget::Overlay);
+        assert!(app.dirty);
+    }
+
+    #[test]
+    fn dispatch_search_transcript_does_not_exit() {
+        let mut app = AppState::new();
+        let mut input_box = InputBoxState::new();
+        let exited = dispatch_action(Action::SearchTranscript, &mut app, &mut input_box);
+        assert!(!exited);
+    }
+
+    #[test]
+    fn dispatch_next_search_match_advances_match() {
+        let mut app = AppState::new();
+        let mut input_box = InputBoxState::new();
+
+        app.push_user_message("hello world".to_owned());
+        app.push_user_message("hello again".to_owned());
+
+        // Open and search
+        app.search_overlay
+            .open(crate::keybinds::KeybindPreset::default());
+        for c in "hello".chars() {
+            app.search_overlay.insert_char(c);
+        }
+        app.search_overlay.search(&app.transcript);
+        assert_eq!(app.search_overlay.match_count(), 2);
+        assert_eq!(app.search_overlay.current_match, 0);
+
+        dispatch_action(Action::NextSearchMatch, &mut app, &mut input_box);
+        assert_eq!(app.search_overlay.current_match, 1);
+        assert!(app.dirty);
+    }
+
+    #[test]
+    fn dispatch_prev_search_match_goes_back() {
+        let mut app = AppState::new();
+        let mut input_box = InputBoxState::new();
+
+        app.push_user_message("hello world".to_owned());
+        app.push_user_message("hello again".to_owned());
+
+        app.search_overlay
+            .open(crate::keybinds::KeybindPreset::default());
+        for c in "hello".chars() {
+            app.search_overlay.insert_char(c);
+        }
+        app.search_overlay.search(&app.transcript);
+        app.search_overlay.next_match(); // now at 1
+
+        dispatch_action(Action::PrevSearchMatch, &mut app, &mut input_box);
+        assert_eq!(app.search_overlay.current_match, 0);
+        assert!(app.dirty);
+    }
+
+    #[test]
+    fn dispatch_next_search_match_noop_when_no_matches() {
+        let mut app = AppState::new();
+        let mut input_box = InputBoxState::new();
+        // No search performed, no matches
+        let exited = dispatch_action(Action::NextSearchMatch, &mut app, &mut input_box);
+        assert!(!exited);
+        assert_eq!(app.search_overlay.current_match, 0);
+    }
+
+    #[test]
+    fn search_overlay_esc_closes() {
+        let mut app = AppState::new();
+        let mut input_box = InputBoxState::new();
+        let mut sidebar_data = SidebarData::new();
+
+        dispatch_action(Action::SearchTranscript, &mut app, &mut input_box);
+        assert!(app.search_overlay.visible);
+
+        let esc = Event::Key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Esc,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        let exited = handle_terminal_event(esc, &mut app, &mut input_box, &mut sidebar_data);
+        assert!(!exited);
+        assert!(!app.search_overlay.visible);
+        assert_eq!(app.focus, FocusTarget::Input);
+    }
+
+    #[test]
+    fn search_overlay_char_inserts_and_searches() {
+        let mut app = AppState::new();
+        let mut input_box = InputBoxState::new();
+        let mut sidebar_data = SidebarData::new();
+
+        app.push_user_message("hello world".to_owned());
+        dispatch_action(Action::SearchTranscript, &mut app, &mut input_box);
+        assert!(app.search_overlay.visible);
+
+        let h = Event::Key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('h'),
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        handle_terminal_event(h, &mut app, &mut input_box, &mut sidebar_data);
+
+        assert_eq!(app.search_overlay.query, "h");
+        assert_eq!(app.search_overlay.match_count(), 1);
+        assert!(app.dirty);
+    }
+
+    #[test]
+    fn search_overlay_backspace_removes_char_and_searches() {
+        let mut app = AppState::new();
+        let mut input_box = InputBoxState::new();
+        let mut sidebar_data = SidebarData::new();
+
+        app.push_user_message("hello world".to_owned());
+        dispatch_action(Action::SearchTranscript, &mut app, &mut input_box);
+
+        // Type "he"
+        for c in "he".chars() {
+            let ev = Event::Key(crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char(c),
+                crossterm::event::KeyModifiers::NONE,
+            ));
+            handle_terminal_event(ev, &mut app, &mut input_box, &mut sidebar_data);
+        }
+        assert_eq!(app.search_overlay.query, "he");
+
+        // Backspace → "h"
+        let bs = Event::Key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Backspace,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        handle_terminal_event(bs, &mut app, &mut input_box, &mut sidebar_data);
+        assert_eq!(app.search_overlay.query, "h");
+        assert!(app.dirty);
+    }
+
+    #[test]
+    fn search_overlay_enter_advances_match() {
+        let mut app = AppState::new();
+        let mut input_box = InputBoxState::new();
+        let mut sidebar_data = SidebarData::new();
+
+        app.push_user_message("hello world".to_owned());
+        app.push_user_message("hello again".to_owned());
+        dispatch_action(Action::SearchTranscript, &mut app, &mut input_box);
+
+        for c in "hello".chars() {
+            let ev = Event::Key(crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char(c),
+                crossterm::event::KeyModifiers::NONE,
+            ));
+            handle_terminal_event(ev, &mut app, &mut input_box, &mut sidebar_data);
+        }
+        assert_eq!(app.search_overlay.match_count(), 2);
+        assert_eq!(app.search_overlay.current_match, 0);
+
+        let enter = Event::Key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Enter,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        handle_terminal_event(enter, &mut app, &mut input_box, &mut sidebar_data);
+        assert_eq!(app.search_overlay.current_match, 1);
+    }
+
+    #[test]
+    fn search_overlay_down_advances_match() {
+        let mut app = AppState::new();
+        let mut input_box = InputBoxState::new();
+        let mut sidebar_data = SidebarData::new();
+
+        app.push_user_message("hello world".to_owned());
+        app.push_user_message("hello again".to_owned());
+        dispatch_action(Action::SearchTranscript, &mut app, &mut input_box);
+
+        for c in "hello".chars() {
+            let ev = Event::Key(crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char(c),
+                crossterm::event::KeyModifiers::NONE,
+            ));
+            handle_terminal_event(ev, &mut app, &mut input_box, &mut sidebar_data);
+        }
+
+        let down = Event::Key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Down,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        handle_terminal_event(down, &mut app, &mut input_box, &mut sidebar_data);
+        assert_eq!(app.search_overlay.current_match, 1);
+    }
+
+    #[test]
+    fn search_overlay_up_goes_prev_match() {
+        let mut app = AppState::new();
+        let mut input_box = InputBoxState::new();
+        let mut sidebar_data = SidebarData::new();
+
+        app.push_user_message("hello world".to_owned());
+        app.push_user_message("hello again".to_owned());
+        dispatch_action(Action::SearchTranscript, &mut app, &mut input_box);
+
+        for c in "hello".chars() {
+            let ev = Event::Key(crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char(c),
+                crossterm::event::KeyModifiers::NONE,
+            ));
+            handle_terminal_event(ev, &mut app, &mut input_box, &mut sidebar_data);
+        }
+        // Advance to match 1
+        app.search_overlay.next_match();
+
+        let up = Event::Key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Up,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        handle_terminal_event(up, &mut app, &mut input_box, &mut sidebar_data);
+        assert_eq!(app.search_overlay.current_match, 0);
+    }
+
+    #[test]
+    fn search_overlay_other_keys_ignored() {
+        let mut app = AppState::new();
+        let mut input_box = InputBoxState::new();
+        let mut sidebar_data = SidebarData::new();
+
+        dispatch_action(Action::SearchTranscript, &mut app, &mut input_box);
+        assert!(app.search_overlay.visible);
+
+        // F1 should be ignored (not close overlay, not exit)
+        let f1 = Event::Key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::F(1),
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        let exited = handle_terminal_event(f1, &mut app, &mut input_box, &mut sidebar_data);
+        assert!(!exited);
+        assert!(
+            app.search_overlay.visible,
+            "overlay should still be visible"
+        );
+    }
+
+    #[test]
+    fn render_frame_with_search_overlay_does_not_panic() {
+        let backend = TestBackend::new(120, 40);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+
+        let mut app = AppState::new();
+        app.push_user_message("hello world".to_owned());
+        let mut input_box = InputBoxState::new();
+        dispatch_action(Action::SearchTranscript, &mut app, &mut input_box);
+        app.search_overlay.insert_char('h');
+        app.search_overlay.search(&app.transcript);
+
+        let sidebar_data = SidebarData::new();
+        terminal
+            .draw(|f| render_frame(f, &app, &input_box, &sidebar_data, 0))
+            .expect("render with search overlay must not panic");
+    }
+
+    #[test]
+    fn next_search_match_scrolls_transcript() {
+        let mut app = AppState::new();
+        let mut input_box = InputBoxState::new();
+
+        // Add enough entries that scrolling matters
+        for i in 0..10 {
+            app.push_user_message(format!("hello message {i}"));
+        }
+
+        app.search_overlay
+            .open(crate::keybinds::KeybindPreset::default());
+        for c in "hello".chars() {
+            app.search_overlay.insert_char(c);
+        }
+        app.search_overlay.search(&app.transcript);
+        assert!(app.search_overlay.match_count() > 1);
+
+        // Advance to match at index 5
+        for _ in 0..5 {
+            dispatch_action(Action::NextSearchMatch, &mut app, &mut input_box);
+        }
+
+        // scroll_offset should reflect the transcript_index of the current match
+        let current = app.search_overlay.current_match_info().unwrap();
+        assert_eq!(app.scroll_offset, current.transcript_index);
     }
 }

@@ -14,6 +14,7 @@ use crate::overlays::overlay_queue::{
     ActiveOverlay, OverlayAction, OverlayNext, OverlayQueue, OverlayRequest,
 };
 use crate::overlays::palette::PaletteState;
+use crate::overlays::search_overlay::SearchOverlayState;
 use crate::theme::{Density, UcodeTheme};
 
 // ---------------------------------------------------------------------------
@@ -193,6 +194,7 @@ pub struct AppState {
     pub diff_modal: DiffModalState,
     pub approval_modal: ApprovalModalState,
     pub keybind_overlay: KeybindOverlayState,
+    pub search_overlay: SearchOverlayState,
     pub overlay_queue: OverlayQueue,
     /// Timestamp of the last Ctrl+C press, for double-Ctrl+C exit detection.
     pub last_ctrl_c: Option<Instant>,
@@ -236,6 +238,7 @@ impl AppState {
             diff_modal: DiffModalState::new(),
             approval_modal: ApprovalModalState::new(),
             keybind_overlay: KeybindOverlayState::new(),
+            search_overlay: SearchOverlayState::new(),
             overlay_queue: OverlayQueue::new(),
             last_ctrl_c: None,
             ctrl_c_hint: None,

@@ -887,7 +887,7 @@ Search:
 
 **Completed:** 298 tests, 4 phases (0707a-0707d). CommandRegistry with register/resolve/search/suggest, slash autocomplete on `/` prefix, command execution via directive parser, source badges and argument hints in autocomplete dropdown and palette.
 
-### ISSUE 0708 — Toast notification system + plugin UI extension API (ucode-tui + ucode-plugins)
+### ISSUE 0708 — Toast notification system + plugin UI extension API (ucode-tui + ucode-plugins) [DONE]
 
 **Goal:** Implement the toast notification system and the versioned plugin UI extension API surface.
 
@@ -914,6 +914,8 @@ Search:
 * Guarded calls are blocked if plugin has not declared guarded capability in manifest.
 * Plugin UI elements are fully cleaned up on session end.
   **Owner:** TUI/Plugins
+
+**Completed:** 332 TUI tests + 56 plugin tests, 4 phases (0708a-0708d). Toast notification system with auto-dismiss and rendering, system-triggered toast events (checkpoint/budget/agent/MCP/auth), plugin UI extension API types with Safe/Guarded/Risky enforcement, plugin sidebar sections with [plugin] badge, plugin palette command registration, and plugin UI lifecycle (session_start/session_end cleanup).
 
 ### ISSUE 0709 — Copy mode + search overlay + keybind overlay (ucode-tui)
 

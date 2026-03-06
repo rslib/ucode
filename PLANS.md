@@ -731,7 +731,7 @@ Terminal compatibility:
 * Unknown command returns suggestions.
 * Command execution obeys the same sandbox/approval controls.
 
-### Task 7.5 Toast notification system + plugin UI extension API (ucode-tui + ucode-plugins)
+### Task 7.5 Toast notification system + plugin UI extension API (ucode-tui + ucode-plugins) [DONE]
 
 > See `docs/plans/2026-03-05-tui-design.md` §7 (Notifications) and §11 (Plugin UI Extension API).
 

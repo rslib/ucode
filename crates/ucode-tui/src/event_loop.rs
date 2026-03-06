@@ -174,6 +174,41 @@ fn handle_terminal_event(
 ) -> bool {
     match event {
         Event::Key(key) if key.kind == KeyEventKind::Press => {
+            // When the palette is open, route keys to it.
+            if app.palette.visible {
+                match key.code {
+                    crossterm::event::KeyCode::Esc => {
+                        app.palette.close();
+                        app.focus = FocusTarget::Input;
+                        app.mark_dirty();
+                    }
+                    crossterm::event::KeyCode::Enter => {
+                        if let Some(cmd) = app.palette.execute_selected() {
+                            app.push_system_message(format!("Executed: {}", cmd.name));
+                            app.focus = FocusTarget::Input;
+                        }
+                    }
+                    crossterm::event::KeyCode::Up => {
+                        app.palette.move_up();
+                        app.mark_dirty();
+                    }
+                    crossterm::event::KeyCode::Down => {
+                        app.palette.move_down();
+                        app.mark_dirty();
+                    }
+                    crossterm::event::KeyCode::Backspace => {
+                        app.palette.delete_char();
+                        app.mark_dirty();
+                    }
+                    crossterm::event::KeyCode::Char(c) => {
+                        app.palette.insert_char(c);
+                        app.mark_dirty();
+                    }
+                    _ => {}
+                }
+                return false;
+            }
+
             if let Some(action) = app.keybinds.resolve(&key) {
                 return dispatch_action(action, app, input_box);
             }
@@ -321,6 +356,12 @@ fn dispatch_action(action: Action, app: &mut AppState, input_box: &mut InputBoxS
             app.mark_dirty();
         }
 
+        Action::OpenPalette => {
+            app.palette.open();
+            app.focus = FocusTarget::Overlay;
+            app.mark_dirty();
+        }
+
         // Future phases — no-op for now.
         _ => {}
     }
@@ -417,6 +458,12 @@ pub fn render_frame(
     // Status bar.
     let status_state = build_status_bar_state(app, sidebar_data);
     f.render_widget(StatusBar::new(&status_state, &app.theme), areas.status_bar);
+
+    // Palette overlay (rendered last so it's on top).
+    if app.palette.visible {
+        use crate::overlays::palette::PaletteOverlay;
+        f.render_widget(PaletteOverlay::new(&app.palette, &app.theme), area);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -862,5 +909,91 @@ mod tests {
         handle_terminal_event(end, &mut app, &mut input_box, &mut sidebar_data);
         input_box.insert_char('!');
         assert_eq!(input_box.content, "zabc!");
+    }
+
+    // -----------------------------------------------------------------------
+    // Palette integration
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn dispatch_open_palette() {
+        let mut app = AppState::new();
+        let mut input_box = InputBoxState::new();
+        dispatch_action(Action::OpenPalette, &mut app, &mut input_box);
+        assert!(app.palette.visible);
+        assert_eq!(app.focus, FocusTarget::Overlay);
+    }
+
+    #[test]
+    fn palette_esc_closes() {
+        let mut app = AppState::new();
+        let mut input_box = InputBoxState::new();
+        let mut sidebar_data = SidebarData::new();
+
+        dispatch_action(Action::OpenPalette, &mut app, &mut input_box);
+        assert!(app.palette.visible);
+
+        let esc = Event::Key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Esc,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        handle_terminal_event(esc, &mut app, &mut input_box, &mut sidebar_data);
+        assert!(!app.palette.visible);
+        assert_eq!(app.focus, FocusTarget::Input);
+    }
+
+    #[test]
+    fn palette_typing_filters() {
+        let mut app = AppState::new();
+        let mut input_box = InputBoxState::new();
+        let mut sidebar_data = SidebarData::new();
+
+        dispatch_action(Action::OpenPalette, &mut app, &mut input_box);
+
+        for c in "session".chars() {
+            let ev = Event::Key(crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char(c),
+                crossterm::event::KeyModifiers::NONE,
+            ));
+            handle_terminal_event(ev, &mut app, &mut input_box, &mut sidebar_data);
+        }
+
+        assert_eq!(app.palette.filtered_indices.len(), 3);
+    }
+
+    #[test]
+    fn palette_enter_executes_and_closes() {
+        let mut app = AppState::new();
+        let mut input_box = InputBoxState::new();
+        let mut sidebar_data = SidebarData::new();
+
+        dispatch_action(Action::OpenPalette, &mut app, &mut input_box);
+
+        let enter = Event::Key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Enter,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        handle_terminal_event(enter, &mut app, &mut input_box, &mut sidebar_data);
+
+        assert!(!app.palette.visible);
+        let has_system_msg = app.transcript.iter().any(|e| {
+            matches!(e, crate::app::TranscriptEntry::SystemMessage(msg) if msg.contains("Executed"))
+        });
+        assert!(has_system_msg);
+    }
+
+    #[test]
+    fn render_frame_with_palette_open() {
+        let backend = TestBackend::new(120, 40);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+
+        let mut app = AppState::new();
+        app.palette.open();
+        let input_box = InputBoxState::new();
+        let sidebar_data = SidebarData::new();
+
+        terminal
+            .draw(|f| render_frame(f, &app, &input_box, &sidebar_data, 0))
+            .expect("draw");
     }
 }

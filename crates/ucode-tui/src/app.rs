@@ -4,6 +4,7 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use crate::keybinds::{KeybindPreset, KeybindResolver};
 use crate::layout::{InputState, SidebarState, TerminalSize};
+use crate::overlays::palette::PaletteState;
 use crate::theme::{Density, UcodeTheme};
 
 // ---------------------------------------------------------------------------
@@ -171,6 +172,7 @@ pub struct AppState {
     /// The real CLI uses this to forward prompts to the LLM.
     #[allow(clippy::type_complexity)]
     pub message_tx: Option<UnboundedSender<String>>,
+    pub palette: PaletteState,
 }
 
 impl AppState {
@@ -199,6 +201,7 @@ impl AppState {
             parent_title: None,
             multiplexer: detect_multiplexer(),
             message_tx: None,
+            palette: PaletteState::new(),
         }
     }
 

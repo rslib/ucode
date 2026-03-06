@@ -1,3 +1,11 @@
+use ratatui::buffer::Buffer;
+use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::style::{Modifier, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph, Widget};
+
+use crate::theme::UcodeTheme;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CommandCategory {
     Recent,
@@ -76,6 +84,7 @@ pub fn builtin_commands() -> Vec<PaletteCommand> {
     cmds
 }
 
+#[derive(Debug, Clone)]
 pub struct PaletteState {
     pub visible: bool,
     pub input: String,
@@ -191,6 +200,170 @@ impl Default for PaletteState {
         Self::new()
     }
 }
+
+// ---------------------------------------------------------------------------
+// PaletteOverlay widget
+// ---------------------------------------------------------------------------
+
+pub struct PaletteOverlay<'a> {
+    state: &'a PaletteState,
+    theme: &'a UcodeTheme,
+}
+
+impl<'a> PaletteOverlay<'a> {
+    pub fn new(state: &'a PaletteState, theme: &'a UcodeTheme) -> Self {
+        Self { state, theme }
+    }
+}
+
+impl Widget for PaletteOverlay<'_> {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        let palette_area = centered_rect(60, 50, area);
+
+        Clear.render(palette_area, buf);
+
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(self.theme.border_style(true))
+            .title(" Command Palette ");
+        let inner = block.inner(palette_area);
+        block.render(palette_area, buf);
+
+        if inner.height < 3 || inner.width < 10 {
+            return;
+        }
+
+        let chunks = Layout::vertical([
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Min(1),
+        ])
+        .split(inner);
+
+        let input_line = Line::from(vec![
+            Span::styled("> ", self.theme.accent_style()),
+            Span::raw(&self.state.input),
+        ]);
+        Paragraph::new(input_line).render(chunks[0], buf);
+
+        let sep = "─".repeat(chunks[1].width as usize);
+        Paragraph::new(sep)
+            .style(self.theme.dim_style())
+            .render(chunks[1], buf);
+
+        let visible_height = chunks[2].height as usize;
+        let list_area = chunks[2];
+
+        let scroll_offset = if self.state.selected >= visible_height {
+            self.state.selected - visible_height + 1
+        } else {
+            0
+        };
+
+        let mut current_category: Option<CommandCategory> = None;
+        let mut row = 0usize;
+
+        for (display_idx, &cmd_idx) in self.state.filtered_indices.iter().enumerate() {
+            if row >= scroll_offset + visible_height {
+                break;
+            }
+
+            let cmd = &self.state.commands[cmd_idx];
+
+            if current_category != Some(cmd.category) {
+                current_category = Some(cmd.category);
+                if row >= scroll_offset {
+                    let y = list_area.y + (row - scroll_offset) as u16;
+                    if y < list_area.y + list_area.height {
+                        let label = cmd.category.label();
+                        let header = Line::from(vec![
+                            Span::styled(format!("── {} ", label), self.theme.dim_style()),
+                            Span::styled(
+                                "─"
+                                    .repeat(list_area.width.saturating_sub(label.len() as u16 + 4)
+                                        as usize),
+                                self.theme.dim_style(),
+                            ),
+                        ]);
+                        let header_rect = Rect::new(list_area.x, y, list_area.width, 1);
+                        Paragraph::new(header).render(header_rect, buf);
+                    }
+                }
+                row += 1;
+                if row >= scroll_offset + visible_height {
+                    break;
+                }
+            }
+
+            if row >= scroll_offset {
+                let y = list_area.y + (row - scroll_offset) as u16;
+                if y < list_area.y + list_area.height {
+                    let is_selected = display_idx == self.state.selected;
+                    let name_style = if is_selected {
+                        self.theme.accent_style().add_modifier(Modifier::BOLD)
+                    } else {
+                        self.theme.text_style()
+                    };
+                    let desc_style = if is_selected {
+                        self.theme.text_style()
+                    } else {
+                        self.theme.muted_style()
+                    };
+                    let badge_style = self.theme.dim_style();
+
+                    let name_len = cmd.name.len();
+                    let badge = cmd.source.badge();
+                    let badge_len = badge.len();
+                    let spacing = 2usize;
+                    let desc_max = (list_area.width as usize)
+                        .saturating_sub(name_len + 2 + badge_len + spacing);
+
+                    let desc_truncated = if cmd.description.len() > desc_max {
+                        format!("{}…", &cmd.description[..desc_max.saturating_sub(1)])
+                    } else {
+                        cmd.description.clone()
+                    };
+
+                    let prefix = if is_selected { "▸ " } else { "  " };
+                    let displayed_desc_len = desc_truncated.len().min(desc_max);
+                    let used = prefix.len() + name_len + spacing + displayed_desc_len + badge_len;
+                    let pad = (list_area.width as usize).saturating_sub(used);
+
+                    let line = Line::from(vec![
+                        Span::styled(format!("{prefix}{}", cmd.name), name_style),
+                        Span::raw("  "),
+                        Span::styled(desc_truncated, desc_style),
+                        Span::raw(" ".repeat(pad)),
+                        Span::styled(badge, badge_style),
+                    ]);
+
+                    let row_style = if is_selected {
+                        Style::default().bg(self.theme.surface)
+                    } else {
+                        Style::default()
+                    };
+
+                    let row_rect = Rect::new(list_area.x, y, list_area.width, 1);
+                    Paragraph::new(line).style(row_style).render(row_rect, buf);
+                }
+            }
+            row += 1;
+        }
+    }
+}
+
+/// Compute a centered rectangle of the given percentage width/height within `area`.
+fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
+    let popup_width = area.width * percent_x / 100;
+    let popup_height = area.height * percent_y / 100;
+    let x = area.x + (area.width.saturating_sub(popup_width)) / 2;
+    let y = area.y + (area.height.saturating_sub(popup_height)) / 2;
+    Rect::new(x, y, popup_width, popup_height)
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -363,5 +536,44 @@ mod tests {
         }
         // selected must be within [0, 2].
         assert!(state.selected <= 2);
+    }
+
+    #[test]
+    fn palette_overlay_renders_without_panic() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut state = PaletteState::new();
+        state.open();
+        let theme = UcodeTheme::default();
+
+        terminal
+            .draw(|f| {
+                f.render_widget(PaletteOverlay::new(&state, &theme), f.area());
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn palette_overlay_with_filter_renders() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut state = PaletteState::new();
+        state.open();
+        for c in "session".chars() {
+            state.insert_char(c);
+        }
+        let theme = UcodeTheme::default();
+
+        terminal
+            .draw(|f| {
+                f.render_widget(PaletteOverlay::new(&state, &theme), f.area());
+            })
+            .unwrap();
     }
 }

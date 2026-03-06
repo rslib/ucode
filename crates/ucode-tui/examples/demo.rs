@@ -18,7 +18,7 @@ async fn fake_llm(
     // Send a welcome message on startup.
     tokio::time::sleep(Duration::from_millis(500)).await;
     let _ = tui_tx.send(TuiEvent::SystemMessage(
-        "Demo mode -- type a message and press Enter".to_owned(),
+        "Demo mode -- type a message and press Enter. Ctrl+P opens command palette.".to_owned(),
     ));
 
     while let Some(user_msg) = user_rx.recv().await {

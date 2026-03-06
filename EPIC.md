@@ -806,7 +806,7 @@ Search:
 
 **Completed:** 742 tests, 5 phases (0701a–0701e), 11 modules.
 
-### ISSUE 0702 — Command palette + keybinds (ucode-tui)
+### ISSUE 0702 — Command palette + keybinds (ucode-tui) [DONE]
 
 **Goal:** Implement command palette and core keybinds.
 **Scope/Notes:**
@@ -821,6 +821,8 @@ Search:
 * Palette opens; commands execute.
 * `preset = "vim"` activates modal editing; `preset = "emacs"` activates emacs nav.
   **Owner:** TUI
+
+**Completed:** 767 tests, 4 phases (0702a-0702e). Palette overlay with 10 built-in commands, fuzzy filtering, keyboard navigation. Input editing keys wired (Backspace/Delete/arrows/Home/End).
 
 ### ISSUE 0703 — Diff viewer + apply/reject UX (ucode-tui)
 

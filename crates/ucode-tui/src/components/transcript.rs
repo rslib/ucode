@@ -52,20 +52,20 @@ impl Widget for TranscriptView<'_> {
         // Pre-compute all lines for all entries so we can apply scroll_offset
         // as a line-level offset (not entry-level).
         //
-        // Only the last Streaming entry gets the blinking cursor; earlier
-        // Streaming entries (e.g. those pushed before tool-call results arrive)
-        // must not show one.
-        let last_streaming_idx = self
-            .entries
-            .iter()
-            .rposition(|e| matches!(e, TranscriptEntry::Streaming(_)));
+        // The blinking cursor only appears on the last Streaming entry AND
+        // only when that entry is the very last transcript entry.  This
+        // prevents a stale cursor from lingering above tool-call / router
+        // entries that were pushed after `start_streaming()`.
+        let last_entry_idx = self.entries.len().checked_sub(1);
+        let cursor_idx = last_entry_idx
+            .filter(|&idx| matches!(self.entries[idx], TranscriptEntry::Streaming(_)));
 
         let all_lines: Vec<Line<'_>> = self
             .entries
             .iter()
             .enumerate()
             .flat_map(|(i, entry)| {
-                let cursor = self.show_cursor && Some(i) == last_streaming_idx;
+                let cursor = self.show_cursor && Some(i) == cursor_idx;
                 entry_lines(entry, self.theme, width, cursor)
             })
             .collect();
@@ -929,30 +929,17 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn only_last_streaming_entry_shows_cursor() {
+    fn cursor_only_when_last_entry_is_streaming() {
         let t = theme();
         const CURSOR: &str = "\u{258c}";
 
-        // Two Streaming entries with a ToolCall between them — the pattern
-        // that occurs when tool results arrive while the assistant is still
-        // streaming.
-        let msg1 = StreamingMessage::new();
-        // msg1 intentionally left empty (initial streaming entry).
-
-        let mut msg2 = StreamingMessage::new();
-        msg2.push_token("hello");
+        // Last entry IS Streaming → cursor should appear exactly once.
+        let mut msg = StreamingMessage::new();
+        msg.push_token("hello");
 
         let entries = vec![
-            TranscriptEntry::Streaming(msg1),
-            TranscriptEntry::ToolCall {
-                name: "Read".to_owned(),
-                status: ToolCallStatus::Success,
-                duration_ms: Some(100),
-                summary: None,
-                thinking: None,
-                output: None,
-            },
-            TranscriptEntry::Streaming(msg2),
+            TranscriptEntry::UserMessage("hi".to_owned()),
+            TranscriptEntry::Streaming(msg),
         ];
 
         let widget = TranscriptView::new(&entries, 0, true, &t, true);
@@ -960,7 +947,6 @@ mod tests {
         let mut buf = Buffer::empty(area);
         widget.render(area, &mut buf);
 
-        // Collect every symbol rendered into the buffer.
         let rendered: String = (0..40u16)
             .flat_map(|y| (0..80u16).map(move |x| (x, y)))
             .map(|(x, y)| buf[(x, y)].symbol().to_owned())
@@ -969,7 +955,46 @@ mod tests {
         let cursor_count = rendered.matches(CURSOR).count();
         assert_eq!(
             cursor_count, 1,
-            "expected exactly 1 cursor, got {cursor_count}; rendered: {rendered:?}"
+            "expected 1 cursor when last entry is Streaming, got {cursor_count}"
+        );
+    }
+
+    #[test]
+    fn no_cursor_when_entries_follow_streaming() {
+        let t = theme();
+        const CURSOR: &str = "\u{258c}";
+
+        // Streaming entry followed by tool calls — no cursor should appear.
+        // This is the pattern when start_streaming() runs, then tool calls
+        // arrive before any stream tokens.
+        let msg = StreamingMessage::new(); // empty
+
+        let entries = vec![
+            TranscriptEntry::Streaming(msg),
+            TranscriptEntry::ToolCall {
+                name: "Read".to_owned(),
+                status: ToolCallStatus::Success,
+                duration_ms: Some(100),
+                summary: None,
+                thinking: None,
+                output: None,
+            },
+        ];
+
+        let widget = TranscriptView::new(&entries, 0, true, &t, true);
+        let area = Rect::new(0, 0, 80, 40);
+        let mut buf = Buffer::empty(area);
+        widget.render(area, &mut buf);
+
+        let rendered: String = (0..40u16)
+            .flat_map(|y| (0..80u16).map(move |x| (x, y)))
+            .map(|(x, y)| buf[(x, y)].symbol().to_owned())
+            .collect();
+
+        let cursor_count = rendered.matches(CURSOR).count();
+        assert_eq!(
+            cursor_count, 0,
+            "expected 0 cursors when entries follow Streaming, got {cursor_count}"
         );
     }
 }

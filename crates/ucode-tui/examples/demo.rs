@@ -17,6 +17,7 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use ucode_tui::app::ToolCallStatus;
 use ucode_tui::command_registry::{CommandCategory, CommandDef, CommandSource};
+use ucode_tui::components::toast::ToastLevel;
 use ucode_tui::event_loop::TuiEvent;
 use ucode_tui::overlays::palette::PaletteState;
 
@@ -353,6 +354,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
     app.palette = PaletteState::from_registry(&app.command_registry);
     app.message_tx = Some(user_tx);
+
+    // Demo toasts — visible immediately on startup.
+    app.toast(ToastLevel::Info, "Session started");
+    app.toast(ToastLevel::Success, "Checkpoint created");
+    app.toast_with_body(
+        ToastLevel::Warning,
+        "Budget warning",
+        "75% of token budget used",
+    );
 
     let mut input_box = ucode_tui::components::input::InputBoxState::new();
     let mut sidebar_data = ucode_tui::components::sidebar::SidebarData::new();

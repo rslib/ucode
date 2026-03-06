@@ -4,6 +4,7 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use crate::command_registry::CommandRegistry;
 use crate::components::input::AutocompleteEntry;
+use crate::components::toast::{ToastLevel, ToastState};
 use crate::keybinds::{KeybindPreset, KeybindResolver};
 use crate::layout::{InputState, SidebarState, TerminalSize};
 use crate::overlays::approval_modal::ApprovalModalState;
@@ -196,6 +197,7 @@ pub struct AppState {
     /// Transient hint set after the first Ctrl+C; cleared when the 2-second
     /// window expires or when the double-Ctrl+C exit fires.
     pub ctrl_c_hint: Option<String>,
+    pub toasts: ToastState,
 }
 
 impl AppState {
@@ -234,6 +236,7 @@ impl AppState {
             overlay_queue: OverlayQueue::new(),
             last_ctrl_c: None,
             ctrl_c_hint: None,
+            toasts: ToastState::new(),
         }
     }
 
@@ -602,6 +605,25 @@ impl AppState {
     pub fn scroll_to_bottom(&mut self) {
         self.scroll_offset = self.transcript.len();
         self.auto_scroll = true;
+        self.mark_dirty();
+    }
+
+    // ------------------------------------------------------------------
+    // Toasts
+    // ------------------------------------------------------------------
+
+    pub fn toast(&mut self, level: ToastLevel, title: impl Into<String>) {
+        self.toasts.push(level, title);
+        self.mark_dirty();
+    }
+
+    pub fn toast_with_body(
+        &mut self,
+        level: ToastLevel,
+        title: impl Into<String>,
+        body: impl Into<String>,
+    ) {
+        self.toasts.push_with_body(level, title, body);
         self.mark_dirty();
     }
 

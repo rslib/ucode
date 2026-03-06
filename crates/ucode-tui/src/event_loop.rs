@@ -19,6 +19,7 @@ use crate::components::input::InputBoxState;
 use crate::components::sidebar::SidebarData;
 use crate::components::status_bar::{StatusBar, StatusBarState};
 use crate::components::title_bar::{TitleBar, TitleBarState};
+use crate::components::toast::ToastLevel;
 use crate::components::transcript::TranscriptView;
 use crate::keybinds::{Action, InputMode};
 use crate::layout::compute_layout;
@@ -55,6 +56,11 @@ pub enum TuiEvent {
         command: String,
         cwd: String,
         sandbox_label: String,
+    },
+    Toast {
+        level: ToastLevel,
+        title: String,
+        body: Option<String>,
     },
     Quit,
 }
@@ -170,7 +176,7 @@ pub async fn run_event_loop(
             }
 
             // Render tick — only draw when dirty, streaming, or hint is active.
-            _ = render_tick.tick(), if app.dirty || app.streaming || app.ctrl_c_hint.is_some() => {
+            _ = render_tick.tick(), if app.dirty || app.streaming || app.ctrl_c_hint.is_some() || !app.toasts.is_empty() => {
                 frame_counter = frame_counter.wrapping_add(1);
                 // Expire the Ctrl+C hint once the 2-second window closes.
                 if let Some(last) = app.last_ctrl_c
@@ -178,6 +184,10 @@ pub async fn run_event_loop(
                 {
                     app.ctrl_c_hint = None;
                     app.last_ctrl_c = None;
+                }
+                // Tick expired toasts.
+                if app.toasts.tick() {
+                    app.mark_dirty();
                 }
                 terminal.draw(|f| render_frame(f, app, input_box, sidebar_data, frame_counter))?;
                 app.dirty = false;
@@ -800,6 +810,13 @@ fn handle_tui_event(event: TuiEvent, app: &mut AppState) -> bool {
         } => {
             app.request_approval(tool_name, command, cwd, sandbox_label);
         }
+        TuiEvent::Toast { level, title, body } => {
+            if let Some(body) = body {
+                app.toast_with_body(level, title, body);
+            } else {
+                app.toast(level, title);
+            }
+        }
         TuiEvent::Quit => return true,
     }
     false
@@ -884,6 +901,18 @@ pub fn render_frame(
     if app.approval_modal.visible {
         use crate::overlays::approval_modal::ApprovalModal;
         f.render_widget(ApprovalModal::new(&app.approval_modal, &app.theme), area);
+    }
+
+    // Toast notifications (rendered last, on top of everything).
+    if !app.toasts.is_empty() {
+        use crate::components::toast::ToastStack;
+        f.render_widget(
+            ToastStack {
+                state: &app.toasts,
+                theme: &app.theme,
+            },
+            area,
+        );
     }
 }
 
@@ -2495,5 +2524,52 @@ mod tests {
             has_system_msg,
             "palette Enter should produce system messages via execute_command"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Toast rendering
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_render_frame_with_toasts() {
+        use crate::components::toast::ToastLevel;
+
+        let backend = TestBackend::new(120, 40);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+
+        let mut app = AppState::new();
+        app.toast(ToastLevel::Info, "Session started");
+        app.toast(ToastLevel::Success, "Checkpoint created");
+        app.toast_with_body(
+            ToastLevel::Warning,
+            "Budget warning",
+            "75% of token budget used",
+        );
+
+        let input_box = InputBoxState::new();
+        let sidebar_data = SidebarData::new();
+
+        terminal
+            .draw(|f| render_frame(f, &app, &input_box, &sidebar_data, 0))
+            .expect("render with toasts must not panic");
+
+        assert_eq!(app.toasts.len(), 3);
+    }
+
+    #[test]
+    fn tui_event_toast_variant() {
+        let mut app = AppState::new();
+        let exited = handle_tui_event(
+            TuiEvent::Toast {
+                level: ToastLevel::Error,
+                title: "Something failed".to_owned(),
+                body: Some("check logs".to_owned()),
+            },
+            &mut app,
+        );
+        assert!(!exited);
+        assert_eq!(app.toasts.len(), 1);
+        assert_eq!(app.toasts.visible()[0].title, "Something failed");
+        assert_eq!(app.toasts.visible()[0].body.as_deref(), Some("check logs"));
     }
 }

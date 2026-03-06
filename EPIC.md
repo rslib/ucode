@@ -1176,22 +1176,36 @@ Design doc: `docs/plans/2026-03-06-wasm-runtime-design.md`
 **Goal:** Complete the plugin runtime plumbing so external plugins (DCP-style context managers, custom tools, etc.) can load, receive hooks, transform messages, and register tools — all within the existing capability/policy model.
 **Scope/Notes:**
 
-* **Plugin discovery paths:** User-level (`~/.ucode/plugins/`), project-level (`.ucode/plugins/`), config-driven extras. Discovery order: project > user > config.
-* **Complete WASM hook dispatch:** Currently stubbed (returns `Ok` always). Wire actual wasmtime handler calls with fuel/memory limits. Apply `Modify` payloads back to events.
-* **Message transform hooks (new):**
-  * `experimental.chat.messages.transform` — plugin rewrites full message array before LLM call (DCP's core mechanism for dedup/supersede/prune)
-  * `experimental.chat.system.transform` — plugin modifies system prompt (DCP injects pruning instructions)
-  * Transform hooks are ordered, composable, and `Guarded` safety tier
-* **Plugin tool registration:** Plugins declare tools in `plugin.toml`; tools appear in LLM tool list; calls route through plugin handler; subject to same sandbox/approval policy as built-ins
-* **Hook payload versioning:** Per-hook `payload_version` (semver), independent of global API version. Plugins declare `min_payload_version`; host skips dispatch on version mismatch.
-* **Hook payload documentation:** `docs/hooks/` with schema, safety tier, version history per hook event
-* **Fixture plugin:** `examples/plugins/context-manager/` demonstrating transform hooks, tool registration, and capability restrictions end-to-end
+* **Plugin discovery paths:** Project-local (`.ucode/plugins/`) > user-level (`~/.ucode/plugins/`) > config-driven extras. First match wins on plugin ID conflict. Existing `discover_plugins()` just needs default paths wired in.
+* **Unified WIT interface (replaces 65 typed interfaces):** Remove the 65 per-hook WIT packages. New single `ucode:plugin@1.0.0` with three interfaces:
+  * `hook-handler`: `handle(event: hook-event) -> hook-response` — event is `{ name, payload-version, payload(JSON) }`
+  * `tool-handler`: `handle-tool-call(name, args) -> result<string, string>`
+  * `transform-handler`: `transform-messages(json) -> json`, `transform-system-prompt(text) -> text`
+  * Rationale: typed WIT per hook makes versioning hard; JSON payload allows additive changes without breaking plugins
+* **Complete WASM hook dispatch:** Currently stubbed at `host.rs:294-302`. Wire actual calls via unified `hook-handler.handle()`: serialize HookRecord → JSON, call WASM export, deserialize response, accumulate Modify changes. Fail-open on error/fuel exhaustion.
+* **Message transform hooks (new, separate from dispatch_hook):**
+  * `transform-messages` — plugin receives full message array (JSON), returns modified array
+  * `transform-system-prompt` — plugin receives system prompt, returns modified text
+  * New `PluginHost` methods: `transform_messages()`, `transform_system_prompt()`
+  * **User controls ordering** via `ucode.toml` (plugins do NOT declare priority):
+    ```toml
+    [context_management.transform_pipeline]
+    order = ["org.acme.custom-dedup", "native", "org.acme.extra-pruner"]
+    ```
+  * Default: `["native"]`. Omitting `"native"` disables native context management.
+  * Composable (output of one feeds next), `Guarded` safety tier, latency-sensitive
+* **Plugin tool registration:** Tools declared in `plugin.toml`, routed via `tool-handler` WIT interface. Same sandbox/approval policy as built-in tools. Namespaced: `{plugin_id}.{tool_name}`.
+* **Hook payload versioning:** Two layers — plugin API version (`min_api_version`) for WIT shape, payload version (per-hook semver in JSON `payload-version` field) for schema changes. Host skips dispatch on version mismatch.
+* **Hook payload documentation:** `docs/hooks/` with schema, safety tier, version history per hook category
+* **Fixture plugin:** `examples/plugins/context-manager/` — implements all three WIT interfaces, demonstrates full lifecycle: discovery → load → dispatch → tool call → transform → response
   **Acceptance tests:**
-* Fixture plugin loads from user/project plugin paths and receives hooks.
-* WASM dispatch actually calls handlers (not stubbed). Modify payloads applied.
-* Message transform hooks modify messages before LLM call.
-* Plugin-registered tools appear in LLM tool list and route correctly.
-* Hook payloads include version; mismatch handled gracefully.
+* Fixture plugin loads from user/project plugin paths.
+* WASM dispatch calls handlers via unified `hook-handler.handle()` (not stubbed).
+* Message transforms modify messages before LLM call via `transform-handler`.
+* Plugin tools route via `tool-handler`, same approval/sandbox as built-ins.
+* Hook payloads include `payload-version`; mismatch handled gracefully.
+* User controls transform pipeline ordering via `ucode.toml`.
+* Old 65 typed WIT packages removed; unified `ucode:plugin@1.0.0` is the only interface.
 * Permission escalation blocked and auditable.
   **Owner:** Plugins/Core/Security
 

@@ -1061,70 +1061,152 @@ the actual context-management strategies on top.
 
 **8.6.1 Plugin discovery paths**
 
-* Default user-level path: `~/.ucode/plugins/` (or `$UCODE_HOME/plugins/`)
-* Default project-level path: `.ucode/plugins/` (relative to project root)
-* Config-driven additional paths via `ucode.toml` `[plugins] discovery_paths = [...]`
-* Discovery order: project-local > user-level > config-extra (first match wins on conflict)
-* Each discovered directory must contain a `plugin.toml` manifest
+* Default search paths, scanned in order (first match wins on plugin ID conflict):
+  1. `.ucode/plugins/` (project-local)
+  2. `~/.ucode/plugins/` (or `$UCODE_HOME/plugins/`)
+  3. Extra paths from `ucode.toml`: `[plugins] discovery_paths = ["/opt/ucode-plugins"]`
+* Each plugin is a directory containing `plugin.toml` manifest.
+* The existing `discover_plugins(search_dirs)` function already does the scanning — wire in
+  the default paths and config-driven extras at startup.
 
-**8.6.2 Complete WASM hook dispatch**
+**8.6.2 Unified WIT interface (replaces 65 typed interfaces)**
+
+* Replace the existing 65 per-hook WIT interface packages with a single unified interface.
+* The 65 typed WIT packages (`ucode:hooks-session/on-start`, etc.) become dead code — removed.
+* New unified WIT package `ucode:plugin@1.0.0`:
+  ```wit
+  package ucode:plugin@1.0.0;
+
+  interface hook-handler {
+      use ucode:hooks-types/types.{hook-response};
+
+      record hook-event {
+          name: string,
+          payload-version: string,
+          payload: string,       // JSON-serialized event data
+      }
+
+      handle: func(event: hook-event) -> hook-response;
+  }
+
+  interface tool-handler {
+      handle-tool-call: func(name: string, args: string) -> result<string, string>;
+  }
+
+  interface transform-handler {
+      transform-messages: func(messages: string) -> string;    // JSON array in/out
+      transform-system-prompt: func(prompt: string) -> string;
+  }
+  ```
+* Rationale: typed WIT per hook makes versioning hard (adding a field = WIT type change =
+  breaking). JSON payload with `payload-version` field allows additive changes without breaking
+  existing plugins. WIT still provides typed envelope and response.
+* Two versioning layers:
+  * **Plugin API version** (`min_api_version` in manifest) — covers WIT interface shape changes
+  * **Payload version** (inside JSON `payload-version` field) — covers per-hook schema changes
+
+**8.6.3 Complete WASM hook dispatch**
 
 * Current state: `dispatch_hook()` for WASM plugins returns `HookResponse::Ok` always (stubbed)
-* Wire actual wasmtime handler calls: serialize `HookPayload` → call WASM export → deserialize response
+* Wire actual wasmtime handler calls using the unified `hook-handler.handle()` export:
+  1. Create store with policy (fuel + memory limits)
+  2. Create linker with host-log import
+  3. Instantiate component
+  4. Serialize `HookRecord` → JSON string, wrap in `hook-event { name, payload_version, payload }`
+  5. Call `handle(event) -> hook-response`
+  6. Deserialize response via `wit_response_to_native()`
+  7. If `Modify`: accumulate changes like native plugins do
+  8. On error/fuel exhaustion: log + return `HookResponse::Ok` (fail-open)
 * Apply `HookResponse::Modify` payloads back to the originating event (currently ignored)
 * Respect fuel/memory limits during handler execution; timeout → treat as `HookResponse::Ok`
-* Error in handler → log + treat as `HookResponse::Ok` (fail-open for non-critical hooks)
 
-**8.6.3 Message transform hooks (new hook type)**
+**8.6.4 Message transform hooks (new hook type)**
 
-* New hook events (not in current 65-event set):
-  * `experimental.chat.messages.transform` — plugin receives full message array before LLM call,
-    returns modified message array. This is DCP's core mechanism for dedup/supersede/prune.
-  * `experimental.chat.system.transform` — plugin receives system prompt text, returns modified text.
+* New transform capabilities (not in current 65-event set):
+  * `transform-messages` — plugin receives full message array (JSON) before LLM call,
+    returns modified message array. DCP's core mechanism for dedup/supersede/prune.
+  * `transform-system-prompt` — plugin receives system prompt text, returns modified text.
     Used by DCP to inject pruning instructions.
-* Transform hooks are **ordered** (plugin priority matters) and **composable** (output of one feeds next)
+* Exposed via the `transform-handler` WIT interface (separate from `hook-handler`).
+* These are **not dispatched through `dispatch_hook()`** — they have a separate call path because:
+  * They return transformed data (not Ok/Modify/Veto)
+  * They compose sequentially (output of plugin A feeds into plugin B)
+  * They run in the LLM call path (latency-sensitive)
+* New methods on `PluginHost`:
+  ```rust
+  pub fn transform_messages(&mut self, messages: Vec<Message>) -> Vec<Message>
+  pub fn transform_system_prompt(&mut self, prompt: String) -> String
+  ```
+* Transform hooks are **composable** (output of one feeds into next).
+* **User controls ordering** — plugins do NOT declare priority or phase. The user defines
+  the transform pipeline order in `ucode.toml`:
+  ```toml
+  [context_management.transform_pipeline]
+  order = [
+    "org.acme.custom-dedup",   # runs first
+    "native",                   # built-in dedup/supersede/purge (Task 8.8)
+    "org.acme.extra-pruner",   # runs after native
+  ]
+  ```
+  * Default (no config): `["native"]` — only built-in context management runs.
+  * Omitting `"native"` from the list disables native context management for transforms.
+  * Plugin authors declare capability (`hooks = ["message_transform"]`), users declare order.
 * Safety classification: `Guarded` (can modify content but not escalate permissions)
 * Transform hooks run synchronously in the LLM call path (latency-sensitive)
 
-**8.6.4 Plugin tool registration**
+**8.6.5 Plugin tool registration**
 
-* Plugins can declare tools in `plugin.toml` under `[tools]` section
+* Plugins can declare tools in `plugin.toml` under `[[tools]]` section
 * Declared tools appear in the LLM's tool list alongside built-in tools
-* Tool calls to plugin-registered tools are routed through the plugin's hook handler
-* Plugin tools are subject to the same sandbox/approval policy as built-in tools
-* Example: DCP registers `distill`, `compress`, `prune` tools the LLM calls autonomously
+* Tool calls to plugin-registered tools are routed through the `tool-handler` WIT interface:
+  `handle-tool-call(name, args_json) -> result<string, string>`
+* Plugin tools go through the **same sandbox/approval policy** as built-in tools — no special path
+* Tool namespacing: `{plugin_id}.{tool_name}` (e.g., `org.acme.dcp.distill`)
 
-**8.6.5 Hook payload versioning**
+**8.6.6 Hook payload versioning**
 
-* Each hook event gets a `payload_version` field (semver, e.g., `"1.0.0"`)
-* Payload version is independent of the global plugin API version
-* Breaking payload changes bump major version; additive changes bump minor
-* Plugins declare `min_payload_version` per hook in their manifest
-* Host skips dispatch to plugin if its declared min version exceeds current payload version
+* Versioning is embedded in the WIT `hook-event` record's `payload-version` field (semver)
+* Each hook event type has its own payload version (e.g., `session_start` at `"1.0.0"`,
+  `before_tool_call` at `"1.2.0"`)
+* Additive fields bump minor version; breaking changes bump major
+* Plugins declare `min_payload_version` per hook in their manifest:
+  ```toml
+  [[hooks]]
+  event = "session_start"
+  min_payload_version = "1.0.0"
+  ```
+* Host skips dispatch to plugin if its declared min version > current payload version
+* Plugin API version (`min_api_version`) covers WIT interface shape; payload version covers
+  per-hook JSON schema — two independent versioning layers
 
-**8.6.6 Hook payload documentation**
+**8.6.7 Hook payload documentation**
 
-* Generate `docs/hooks/` with one markdown file per hook event
-* Each doc includes: event name, safety tier, payload schema (JSON), response schema, version history
-* Auto-generated from hook definitions in `hooks.rs` (build script or manual)
+* Generate `docs/hooks/` with one markdown file per hook category (session, tool, context, etc.)
+* Each doc includes: event name, safety tier, JSON payload schema, response options, version history
+* Can be auto-generated from hook definitions in `hooks.rs` or maintained manually
 
-**8.6.7 Fixture plugin (end-to-end contract test)**
+**8.6.8 Fixture plugin (end-to-end contract test)**
 
-* `examples/plugins/context-manager/` — minimal plugin demonstrating:
+* `examples/plugins/context-manager/` — minimal WASM plugin demonstrating:
   * Loads from user plugin path
-  * Receives `experimental.chat.messages.transform` and returns modified messages
-  * Registers a custom tool and handles tool calls
+  * Implements `transform-handler` to remove duplicate assistant messages
+  * Implements `tool-handler` with a `context_stats` tool returning message count/size
+  * Implements `hook-handler` for `session_start` / `session_end` events
   * Respects capability restrictions (cannot escalate)
-* Integration test that loads fixture plugin and verifies full round-trip
+* Demonstrates the full lifecycle: discovery → load → dispatch → tool call → response
+* Integration test that loads fixture plugin from temp dir simulating `~/.ucode/plugins/`
 
 **Acceptance**
 
 * Fixture plugin loads from `~/.ucode/plugins/` and `.ucode/plugins/` paths.
-* WASM hook dispatch actually calls handlers (not stubbed).
-* Message transform hooks modify messages before LLM call.
-* Plugin-registered tools appear in LLM tool list and route calls correctly.
-* Hook payloads include version field; version mismatch is handled gracefully.
+* WASM hook dispatch calls handlers via unified `hook-handler.handle()` (not stubbed).
+* Message transform hooks modify messages before LLM call via `transform-handler`.
+* Plugin-registered tools appear in LLM tool list, route via `tool-handler`, and go through
+  the same approval/sandbox policy as built-in tools.
+* Hook payloads include `payload-version`; version mismatch handled gracefully.
+* User controls transform pipeline ordering via `ucode.toml`.
 * Permission escalation attempts are blocked and recorded in audit logs.
+* Old 65 typed WIT packages removed; unified `ucode:plugin@1.0.0` is the only WIT interface.
 
 ### Task 8.8 Native context management system (ucode-context crate) [P0]
 

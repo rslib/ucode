@@ -2,6 +2,7 @@ use std::time::Instant;
 
 use tokio::sync::mpsc::UnboundedSender;
 
+use crate::command_registry::CommandRegistry;
 use crate::keybinds::{KeybindPreset, KeybindResolver};
 use crate::layout::{InputState, SidebarState, TerminalSize};
 use crate::overlays::approval_modal::ApprovalModalState;
@@ -184,6 +185,7 @@ pub struct AppState {
     /// The real CLI uses this to forward prompts to the LLM.
     #[allow(clippy::type_complexity)]
     pub message_tx: Option<UnboundedSender<String>>,
+    pub command_registry: CommandRegistry,
     pub palette: PaletteState,
     pub diff_modal: DiffModalState,
     pub approval_modal: ApprovalModalState,
@@ -203,6 +205,9 @@ impl AppState {
         };
         let sidebar = SidebarState::new(terminal_size.sidebar_mode());
 
+        let command_registry = CommandRegistry::with_builtins();
+        let palette = PaletteState::from_registry(&command_registry);
+
         Self {
             theme: UcodeTheme::default(),
             density: Density::default(),
@@ -221,7 +226,8 @@ impl AppState {
             parent_title: None,
             multiplexer: detect_multiplexer(),
             message_tx: None,
-            palette: PaletteState::new(),
+            command_registry,
+            palette,
             diff_modal: DiffModalState::new(),
             approval_modal: ApprovalModalState::new(),
             overlay_queue: OverlayQueue::new(),

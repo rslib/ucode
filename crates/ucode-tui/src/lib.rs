@@ -2,6 +2,7 @@
 
 pub mod app;
 pub mod clipboard;
+pub mod command_registry;
 pub mod components;
 pub mod event_loop;
 pub mod keybinds;

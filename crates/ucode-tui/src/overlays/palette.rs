@@ -4,99 +4,31 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Widget};
 
+use crate::command_registry::{CommandCategory, CommandDef, CommandRegistry};
 use crate::theme::UcodeTheme;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CommandCategory {
-    Recent,
-    Session,
-    Tools,
-    Plugins,
-}
-
-impl CommandCategory {
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Recent => "recent",
-            Self::Session => "session",
-            Self::Tools => "tools",
-            Self::Plugins => "plugins",
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CommandSource {
-    Builtin,
-    Plugin(String),
-}
-
-impl CommandSource {
-    pub fn badge(&self) -> String {
-        match self {
-            Self::Builtin => "[builtin]".to_owned(),
-            Self::Plugin(name) => format!("[{name}]"),
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct PaletteCommand {
-    pub name: String,
-    pub description: String,
-    pub category: CommandCategory,
-    pub source: CommandSource,
-}
-
-pub fn builtin_commands() -> Vec<PaletteCommand> {
-    let tools = [
-        ("/connect", "Connect provider or auth method"),
-        ("/skills", "Browse and activate skills"),
-        ("/models", "Switch model or model group"),
-        ("/tools", "View available tools"),
-        ("/checkpoint", "Create workspace checkpoint"),
-        ("/rollback", "Restore prior checkpoint"),
-        ("/jobs", "View background jobs"),
-    ];
-    let session = [
-        ("/session list", "List all sessions"),
-        ("/session fork", "Fork current session"),
-        ("/session rename", "Rename current session"),
-    ];
-
-    let mut cmds = Vec::with_capacity(tools.len() + session.len());
-    for (name, desc) in tools {
-        cmds.push(PaletteCommand {
-            name: name.to_owned(),
-            description: desc.to_owned(),
-            category: CommandCategory::Tools,
-            source: CommandSource::Builtin,
-        });
-    }
-    for (name, desc) in session {
-        cmds.push(PaletteCommand {
-            name: name.to_owned(),
-            description: desc.to_owned(),
-            category: CommandCategory::Session,
-            source: CommandSource::Builtin,
-        });
-    }
-    cmds
-}
+// ---------------------------------------------------------------------------
+// PaletteState
+// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone)]
 pub struct PaletteState {
     pub visible: bool,
     pub input: String,
     pub cursor: usize,
-    pub commands: Vec<PaletteCommand>,
+    pub commands: Vec<CommandDef>,
     pub filtered_indices: Vec<usize>,
     pub selected: usize,
 }
 
 impl PaletteState {
     pub fn new() -> Self {
-        let commands = builtin_commands();
+        let reg = CommandRegistry::with_builtins();
+        Self::from_registry(&reg)
+    }
+
+    pub fn from_registry(reg: &CommandRegistry) -> Self {
+        let commands: Vec<CommandDef> = reg.list().to_vec();
         let filtered_indices = (0..commands.len()).collect();
         Self {
             visible: false,
@@ -156,12 +88,12 @@ impl PaletteState {
         }
     }
 
-    pub fn selected_command(&self) -> Option<&PaletteCommand> {
+    pub fn selected_command(&self) -> Option<&CommandDef> {
         let idx = *self.filtered_indices.get(self.selected)?;
         self.commands.get(idx)
     }
 
-    pub fn execute_selected(&mut self) -> Option<PaletteCommand> {
+    pub fn execute_selected(&mut self) -> Option<CommandDef> {
         let cmd = self.selected_command()?.clone();
         self.close();
         Some(cmd)
@@ -368,10 +300,12 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::command_registry::{CommandCategory, CommandSource};
 
     #[test]
     fn builtin_commands_count() {
-        assert_eq!(builtin_commands().len(), 10);
+        let state = PaletteState::new();
+        assert_eq!(state.commands.len(), 10);
     }
 
     #[test]
@@ -387,7 +321,7 @@ mod tests {
         assert_eq!(CommandSource::Builtin.badge(), "[builtin]");
         assert_eq!(
             CommandSource::Plugin("my-plugin".to_owned()).badge(),
-            "[my-plugin]"
+            "[plugin]"
         );
     }
 

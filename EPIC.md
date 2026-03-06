@@ -1171,23 +1171,64 @@ Design doc: `docs/plans/2026-03-06-wasm-runtime-design.md`
 * Runtime model and effective plugin permissions are visible in logs/UI.
   **Owner:** Plugins/Security
 
-### ISSUE 0806 — External DCP-style plugin compatibility + public hook surface (ucode-plugins + core) [P0]
+### ISSUE 0806 — External plugin infrastructure + public hook surface (ucode-plugins + core) [P0]
 
-**Goal:** Ensure users can ship their own DCP-style plugins (for example `opencode-dcp`) using documented, stable hook contracts.
+**Goal:** Complete the plugin runtime plumbing so external plugins (DCP-style context managers, custom tools, etc.) can load, receive hooks, transform messages, and register tools — all within the existing capability/policy model.
 **Scope/Notes:**
 
-* Hooks required for DCP-style plugins are public and documented (not host-internal only):
-  * `on_context_shrink`, `on_context_distilled`
-  * `on_session_title_generated/updated`
-  * `on_session_start/end`, `before/after_tool_call`
-* Hook payload schema/versioning policy documented so user plugins can parse safely across host upgrades
-* Capability guardrails remain enforced: DCP plugin cannot widen sandbox/network/filesystem beyond effective policy
-* User/plugin discovery path supports project and user-level plugin install for external DCP plugins
+* **Plugin discovery paths:** User-level (`~/.ucode/plugins/`), project-level (`.ucode/plugins/`), config-driven extras. Discovery order: project > user > config.
+* **Complete WASM hook dispatch:** Currently stubbed (returns `Ok` always). Wire actual wasmtime handler calls with fuel/memory limits. Apply `Modify` payloads back to events.
+* **Message transform hooks (new):**
+  * `experimental.chat.messages.transform` — plugin rewrites full message array before LLM call (DCP's core mechanism for dedup/supersede/prune)
+  * `experimental.chat.system.transform` — plugin modifies system prompt (DCP injects pruning instructions)
+  * Transform hooks are ordered, composable, and `Guarded` safety tier
+* **Plugin tool registration:** Plugins declare tools in `plugin.toml`; tools appear in LLM tool list; calls route through plugin handler; subject to same sandbox/approval policy as built-ins
+* **Hook payload versioning:** Per-hook `payload_version` (semver), independent of global API version. Plugins declare `min_payload_version`; host skips dispatch on version mismatch.
+* **Hook payload documentation:** `docs/hooks/` with schema, safety tier, version history per hook event
+* **Fixture plugin:** `examples/plugins/context-manager/` demonstrating transform hooks, tool registration, and capability restrictions end-to-end
   **Acceptance tests:**
-* Sample external plugin `opencode-dcp` (fixture) loads from user plugin path and receives documented hooks.
-* Plugin can observe compaction/distillation and session-title events and emit a policy-safe recommendation.
-* Plugin attempt to escalate permissions is blocked and auditable.
+* Fixture plugin loads from user/project plugin paths and receives hooks.
+* WASM dispatch actually calls handlers (not stubbed). Modify payloads applied.
+* Message transform hooks modify messages before LLM call.
+* Plugin-registered tools appear in LLM tool list and route correctly.
+* Hook payloads include version; mismatch handled gracefully.
+* Permission escalation blocked and auditable.
   **Owner:** Plugins/Core/Security
+
+### ISSUE 0808 — Combined context management system (ucode-context + ucode-plugins) [P0]
+
+**Goal:** Built-in context management combining strategies from opencode-dcp (message rewriting + LLM pruning tools), rlm-skill (sandbox execution + knowledge base), and context-mode (session continuity). Requires ISSUE 0806 infrastructure.
+**Scope/Notes:**
+
+* **Automatic zero-cost strategies** (from opencode-dcp):
+  * Deduplication — remove duplicate file reads within session
+  * Supersede-writes — remove earlier writes when file was subsequently read
+  * Purge-errors — remove errored tool inputs after N turns (default 3)
+  * All run in `experimental.chat.messages.transform`, zero LLM cost
+* **Sandbox execution** (from rlm-skill / context-mode):
+  * `PreToolUse` intercepts large tool outputs (>2000 chars configurable)
+  * Store full content in knowledge base, replace in context with metadata summary
+  * LLM retrieves via knowledge base search tool
+* **LLM-driven pruning tools** (from opencode-dcp):
+  * `context_distill` — summarize message range into compact digest
+  * `context_compress` — replace verbose outputs with key findings
+  * `context_prune` — remove messages by index/range
+  * System prompt injection tells LLM when/how to use these tools
+* **FTS5 knowledge base** (from rlm-skill / context-mode):
+  * SQLite FTS5 with Porter stemming + trigram matching
+  * `knowledge_search` and `knowledge_store` tools for LLM
+  * Per-session database in session directory
+* **Session continuity** (from context-mode):
+  * `PostToolUse` captures significant events; `PreCompact` creates snapshots
+  * `SessionStart` restores context from prior compaction snapshot
+  * Sessions survive multiple compaction cycles
+  **Acceptance tests:**
+* Dedup/supersede/purge measurably reduce message array on repeated file ops.
+* Large tool outputs sandboxed and retrievable via knowledge base.
+* LLM autonomously calls distill/compress/prune to manage context.
+* Knowledge base search returns relevant results with fuzzy matching.
+* Session survives compaction and resumes with prior state.
+  **Owner:** Core/Plugins/Context
 
 ### ISSUE 0807 — Plugin install/update distribution with trust verification (ucode-plugins + security) [P1]
 
@@ -1289,6 +1330,6 @@ Design doc: `docs/plans/2026-03-06-wasm-runtime-design.md`
 **Milestone M2 (MVP TUI):** 0701–0704, 0706, 0707
 **Milestone M3 (Compatibility + MCP):** 0601–0603, 0501–0506, 0305
 **Milestone M4 (Plugins contracts + auth upgrades + subagents):** 0801–0803, 0203–0205, 0705, 0106, 0410–0413
-**Milestone M5 (Polish + security + WASM runtime):** 0901–0905, 0804–0807
+**Milestone M5 (Polish + security + WASM runtime):** 0901–0905, 0804–0808
 
 ---

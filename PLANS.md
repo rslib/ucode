@@ -1053,23 +1053,137 @@ DONE. 115 plugin tests (111 unit + 4 integration), 0 clippy warnings. Implemente
 * Plugin-originated tool call triggers normal approval/sandbox checks.
 * Runtime model and effective permissions visible in logs/UI.
 
-### Task 8.6 External DCP-style plugin support + hook exposure (ucode-plugins + ucode-core) [P0]
+### Task 8.6 External plugin infrastructure + public hook surface (ucode-plugins + ucode-core) [P0]
 
-* Support user-installed DCP-style plugins (for example `opencode-dcp`) via documented public hook contracts
-* Guarantee stable, versioned payload schemas for hooks used by DCP workflows:
+Enable external plugins (DCP-style, context-management, etc.) via documented public hook contracts
+and complete plugin runtime plumbing. This is the infrastructure layer — Phase B (Task 8.8) builds
+the actual context-management strategies on top.
 
-  * `on_context_shrink`, `on_context_distilled`
-  * `on_session_title_generated/updated`
-  * `on_session_start/end`, `before/after_tool_call`
+**8.6.1 Plugin discovery paths**
 
-* Ensure user and project plugin discovery paths are documented and tested
-* Keep capability model strict: external DCP plugins cannot bypass effective sandbox/network/filesystem policy
+* Default user-level path: `~/.ucode/plugins/` (or `$UCODE_HOME/plugins/`)
+* Default project-level path: `.ucode/plugins/` (relative to project root)
+* Config-driven additional paths via `ucode.toml` `[plugins] discovery_paths = [...]`
+* Discovery order: project-local > user-level > config-extra (first match wins on conflict)
+* Each discovered directory must contain a `plugin.toml` manifest
+
+**8.6.2 Complete WASM hook dispatch**
+
+* Current state: `dispatch_hook()` for WASM plugins returns `HookResponse::Ok` always (stubbed)
+* Wire actual wasmtime handler calls: serialize `HookPayload` → call WASM export → deserialize response
+* Apply `HookResponse::Modify` payloads back to the originating event (currently ignored)
+* Respect fuel/memory limits during handler execution; timeout → treat as `HookResponse::Ok`
+* Error in handler → log + treat as `HookResponse::Ok` (fail-open for non-critical hooks)
+
+**8.6.3 Message transform hooks (new hook type)**
+
+* New hook events (not in current 65-event set):
+  * `experimental.chat.messages.transform` — plugin receives full message array before LLM call,
+    returns modified message array. This is DCP's core mechanism for dedup/supersede/prune.
+  * `experimental.chat.system.transform` — plugin receives system prompt text, returns modified text.
+    Used by DCP to inject pruning instructions.
+* Transform hooks are **ordered** (plugin priority matters) and **composable** (output of one feeds next)
+* Safety classification: `Guarded` (can modify content but not escalate permissions)
+* Transform hooks run synchronously in the LLM call path (latency-sensitive)
+
+**8.6.4 Plugin tool registration**
+
+* Plugins can declare tools in `plugin.toml` under `[tools]` section
+* Declared tools appear in the LLM's tool list alongside built-in tools
+* Tool calls to plugin-registered tools are routed through the plugin's hook handler
+* Plugin tools are subject to the same sandbox/approval policy as built-in tools
+* Example: DCP registers `distill`, `compress`, `prune` tools the LLM calls autonomously
+
+**8.6.5 Hook payload versioning**
+
+* Each hook event gets a `payload_version` field (semver, e.g., `"1.0.0"`)
+* Payload version is independent of the global plugin API version
+* Breaking payload changes bump major version; additive changes bump minor
+* Plugins declare `min_payload_version` per hook in their manifest
+* Host skips dispatch to plugin if its declared min version exceeds current payload version
+
+**8.6.6 Hook payload documentation**
+
+* Generate `docs/hooks/` with one markdown file per hook event
+* Each doc includes: event name, safety tier, payload schema (JSON), response schema, version history
+* Auto-generated from hook definitions in `hooks.rs` (build script or manual)
+
+**8.6.7 Fixture plugin (end-to-end contract test)**
+
+* `examples/plugins/context-manager/` — minimal plugin demonstrating:
+  * Loads from user plugin path
+  * Receives `experimental.chat.messages.transform` and returns modified messages
+  * Registers a custom tool and handles tool calls
+  * Respects capability restrictions (cannot escalate)
+* Integration test that loads fixture plugin and verifies full round-trip
 
 **Acceptance**
 
-* Fixture external plugin `opencode-dcp` loads from user plugin path and receives documented hooks.
-* Plugin can react to compaction/distillation and session-title events without private host APIs.
+* Fixture plugin loads from `~/.ucode/plugins/` and `.ucode/plugins/` paths.
+* WASM hook dispatch actually calls handlers (not stubbed).
+* Message transform hooks modify messages before LLM call.
+* Plugin-registered tools appear in LLM tool list and route calls correctly.
+* Hook payloads include version field; version mismatch is handled gracefully.
 * Permission escalation attempts are blocked and recorded in audit logs.
+
+### Task 8.8 Combined context management system (ucode-context + ucode-plugins) [P0]
+
+Built-in context management combining strategies from opencode-dcp, rlm-skill, and context-mode.
+Requires Task 8.6 infrastructure (message transform hooks, plugin tool registration).
+
+**8.8.1 Automatic zero-cost strategies (from opencode-dcp)**
+
+* **Deduplication:** Remove duplicate tool reads of the same file within a session.
+  Track file read hashes; on duplicate, replace with `[already in context]` placeholder.
+* **Supersede-writes:** When a file is written then later read, remove the earlier write's
+  full content (the read has the current state).
+* **Purge-errors:** After N turns (configurable, default 3), remove errored tool call
+  inputs/outputs (they're no longer actionable).
+* All strategies run in `experimental.chat.messages.transform` before each LLM call.
+* Zero LLM cost — pure algorithmic message rewriting.
+
+**8.8.2 Sandbox execution (from rlm-skill / context-mode)**
+
+* `PreToolUse` hook intercepts large tool outputs (Read, Bash, WebFetch).
+* Configurable threshold (default: 2000 chars). Outputs above threshold are:
+  * Stored in knowledge base (Task 8.8.4)
+  * Replaced in context with metadata summary (line count, file type, first/last lines)
+* LLM sees summary + can retrieve full content via knowledge base search tool.
+* Opt-out per tool via config.
+
+**8.8.3 LLM-driven pruning tools (from opencode-dcp)**
+
+* Register tools the LLM can call autonomously to manage its own context:
+  * `context_distill` — Summarize a range of messages into a compact digest
+  * `context_compress` — Replace verbose tool outputs with key findings
+  * `context_prune` — Remove messages by index/range that are no longer relevant
+* System prompt injection (via `experimental.chat.system.transform`) tells LLM these tools
+  exist and when to use them (e.g., "when context exceeds 60% capacity").
+* Tools are registered via Task 8.6.4 plugin tool registration.
+
+**8.8.4 FTS5 knowledge base (from rlm-skill / context-mode)**
+
+* SQLite FTS5 index for content that was sandboxed out of context.
+* Porter stemming + trigram substring matching for fuzzy search.
+* `knowledge_search` tool registered for LLM to query indexed content.
+* `knowledge_store` tool for LLM to explicitly index important findings.
+* Per-session database file in session directory.
+
+**8.8.5 Session continuity (from context-mode)**
+
+* `PostToolUse` hook captures significant events (file changes, test results, decisions).
+* Event log persisted to session directory.
+* `PreCompact` hook creates compaction snapshot (summary of session state before compaction).
+* `SessionStart` hook restores context from previous compaction snapshot if resuming.
+* Enables sessions to survive multiple compaction cycles without losing critical state.
+
+**Acceptance**
+
+* Dedup/supersede/purge reduce message array size measurably on repeated file operations.
+* Large tool outputs are sandboxed and retrievable via knowledge base search.
+* LLM can autonomously call distill/compress/prune to manage its context.
+* Knowledge base search returns relevant results with fuzzy matching.
+* Session survives compaction and resumes with prior state context.
 
 ### Task 8.7 Remote plugin install/update distribution with trust verification (ucode-plugins + security) [P1]
 
@@ -1191,7 +1305,7 @@ Precedence order: built-in defaults < user global config < project-local config 
 * **Agent E (MCP):** Phase 5 MCP client + registry + native launchers + transport parity + resources/prompts + per-server trust/policy
 * **Agent F (Skills):** Phase 6 SKILL.md discovery/parsing/execution
 * **Agent G (TUI):** Phase 7 ratatui UI + approvals + palette + visual system + sidebar
-* **Agent H (Plugins):** Phase 8 plugin contracts/hooks + external DCP compatibility + remote install/update trust + Phase 9 WASM runtime
+* **Agent H (Plugins):** Phase 8 plugin contracts/hooks + external plugin infrastructure + combined context management + remote install/update trust + Phase 9 WASM runtime
 * **Agent S (Security):** Cross-cutting: threat model, audit verification, sandbox backend integration
 
 ---
@@ -1227,5 +1341,6 @@ Precedence order: built-in defaults < user global config < project-local config 
 27. Headless CI mode provides deterministic JSON outputs and exit codes
 28. Remote plugin install/update supports trust verification and rollback
 29. Logging supports level-gated diagnostics with stderr + file sinks and per-session plus rolling retention
+30. Combined context management (dedup/supersede/purge + sandbox execution + FTS5 knowledge base + LLM pruning tools + session continuity) keeps sessions productive beyond default context limits
 
 ---

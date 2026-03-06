@@ -824,7 +824,7 @@ Search:
 
 **Completed:** 767 tests, 4 phases (0702a-0702e). Palette overlay with 10 built-in commands, fuzzy filtering, keyboard navigation. Input editing keys wired (Backspace/Delete/arrows/Home/End).
 
-### ISSUE 0703 — Diff viewer + apply/reject UX (ucode-tui)
+### ISSUE 0703 — Diff viewer + apply/reject UX (ucode-tui) [DONE]
 
 **Goal:** When `Event::Patch` arrives, show diff modal; allow apply/reject.
 **Acceptance tests:**

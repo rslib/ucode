@@ -692,7 +692,7 @@ Terminal compatibility:
 
 ### Task 7.2 Approvals UX
 
-* Diff modal: approve/apply, reject
+* Diff modal: approve/apply, reject [DONE]
 * run_cmd modal: approve once / approve session / deny
 
 ### Task 7.3 Visual system + sidebar-first information design (ucode-tui)

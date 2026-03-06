@@ -12,7 +12,7 @@ use tokio::sync::mpsc;
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::time;
 
-use crate::app::{AppState, FocusTarget, ToolCallStatus};
+use crate::app::{AppState, FocusTarget, ToolCallStatus, TranscriptEntry};
 use crate::components::input::InputBoxState;
 use crate::components::sidebar::SidebarData;
 use crate::components::status_bar::{StatusBar, StatusBarState};
@@ -41,6 +41,11 @@ pub enum TuiEvent {
     },
     RouterEvent(String),
     SystemMessage(String),
+    PatchProposed {
+        file_path: String,
+        raw_diff: String,
+        patch_id: Option<String>,
+    },
     Quit,
 }
 
@@ -229,6 +234,49 @@ fn handle_terminal_event(
                     }
                     crossterm::event::KeyCode::Char(c) => {
                         app.palette.insert_char(c);
+                        app.mark_dirty();
+                    }
+                    _ => {}
+                }
+                return false;
+            }
+
+            // When the diff modal is open, route keys to it.
+            if app.diff_modal.visible {
+                match key.code {
+                    crossterm::event::KeyCode::Esc => {
+                        app.diff_modal.close();
+                        app.focus = FocusTarget::Input;
+                        app.mark_dirty();
+                    }
+                    crossterm::event::KeyCode::Char('a') => {
+                        let path = app.diff_modal.file_path.clone();
+                        app.diff_modal.approve();
+                        app.push_system_message(format!("Patch approved: {path}"));
+                        app.focus = FocusTarget::Input;
+                        app.mark_dirty();
+                    }
+                    crossterm::event::KeyCode::Char('r') => {
+                        let path = app.diff_modal.file_path.clone();
+                        app.diff_modal.reject();
+                        app.push_system_message(format!("Patch rejected: {path}"));
+                        app.focus = FocusTarget::Input;
+                        app.mark_dirty();
+                    }
+                    crossterm::event::KeyCode::Up | crossterm::event::KeyCode::Char('k') => {
+                        app.diff_modal.scroll_up(1);
+                        app.mark_dirty();
+                    }
+                    crossterm::event::KeyCode::Down | crossterm::event::KeyCode::Char('j') => {
+                        app.diff_modal.scroll_down(1);
+                        app.mark_dirty();
+                    }
+                    crossterm::event::KeyCode::PageUp => {
+                        app.diff_modal.scroll_up(10);
+                        app.mark_dirty();
+                    }
+                    crossterm::event::KeyCode::PageDown => {
+                        app.diff_modal.scroll_down(10);
                         app.mark_dirty();
                     }
                     _ => {}
@@ -574,6 +622,27 @@ fn dispatch_action(action: Action, app: &mut AppState, input_box: &mut InputBoxS
             app.mark_dirty();
         }
 
+        Action::ShowDiff => {
+            // Re-open the diff modal for the last PatchProposed in the transcript.
+            if let Some(TranscriptEntry::PatchProposed {
+                file_path,
+                raw_diff,
+                patch_id,
+            }) = app
+                .transcript
+                .iter()
+                .rev()
+                .find(|e| matches!(e, TranscriptEntry::PatchProposed { .. }))
+            {
+                let fp = file_path.clone();
+                let rd = raw_diff.clone();
+                let pid = patch_id.clone();
+                app.diff_modal.open(fp, &rd, pid);
+                app.focus = FocusTarget::Overlay;
+                app.mark_dirty();
+            }
+        }
+
         // Future phases — no-op for now.
         _ => {}
     }
@@ -603,6 +672,13 @@ fn handle_tui_event(event: TuiEvent, app: &mut AppState) -> bool {
         }
         TuiEvent::RouterEvent(msg) => app.push_router_event(msg),
         TuiEvent::SystemMessage(msg) => app.push_system_message(msg),
+        TuiEvent::PatchProposed {
+            file_path,
+            raw_diff,
+            patch_id,
+        } => {
+            app.propose_patch(file_path, raw_diff, patch_id);
+        }
         TuiEvent::Quit => return true,
     }
     false
@@ -675,6 +751,12 @@ pub fn render_frame(
     if app.palette.visible {
         use crate::overlays::palette::PaletteOverlay;
         f.render_widget(PaletteOverlay::new(&app.palette, &app.theme), area);
+    }
+
+    // Diff modal overlay (rendered last so it's on top of everything).
+    if app.diff_modal.visible {
+        use crate::overlays::diff_modal::DiffModal;
+        f.render_widget(DiffModal::new(&app.diff_modal, &app.theme), area);
     }
 }
 
@@ -1539,5 +1621,151 @@ mod tests {
         // Second press immediately after — should exit.
         let second = handle_terminal_event(ctrl_c, &mut app, &mut input_box, &mut sidebar_data);
         assert!(second, "second Ctrl+C within 2 s should exit");
+    }
+
+    // -----------------------------------------------------------------------
+    // Diff modal integration
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn tui_event_patch_proposed() {
+        let mut app = AppState::new();
+        let exited = handle_tui_event(
+            TuiEvent::PatchProposed {
+                file_path: "src/lib.rs".to_owned(),
+                raw_diff: "+added line\n-removed line".to_owned(),
+                patch_id: Some("p1".to_owned()),
+            },
+            &mut app,
+        );
+        assert!(!exited);
+        assert!(app.diff_modal.visible);
+        assert_eq!(app.diff_modal.file_path, "src/lib.rs");
+        assert_eq!(app.focus, FocusTarget::Overlay);
+    }
+
+    #[test]
+    fn diff_modal_esc_closes() {
+        let mut app = AppState::new();
+        let mut input_box = InputBoxState::new();
+        let mut sidebar_data = SidebarData::new();
+
+        app.propose_patch("f.rs".to_owned(), "+line".to_owned(), None);
+        assert!(app.diff_modal.visible);
+
+        let esc = Event::Key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Esc,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        handle_terminal_event(esc, &mut app, &mut input_box, &mut sidebar_data);
+        assert!(!app.diff_modal.visible);
+        assert_eq!(app.focus, FocusTarget::Input);
+    }
+
+    #[test]
+    fn diff_modal_approve_closes_and_logs() {
+        let mut app = AppState::new();
+        let mut input_box = InputBoxState::new();
+        let mut sidebar_data = SidebarData::new();
+
+        app.propose_patch("f.rs".to_owned(), "+line".to_owned(), None);
+
+        let a_key = Event::Key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('a'),
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        handle_terminal_event(a_key, &mut app, &mut input_box, &mut sidebar_data);
+        assert!(!app.diff_modal.visible);
+        let has_approved = app
+            .transcript
+            .iter()
+            .any(|e| matches!(e, TranscriptEntry::SystemMessage(msg) if msg.contains("approved")));
+        assert!(has_approved);
+    }
+
+    #[test]
+    fn diff_modal_reject_closes_and_logs() {
+        let mut app = AppState::new();
+        let mut input_box = InputBoxState::new();
+        let mut sidebar_data = SidebarData::new();
+
+        app.propose_patch("f.rs".to_owned(), "-line".to_owned(), None);
+
+        let r_key = Event::Key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('r'),
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        handle_terminal_event(r_key, &mut app, &mut input_box, &mut sidebar_data);
+        assert!(!app.diff_modal.visible);
+        let has_rejected = app
+            .transcript
+            .iter()
+            .any(|e| matches!(e, TranscriptEntry::SystemMessage(msg) if msg.contains("rejected")));
+        assert!(has_rejected);
+    }
+
+    #[test]
+    fn diff_modal_scroll_keys() {
+        let mut app = AppState::new();
+        let mut input_box = InputBoxState::new();
+        let mut sidebar_data = SidebarData::new();
+
+        let raw = (0..30)
+            .map(|i| format!("+line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        app.propose_patch("f.rs".to_owned(), raw, None);
+        assert_eq!(app.diff_modal.scroll_offset, 0);
+
+        // Down arrow scrolls
+        let down = Event::Key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Down,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        handle_terminal_event(down, &mut app, &mut input_box, &mut sidebar_data);
+        assert_eq!(app.diff_modal.scroll_offset, 1);
+
+        // Up arrow scrolls back
+        let up = Event::Key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Up,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        handle_terminal_event(up, &mut app, &mut input_box, &mut sidebar_data);
+        assert_eq!(app.diff_modal.scroll_offset, 0);
+    }
+
+    #[test]
+    fn dispatch_show_diff_reopens_modal() {
+        let mut app = AppState::new();
+        let mut input_box = InputBoxState::new();
+
+        // Propose a patch, then close it.
+        app.propose_patch("f.rs".to_owned(), "+line".to_owned(), None);
+        app.diff_modal.close();
+        assert!(!app.diff_modal.visible);
+
+        // ShowDiff should re-open it.
+        dispatch_action(Action::ShowDiff, &mut app, &mut input_box);
+        assert!(app.diff_modal.visible);
+        assert_eq!(app.focus, FocusTarget::Overlay);
+    }
+
+    #[test]
+    fn render_frame_with_diff_modal() {
+        let backend = TestBackend::new(120, 40);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+
+        let mut app = AppState::new();
+        app.propose_patch(
+            "src/lib.rs".to_owned(),
+            "+added\n-removed\n context".to_owned(),
+            None,
+        );
+        let input_box = InputBoxState::new();
+        let sidebar_data = SidebarData::new();
+
+        terminal
+            .draw(|f| render_frame(f, &app, &input_box, &sidebar_data, 0))
+            .expect("draw");
     }
 }

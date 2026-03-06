@@ -4,6 +4,7 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use crate::keybinds::{KeybindPreset, KeybindResolver};
 use crate::layout::{InputState, SidebarState, TerminalSize};
+use crate::overlays::diff_modal::DiffModalState;
 use crate::overlays::palette::PaletteState;
 use crate::theme::{Density, UcodeTheme};
 
@@ -94,6 +95,11 @@ pub enum TranscriptEntry {
     RouterEvent(String),
     /// Info/warning from the system.
     SystemMessage(String),
+    PatchProposed {
+        file_path: String,
+        raw_diff: String,
+        patch_id: Option<String>,
+    },
 }
 
 // Manual PartialEq for StreamingMessage so TranscriptEntry can derive it.
@@ -173,6 +179,7 @@ pub struct AppState {
     #[allow(clippy::type_complexity)]
     pub message_tx: Option<UnboundedSender<String>>,
     pub palette: PaletteState,
+    pub diff_modal: DiffModalState,
     /// Timestamp of the last Ctrl+C press, for double-Ctrl+C exit detection.
     pub last_ctrl_c: Option<Instant>,
     /// Transient hint set after the first Ctrl+C; cleared when the 2-second
@@ -207,6 +214,7 @@ impl AppState {
             multiplexer: detect_multiplexer(),
             message_tx: None,
             palette: PaletteState::new(),
+            diff_modal: DiffModalState::new(),
             last_ctrl_c: None,
             ctrl_c_hint: None,
         }
@@ -323,6 +331,18 @@ impl AppState {
 
     pub fn push_system_message(&mut self, msg: String) {
         self.transcript.push(TranscriptEntry::SystemMessage(msg));
+        self.mark_dirty();
+    }
+
+    /// Push a patch proposal to the transcript and open the diff modal.
+    pub fn propose_patch(&mut self, file_path: String, raw_diff: String, patch_id: Option<String>) {
+        self.transcript.push(TranscriptEntry::PatchProposed {
+            file_path: file_path.clone(),
+            raw_diff: raw_diff.clone(),
+            patch_id: patch_id.clone(),
+        });
+        self.diff_modal.open(file_path, &raw_diff, patch_id);
+        self.focus = FocusTarget::Overlay;
         self.mark_dirty();
     }
 
@@ -514,6 +534,24 @@ mod tests {
             }
             _ => panic!("expected ToolCall"),
         }
+    }
+
+    #[test]
+    fn app_state_propose_patch() {
+        let mut app = AppState::new();
+        app.propose_patch(
+            "src/lib.rs".to_owned(),
+            "+added".to_owned(),
+            Some("p1".to_owned()),
+        );
+        assert!(app.diff_modal.visible);
+        assert_eq!(app.diff_modal.file_path, "src/lib.rs");
+        assert_eq!(app.focus, FocusTarget::Overlay);
+        assert_eq!(app.transcript.len(), 1);
+        assert!(matches!(
+            app.transcript[0],
+            TranscriptEntry::PatchProposed { .. }
+        ));
     }
 
     #[test]

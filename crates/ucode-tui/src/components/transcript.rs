@@ -115,6 +115,9 @@ fn entry_lines<'a>(
         } => render_tool_call(name, status, *duration_ms, summary.as_deref(), theme, width),
         TranscriptEntry::RouterEvent(text) => render_router_event(text, theme),
         TranscriptEntry::SystemMessage(text) => render_system_message(text, theme),
+        TranscriptEntry::PatchProposed { file_path, .. } => {
+            render_system_message(&format!("Patch proposed: {file_path}"), theme)
+        }
     }
 }
 
@@ -367,6 +370,7 @@ pub fn entry_height(entry: &TranscriptEntry, width: u16) -> usize {
         }
         TranscriptEntry::RouterEvent(_) => 1,
         TranscriptEntry::SystemMessage(_) => 1,
+        TranscriptEntry::PatchProposed { .. } => 1,
     }
 }
 

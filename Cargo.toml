@@ -83,6 +83,9 @@ unicode-width = "0.2"
 wasmtime = { version = "42", features = ["component-model"] }
 wasmtime-wasi = "42"
 
+# Ed25519 signature verification for signed plugins
+ed25519-dalek = { version = "2", features = ["std"] }
+
 # WASM guest SDK (for plugin authors)
 wit-bindgen = "0.53"
 

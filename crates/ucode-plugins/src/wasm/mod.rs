@@ -9,8 +9,10 @@
 
 pub mod convert;
 pub mod host;
+pub mod signature;
 
 pub use host::{WasmHostState, WasmPlugin, WasmPluginError};
+pub use signature::{SignatureCheckResult, SignatureError, SignaturePolicy};
 
 // Generate Rust types from WIT definitions.
 wasmtime::component::bindgen!({

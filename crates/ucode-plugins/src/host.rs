@@ -83,6 +83,7 @@ impl PluginHost {
         plugin
             .initialize(&resp)
             .map_err(|e| HandshakeError::CapabilityDenied { denied: vec![e] })?;
+        tracing::info!(plugin_id = %plugin_id, "plugin loaded with native policy");
         self.plugins.push(LoadedPlugin {
             plugin_id,
             instance: PluginInstance::WithHooks(Box::new(plugin)),
@@ -110,6 +111,7 @@ impl PluginHost {
             .iter()
             .map(|t| format!("{}.{}", plugin_id, t.name))
             .collect();
+        tracing::info!(plugin_id = %plugin_id, "plugin loaded with native policy");
         self.plugins.push(LoadedPlugin {
             plugin_id,
             instance: PluginInstance::WithTools(Box::new(plugin), specs),
@@ -137,6 +139,7 @@ impl PluginHost {
         } else {
             plugin.plugin_id().to_string()
         };
+        tracing::info!(plugin_id = %plugin_id, "WASM plugin loaded with default policy");
         self.plugins.push(LoadedPlugin {
             plugin_id,
             instance: PluginInstance::Wasm(plugin),

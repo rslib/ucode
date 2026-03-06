@@ -14,4 +14,12 @@ pub enum McpError {
     Protocol(String),
     #[error("MCP request timed out after {0:?}")]
     Timeout(std::time::Duration),
+    #[error("launcher not trusted: {0}")]
+    LauncherNotTrusted(String),
+    #[error("launcher fingerprint drifted for {server}: expected {expected}, got {actual}")]
+    FingerprintDrift {
+        server: String,
+        expected: String,
+        actual: String,
+    },
 }

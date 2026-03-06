@@ -1,7 +1,9 @@
 //! ucode-tools: built-in tools, registry, permissions, sandbox policy engine
 
 pub mod approval;
+pub mod artifacts;
 pub mod ast_tool;
+pub mod checkpoints;
 pub mod cmd_tool;
 pub mod fs_tools;
 pub mod git;
@@ -14,7 +16,9 @@ pub mod search_tool;
 pub use approval::{
     ApprovalAction, ApprovalDecision, ApprovalRecord, ApprovalScope, ApprovalStore, BoundaryGate,
 };
+pub use artifacts::{ArtifactEnvelope, ArtifactError, ArtifactStore, ArtifactType};
 pub use ast_tool::{register_ast_rewrite_tool, register_ast_search_tool};
+pub use checkpoints::{CheckpointError, CheckpointInfo, CheckpointStore, RetentionPolicy};
 pub use cmd_tool::register_cmd_tool;
 pub use fs_tools::register_fs_tools;
 pub use git::{

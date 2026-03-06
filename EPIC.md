@@ -580,14 +580,18 @@ This ensures consistent behavior, no runtime dependency on installed binaries, a
 * Unauthorized network access attempt is blocked and logged.
   **Owner:** Tools/Security
 
-### ISSUE 0411 — Workspace checkpoints + rollback safety controls (ucode-tools + ucode-core + ucode-tui) [P1]
+### ISSUE 0411 — Workspace checkpoints + rollback safety controls (ucode-tools + ucode-core + ucode-tui) [P1] [DONE]
 
 **Goal:** Add lightweight checkpoints before risky actions so users can quickly revert agent-side modifications.
 **Scope/Notes:**
 
-* Create checkpoint snapshots before patch apply and command-run actions that modify workspace
-* Rollback API and TUI actions to restore checkpoint state
-* Checkpoint retention policy (count/time based) with explicit user visibility
+* `CheckpointStore`: create/list/restore/delete/prune/get with directory-copy snapshots
+* Storage: `.ucode/.checkpoints/{id}/meta.json` + `files/{relative_path}`
+* `RetentionPolicy`: max_count (default 10) and max_age based pruning
+* `CheckpointInfo`: id, name, description, created_at, file_count, total_bytes
+* `CheckpointError`: NotFound, Io, Metadata variants
+* 13 tests
+* TUI rollback actions deferred to TUI phase
   **Acceptance tests:**
 * Applying a patch creates a checkpoint and rollback restores pre-patch state.
 * Command-induced workspace changes can be reverted to prior checkpoint.
@@ -613,15 +617,18 @@ This ensures consistent behavior, no runtime dependency on installed binaries, a
 * Job lifecycle transitions are auditable and persisted to session metadata.
   **Owner:** Tools/Core/TUI
 
-### ISSUE 0413 — Structured artifact output and export pipeline (ucode-tools + ucode-cli) [P1]
+### ISSUE 0413 — Structured artifact output and export pipeline (ucode-tools + ucode-cli) [P1] [DONE]
 
 **Goal:** Produce and export structured artifacts (reports, diffs, run logs) for machine and human workflows.
 **Scope/Notes:**
 
-* Standard artifact envelope: id, type, source, metadata, checksum, created_at
-* Export targets: workspace files and machine-readable CLI output references
-* Artifact types include at minimum: markdown report, unified diff, command/test run logs
-* Audit linkage from session/tool events to artifact ids
+* `ArtifactStore`: create/get/read_content/list/list_by_type/list_by_session/verify/delete/export
+* `ArtifactEnvelope`: id, type, source, title, metadata, checksum, content_size, created_at, session_id, tool_call_id
+* `ArtifactType`: MarkdownReport, UnifiedDiff, CommandLog, TestLog
+* Storage: `{base_dir}/{artifact_id}/envelope.json` + `content`
+* Checksum via DefaultHasher (no sha2 dependency)
+* Integrity verification via `verify()` method
+* 14 tests
   **Acceptance tests:**
 * A run producing diff/report/logs emits tracked artifacts with metadata.
 * Artifacts can be retrieved by id from session history.
@@ -658,21 +665,21 @@ This ensures consistent behavior, no runtime dependency on installed binaries, a
 * `list_tools` includes MCP tool; invoking it works.
   **Owner:** MCP/Tools
 
-### ISSUE 0503 — Native MCP launcher support (`uvx`/`npx`/`bunx`/binary) (ucode-mcp)
+### ISSUE 0503 — Native MCP launcher support (`uvx`/`npx`/`bunx`/binary) (ucode-mcp) [DONE]
 
 **Goal:** Natively launch user-installed MCP servers across common package ecosystems.
 **Scope/Notes:**
 
-* Configurable launcher definitions in config:
-  * `uvx <pkg> [args...]`
-  * `npx <pkg> [args...]`
-  * `bunx <pkg> [args...]`
-  * direct executable path
-* Capture runtime metadata: version, executable path, startup timeout, health status
-* Validate command schema before launch
-* First-run trust prompt with persisted decision
-* Server identity fingerprint (command + package + version hash)
-* Fingerprint drift detection: command/package/version changes re-trigger trust prompt
+* `LauncherType`: Uvx, Npx, Bunx, Binary — each maps to wrapper command
+* `LauncherDef`: launcher_type, package, args, env, startup_timeout
+* `ServerIdentity`: fingerprint (DefaultHasher hex of canonical command string), command_line, created_at
+* `TrustRecord`: identity, trusted, decided_at, decided_by
+* `TrustStatus`: Trusted, Untrusted, FingerprintDrifted
+* `launcher_to_command()`: returns (command, args) tuple for `StdioTransport::spawn()`
+* `compute_fingerprint()`: deterministic hash of `"{type}:{package}:{sorted_args}"`
+* Trust cache: JSON file at `{base_dir}/.ucode/trust.json` with load/save/verify
+* `LauncherNotTrusted` and `FingerprintDrift` error variants added to McpError
+* 13 tests
   **Acceptance tests:**
 * MCP tools are discoverable and callable for each launcher mode.
 * Startup timeout and invalid command errors handled clearly.

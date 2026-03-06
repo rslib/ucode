@@ -500,7 +500,7 @@ CLI:
 * Agent A (local-only) has no network; Agent B (research) has constrained network.
 * Policy changes are visible in runtime logs and UI.
 
-### Task 4.9 Workspace checkpoints + rollback controls (ucode-tools + ucode-core + ucode-tui) [P1]
+### Task 4.9 Workspace checkpoints + rollback controls (ucode-tools + ucode-core + ucode-tui) [P1] [DONE]
 
 * Create lightweight checkpoints before risky mutating operations (patch apply, mutating commands)
 * Provide rollback API and TUI action to restore prior checkpoint
@@ -526,7 +526,7 @@ CLI:
 * User can cancel and force-kill running jobs interactively from TUI.
 * Job lifecycle transitions are auditable and persisted.
 
-### Task 4.11 Structured artifact output/export (ucode-tools + ucode-cli) [P1]
+### Task 4.11 Structured artifact output/export (ucode-tools + ucode-cli) [P1] [DONE]
 
 * Standard artifact envelope (`id`, `type`, `source`, `metadata`, `checksum`, `created_at`)
 * Generate/export artifacts for markdown reports, unified diffs, and command/test logs
@@ -562,7 +562,7 @@ CLI:
 * tool call routing (built-in vs MCP)
 * `McpBridge` + `McpToolHandler` + `register_tool_defs()` testable free function
 
-### Task 5.3 Native MCP launcher manager (ucode-mcp)
+### Task 5.3 Native MCP launcher manager (ucode-mcp) [DONE]
 
 * Launcher definitions in config:
 

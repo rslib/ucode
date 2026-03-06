@@ -917,7 +917,7 @@ Search:
 
 **Completed:** 332 TUI tests + 56 plugin tests, 4 phases (0708a-0708d). Toast notification system with auto-dismiss and rendering, system-triggered toast events (checkpoint/budget/agent/MCP/auth), plugin UI extension API types with Safe/Guarded/Risky enforcement, plugin sidebar sections with [plugin] badge, plugin palette command registration, and plugin UI lifecycle (session_start/session_end cleanup).
 
-### ISSUE 0709 — Copy mode + search overlay + keybind overlay (ucode-tui)
+### ISSUE 0709 — Copy mode + search overlay + keybind overlay (ucode-tui) [DONE]
 
 **Goal:** Implement transcript copy mode, full-text search, and keybind reference overlay.
 
@@ -935,6 +935,8 @@ Search:
 * `Ctrl+F` opens search; matches are highlighted; `n`/`N` cycle through matches.
 * `?` shows full keybind reference overlay with all keybinds grouped by category.
   **Owner:** TUI
+
+**Completed:** 446 TUI tests, 3 phases (0709a-0709c). Keybind reference overlay with grouped bindings and preset-aware title. Search overlay with preset-aware key handling (vim: Enter closes, emacs: Ctrl+S/Ctrl+R/Ctrl+G, vscode: Enter=next match). Copy mode with anchor/cursor selection, j/k navigation, y to yank to clipboard via OSC 52/external/file fallback chain.
 
 ---
 

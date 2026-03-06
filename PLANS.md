@@ -760,7 +760,7 @@ Terminal compatibility:
 * Guarded calls require plugin to have guarded capability declared in manifest.
 * Plugin UI elements cleaned up on session end.
 
-### Task 7.6 Copy mode + search overlay + keybind overlay (ucode-tui)
+### Task 7.6 Copy mode + search overlay + keybind overlay (ucode-tui) [DONE]
 
 > See `docs/plans/2026-03-05-tui-design.md` §6.10–6.11 and §6 (Overlays).
 

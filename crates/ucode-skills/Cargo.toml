@@ -5,4 +5,8 @@ edition.workspace = true
 
 [dependencies]
 serde = { workspace = true }
+serde_yml = "0.0.12"
 thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile.workspace = true

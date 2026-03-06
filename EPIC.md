@@ -432,7 +432,7 @@ This ensures consistent behavior, no runtime dependency on installed binaries, a
 * `list_tools` returns registered tools; invoke demo tool returns ToolResult.
   **Owner:** Tools
 
-### ISSUE 0402 — Permissions system (ucode-tools)
+### ISSUE 0402 — Permissions system (ucode-tools) [DONE]
 
 **Goal:** Gate tool usage (file access + command execution).
 **Scope/Notes:**

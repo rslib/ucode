@@ -22,6 +22,17 @@ pub enum ThemePreset {
     Light,
 }
 
+impl ThemePreset {
+    /// Cycle to the next preset: Hybrid → Dark → Light → Hybrid.
+    pub fn next(self) -> Self {
+        match self {
+            Self::Hybrid => Self::Dark,
+            Self::Dark => Self::Light,
+            Self::Light => Self::Hybrid,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum Density {
@@ -31,6 +42,14 @@ pub enum Density {
 }
 
 impl Density {
+    /// Cycle to the next density: Compact → Comfortable → Compact.
+    pub fn next(self) -> Self {
+        match self {
+            Self::Compact => Self::Comfortable,
+            Self::Comfortable => Self::Compact,
+        }
+    }
+
     /// Blank lines between sidebar sections.
     pub fn section_spacing(self) -> u16 {
         match self {
@@ -109,6 +128,7 @@ impl ModelGroup {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UcodeTheme {
+    pub preset: ThemePreset,
     pub background: Color,
     pub surface: Color,
     pub border: Color,
@@ -125,6 +145,7 @@ pub struct UcodeTheme {
 impl Default for UcodeTheme {
     fn default() -> Self {
         Self {
+            preset: ThemePreset::Hybrid,
             background: rgb(0x0d, 0x0d, 0x0d),
             surface: rgb(0x14, 0x14, 0x14),
             border: rgb(0x2a, 0x2a, 0x2a),
@@ -141,6 +162,49 @@ impl Default for UcodeTheme {
 }
 
 impl UcodeTheme {
+    /// Create a theme from a preset.
+    pub fn from_preset(preset: ThemePreset) -> Self {
+        match preset {
+            ThemePreset::Hybrid => Self::default(),
+            ThemePreset::Dark => Self::dark(),
+            ThemePreset::Light => Self::light(),
+        }
+    }
+
+    fn dark() -> Self {
+        Self {
+            preset: ThemePreset::Dark,
+            background: rgb(0x00, 0x00, 0x00),
+            surface: rgb(0x0a, 0x0a, 0x0a),
+            border: rgb(0x1e, 0x1e, 0x1e),
+            border_focus: rgb(0x33, 0x33, 0x33),
+            accent: rgb(0x00, 0xd4, 0xaa),
+            safe: rgb(0x22, 0xc5, 0x5e),
+            warning: rgb(0xf5, 0x9e, 0x0b),
+            danger: rgb(0xef, 0x44, 0x44),
+            muted: rgb(0x52, 0x52, 0x52),
+            text: rgb(0xd4, 0xd4, 0xd4),
+            text_dim: rgb(0x80, 0x80, 0x80),
+        }
+    }
+
+    fn light() -> Self {
+        Self {
+            preset: ThemePreset::Light,
+            background: rgb(0xfa, 0xfa, 0xfa),
+            surface: rgb(0xf0, 0xf0, 0xf0),
+            border: rgb(0xd0, 0xd0, 0xd0),
+            border_focus: rgb(0xa0, 0xa0, 0xa0),
+            accent: rgb(0x00, 0x96, 0x7a),
+            safe: rgb(0x16, 0xa3, 0x4a),
+            warning: rgb(0xd9, 0x7a, 0x06),
+            danger: rgb(0xdc, 0x26, 0x26),
+            muted: rgb(0x9c, 0xa3, 0xaf),
+            text: rgb(0x1f, 0x1f, 0x1f),
+            text_dim: rgb(0x6b, 0x72, 0x80),
+        }
+    }
+
     /// Return the default theme with a custom accent color.
     pub fn with_accent(accent: Color) -> Self {
         Self {
@@ -273,5 +337,46 @@ mod tests {
     fn density_tool_call_lines() {
         assert_eq!(Density::Compact.tool_call_lines(), 1);
         assert_eq!(Density::Comfortable.tool_call_lines(), 2);
+    }
+
+    #[test]
+    fn theme_from_preset_hybrid() {
+        let theme = UcodeTheme::from_preset(ThemePreset::Hybrid);
+        assert_eq!(theme.preset, ThemePreset::Hybrid);
+        assert_eq!(theme.accent, Color::Rgb(0x00, 0xd4, 0xaa));
+    }
+
+    #[test]
+    fn theme_from_preset_dark() {
+        let theme = UcodeTheme::from_preset(ThemePreset::Dark);
+        assert_eq!(theme.preset, ThemePreset::Dark);
+        assert_eq!(theme.background, Color::Rgb(0x00, 0x00, 0x00));
+    }
+
+    #[test]
+    fn theme_from_preset_light() {
+        let theme = UcodeTheme::from_preset(ThemePreset::Light);
+        assert_eq!(theme.preset, ThemePreset::Light);
+        assert_eq!(theme.background, Color::Rgb(0xfa, 0xfa, 0xfa));
+        assert_eq!(theme.text, Color::Rgb(0x1f, 0x1f, 0x1f));
+    }
+
+    #[test]
+    fn theme_preset_next_cycles() {
+        assert_eq!(ThemePreset::Hybrid.next(), ThemePreset::Dark);
+        assert_eq!(ThemePreset::Dark.next(), ThemePreset::Light);
+        assert_eq!(ThemePreset::Light.next(), ThemePreset::Hybrid);
+    }
+
+    #[test]
+    fn theme_with_accent_preserves_preset() {
+        let theme = UcodeTheme::with_accent(Color::Rgb(0xff, 0x00, 0x80));
+        assert_eq!(theme.preset, ThemePreset::Hybrid);
+    }
+
+    #[test]
+    fn density_next_cycles() {
+        assert_eq!(Density::Compact.next(), Density::Comfortable);
+        assert_eq!(Density::Comfortable.next(), Density::Compact);
     }
 }

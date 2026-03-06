@@ -1,7 +1,6 @@
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
-    style::Style,
     text::{Line, Span},
     widgets::Widget,
 };
@@ -126,41 +125,35 @@ fn entry_lines<'a>(
 // ---------------------------------------------------------------------------
 
 fn render_user_message<'a>(text: &str, theme: &'a UcodeTheme, width: u16) -> Vec<Line<'a>> {
-    // "  You: {text}"
-    // The prefix "  You: " is 7 chars; wrap the text portion at (width - 7).
-    let prefix = "  You: ";
+    // Left accent border: "│ {text}"
+    let prefix = "│ ";
     let text_width = width.saturating_sub(prefix.width() as u16);
     let wrapped = wrap_text(text, text_width);
 
-    let mut lines = Vec::with_capacity(wrapped.len().max(1));
-    for (i, chunk) in wrapped.iter().enumerate() {
-        if i == 0 {
-            lines.push(Line::from(vec![
-                Span::styled(prefix, theme.accent_style()),
-                Span::styled(chunk.clone(), theme.text_style()),
-            ]));
-        } else {
-            // Continuation lines: indent by prefix width.
-            let indent = " ".repeat(prefix.width());
-            lines.push(Line::from(vec![
-                Span::raw(indent),
-                Span::styled(chunk.clone(), theme.text_style()),
-            ]));
-        }
+    let mut lines = Vec::with_capacity(wrapped.len().max(1) + 1);
+
+    for chunk in &wrapped {
+        lines.push(Line::from(vec![
+            Span::styled(prefix, theme.accent_style()),
+            Span::styled(chunk.clone(), theme.text_style()),
+        ]));
     }
 
     if lines.is_empty() {
         lines.push(Line::from(Span::styled(prefix, theme.accent_style())));
     }
 
+    // Blank line after user message for visual separation.
+    lines.push(Line::from(""));
+
     lines
 }
 
 fn render_assistant_message<'a>(text: &str, theme: &'a UcodeTheme, width: u16) -> Vec<Line<'a>> {
-    // "  Assistant:\n  {text}"
-    let header = Line::from(Span::styled("  Assistant:", theme.accent_style()));
-    let mut lines = vec![header];
-    lines.extend(render_indented_text(text, theme, width));
+    // Plain indented text, no header.
+    let mut lines = render_indented_text(text, theme, width);
+    // Blank line after for visual separation.
+    lines.push(Line::from(""));
     lines
 }
 
@@ -170,12 +163,10 @@ fn render_streaming_message<'a>(
     width: u16,
     show_cursor: bool,
 ) -> Vec<Line<'a>> {
-    let header = Line::from(Span::styled("  Assistant:", theme.accent_style()));
-    let mut lines = vec![header];
-
-    // Wrap the content, then append cursor to the last line when visible.
     let content_width = width.saturating_sub(2); // 2-space indent
     let wrapped = wrap_text(&msg.content, content_width);
+
+    let mut lines = Vec::new();
 
     if wrapped.is_empty() {
         // No content yet — show cursor on a blank indented line.
@@ -211,50 +202,46 @@ fn render_tool_call<'a>(
     duration_ms: Option<u64>,
     summary: Option<&str>,
     theme: &'a UcodeTheme,
-    width: u16,
+    _width: u16,
 ) -> Vec<Line<'a>> {
-    let (icon, icon_style) = status_icon(status);
+    let (icon, icon_style) = match status {
+        ToolCallStatus::Running => ("\u{27f3}", theme.accent_style()),
+        ToolCallStatus::Success => ("\u{2713}", theme.safe_style()),
+        ToolCallStatus::Failed => ("\u{2717}", theme.danger_style()),
+        ToolCallStatus::PendingApproval => ("\u{26a0}", theme.warning_style()),
+    };
 
-    // Top border: "  ┌ tool: {name} ────────"
-    // We fill with ─ to reach `width` columns.
-    let top_prefix = format!("  \u{250c} tool: {} ", name);
-    let top_prefix_w = top_prefix.width();
-    let fill_count = (width as usize).saturating_sub(top_prefix_w);
-    let top_line = format!("{}{}", top_prefix, "\u{2500}".repeat(fill_count));
-
-    // Body: "  │ {summary}  {icon}  {duration}"
     let duration_str = match duration_ms {
-        Some(ms) if ms >= 1000 => format!("{:.1}s", ms as f64 / 1000.0),
-        Some(ms) => format!("{}ms", ms),
+        Some(ms) if ms >= 1000 => format!(" {:.1}s", ms as f64 / 1000.0),
+        Some(ms) => format!(" {}ms", ms),
         None => String::new(),
     };
-    let summary_text = summary.unwrap_or("");
 
-    // Bottom border: "  └──────────────────────"
-    let bottom_prefix = "  \u{2514}";
-    let bottom_fill = (width as usize).saturating_sub(bottom_prefix.width());
-    let bottom_line = format!("{}{}", bottom_prefix, "\u{2500}".repeat(bottom_fill));
-
-    let border_style = Style::new().fg(theme.border);
-
-    let mut body_spans: Vec<Span<'a>> = vec![
-        Span::styled("  \u{2502} ", border_style),
-        Span::styled(summary_text.to_owned(), theme.text_style()),
+    let mut spans: Vec<Span<'a>> = vec![
+        Span::styled("  \u{2192} ", theme.accent_style()), // → arrow
+        Span::styled(name.to_owned(), theme.text_style()),
     ];
-    if !summary_text.is_empty() {
-        body_spans.push(Span::raw("  "));
-    }
-    body_spans.push(Span::styled(icon, icon_style));
-    if !duration_str.is_empty() {
-        body_spans.push(Span::raw("  "));
-        body_spans.push(Span::styled(duration_str, theme.dim_style()));
+
+    // Show summary as bracketed args if present.
+    if let Some(sum) = summary.filter(|s| !s.is_empty()) {
+        spans.push(Span::styled(format!(" [{sum}]"), theme.dim_style()));
     }
 
-    vec![
-        Line::from(Span::styled(top_line, border_style)),
-        Line::from(body_spans),
-        Line::from(Span::styled(bottom_line, border_style)),
-    ]
+    // Status icon.
+    spans.push(Span::raw(" "));
+    spans.push(Span::styled(icon, icon_style));
+
+    // Duration.
+    if !duration_str.is_empty() {
+        spans.push(Span::styled(duration_str, theme.dim_style()));
+    }
+
+    // Pending approval gets extra label.
+    if *status == ToolCallStatus::PendingApproval {
+        spans.push(Span::styled(" pending approval", theme.warning_style()));
+    }
+
+    vec![Line::from(spans)]
 }
 
 fn render_router_event<'a>(text: &str, theme: &'a UcodeTheme) -> Vec<Line<'a>> {
@@ -276,16 +263,6 @@ fn render_system_message<'a>(text: &str, theme: &'a UcodeTheme) -> Vec<Line<'a>>
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/// Returns `(icon_str, style)` for the given tool call status.
-fn status_icon(status: &ToolCallStatus) -> (&'static str, Style) {
-    match status {
-        ToolCallStatus::Success => ("\u{2713}", Style::new()), // ✓ — caller uses safe color
-        ToolCallStatus::Failed => ("\u{2717}", Style::new()),  // ✗
-        ToolCallStatus::Running => ("\u{27f3}", Style::new()), // ⟳
-        ToolCallStatus::PendingApproval => ("\u{26a0}", Style::new()), // ⚠
-    }
-}
 
 /// Wrap `text` to fit within `width` terminal columns using Unicode-aware
 /// width measurement. Words that are wider than `width` are placed on their
@@ -349,25 +326,19 @@ fn render_indented_text<'a>(text: &str, theme: &'a UcodeTheme, width: u16) -> Ve
 pub fn entry_height(entry: &TranscriptEntry, width: u16) -> usize {
     match entry {
         TranscriptEntry::UserMessage(text) => {
-            let prefix_w = "  You: ".width() as u16;
+            let prefix_w = "│ ".width() as u16;
             let text_w = width.saturating_sub(prefix_w);
-            wrap_text(text, text_w).len().max(1)
+            wrap_text(text, text_w).len().max(1) + 1 // +1 for blank separator
         }
         TranscriptEntry::AssistantMessage(text) => {
-            // 1 header line + wrapped body lines
             let body_w = width.saturating_sub(2);
-            1 + wrap_text(text, body_w).len().max(1)
+            wrap_text(text, body_w).len().max(1) + 1 // +1 for blank separator
         }
         TranscriptEntry::Streaming(msg) => {
             let body_w = width.saturating_sub(2);
-            1 + wrap_text(&msg.content, body_w).len().max(1)
+            wrap_text(&msg.content, body_w).len().max(1)
         }
-        TranscriptEntry::ToolCall { name, summary, .. } => {
-            // Always 3 lines: top border, body, bottom border.
-            // (We don't wrap the body for height estimation — keep it simple.)
-            let _ = (name, summary);
-            3
-        }
+        TranscriptEntry::ToolCall { .. } => 1, // single line now
         TranscriptEntry::RouterEvent(_) => 1,
         TranscriptEntry::SystemMessage(_) => 1,
         TranscriptEntry::PatchProposed { .. } => 1,
@@ -411,8 +382,8 @@ mod tests {
         let lines = render_user_message("hello world", &t, 80);
         let text = lines_text(&lines);
         assert!(
-            text.contains("You:"),
-            "expected 'You:' prefix, got: {text:?}"
+            text.contains('│'),
+            "expected left border '│', got: {text:?}"
         );
         assert!(
             text.contains("hello world"),
@@ -430,8 +401,8 @@ mod tests {
         let lines = render_assistant_message("hello world", &t, 80);
         let text = lines_text(&lines);
         assert!(
-            text.contains("Assistant:"),
-            "expected 'Assistant:' prefix, got: {text:?}"
+            !text.contains("Assistant:"),
+            "should not contain 'Assistant:' label, got: {text:?}"
         );
         assert!(
             text.contains("hello world"),
@@ -452,7 +423,11 @@ mod tests {
         let text = lines_text(&lines);
         assert!(
             text.contains('\u{258c}'),
-            "expected cursor char ▌ when show_cursor=true, got: {text:?}"
+            "expected cursor char when show_cursor=true, got: {text:?}"
+        );
+        assert!(
+            !text.contains("Assistant:"),
+            "should not contain 'Assistant:' label"
         );
     }
 
@@ -470,6 +445,10 @@ mod tests {
         assert!(
             !text.contains('\u{258c}'),
             "expected no cursor char when show_cursor=false, got: {text:?}"
+        );
+        assert!(
+            !text.contains("Assistant:"),
+            "should not contain 'Assistant:' label"
         );
     }
 
@@ -489,14 +468,16 @@ mod tests {
             80,
         );
         let text = lines_text(&lines);
-        assert!(
-            text.contains('\u{2713}'),
-            "expected ✓ icon for Success, got: {text:?}"
-        );
+        assert!(text.contains('\u{2192}'), "expected → arrow, got: {text:?}");
         assert!(
             text.contains("read_file"),
             "expected tool name, got: {text:?}"
         );
+        assert!(
+            text.contains('\u{2713}'),
+            "expected ✓ icon for Success, got: {text:?}"
+        );
+        assert!(text.contains("42ms"), "expected duration, got: {text:?}");
     }
 
     // -----------------------------------------------------------------------
@@ -507,7 +488,7 @@ mod tests {
     fn render_tool_call_pending() {
         let t = theme();
         let lines = render_tool_call(
-            "write_file",
+            "run_cmd",
             &ToolCallStatus::PendingApproval,
             None,
             None,
@@ -515,10 +496,31 @@ mod tests {
             80,
         );
         let text = lines_text(&lines);
+        assert!(text.contains('\u{2192}'), "expected → arrow, got: {text:?}");
         assert!(
             text.contains('\u{26a0}'),
             "expected ⚠ icon for PendingApproval, got: {text:?}"
         );
+        assert!(
+            text.contains("pending approval"),
+            "expected 'pending approval' label, got: {text:?}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // render_tool_call_running
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn render_tool_call_running() {
+        let t = theme();
+        let lines = render_tool_call("search", &ToolCallStatus::Running, None, None, &t, 80);
+        let text = lines_text(&lines);
+        assert!(
+            text.contains('\u{27f3}'),
+            "expected ⟳ icon for Running, got: {text:?}"
+        );
+        assert_eq!(lines.len(), 1, "tool call should be single line");
     }
 
     // -----------------------------------------------------------------------
@@ -567,14 +569,25 @@ mod tests {
     fn entry_height_single_line() {
         let entry = TranscriptEntry::UserMessage("hi".to_owned());
         let h = entry_height(&entry, 80);
-        // Short message: 1 line
-        assert_eq!(h, 1, "short user message should be 1 line");
+        // Short user message: 1 text line + 1 blank separator = 2
+        assert_eq!(
+            h, 2,
+            "short user message should be 2 lines (text + separator)"
+        );
 
         let entry2 = TranscriptEntry::RouterEvent("event".to_owned());
         assert_eq!(entry_height(&entry2, 80), 1);
 
         let entry3 = TranscriptEntry::SystemMessage("sys".to_owned());
         assert_eq!(entry_height(&entry3, 80), 1);
+
+        let entry4 = TranscriptEntry::ToolCall {
+            name: "read".to_owned(),
+            status: ToolCallStatus::Success,
+            duration_ms: None,
+            summary: None,
+        };
+        assert_eq!(entry_height(&entry4, 80), 1, "tool call should be 1 line");
     }
 
     // -----------------------------------------------------------------------
@@ -628,9 +641,7 @@ mod tests {
             .map(|(x, y)| buf[(x, y)].symbol().to_owned())
             .collect();
 
-        assert!(rendered.contains("You:"), "user message prefix missing");
         assert!(rendered.contains("hello"), "user message text missing");
-        assert!(rendered.contains("Assistant:"), "assistant prefix missing");
         assert!(rendered.contains("world"), "assistant text missing");
         assert!(rendered.contains("my_tool"), "tool call name missing");
         assert!(rendered.contains("rerouted"), "router event text missing");
@@ -664,18 +675,6 @@ mod tests {
     fn wrap_text_zero_width() {
         let result = wrap_text("hello world", 0);
         assert!(result.is_empty());
-    }
-
-    // -----------------------------------------------------------------------
-    // status_icon coverage
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn status_icon_variants() {
-        assert_eq!(status_icon(&ToolCallStatus::Success).0, "\u{2713}");
-        assert_eq!(status_icon(&ToolCallStatus::Failed).0, "\u{2717}");
-        assert_eq!(status_icon(&ToolCallStatus::Running).0, "\u{27f3}");
-        assert_eq!(status_icon(&ToolCallStatus::PendingApproval).0, "\u{26a0}");
     }
 
     // -----------------------------------------------------------------------

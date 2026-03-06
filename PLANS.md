@@ -695,7 +695,7 @@ Terminal compatibility:
 * Diff modal: approve/apply, reject [DONE]
 * run_cmd modal: approve once / approve session / deny [DONE]
 
-### Task 7.3 Visual system + sidebar-first information design (ucode-tui)
+### Task 7.3 Visual system + sidebar-first information design (ucode-tui) [DONE]
 
 * Visual token system: color roles, spacing, border emphasis, semantic states (safe/warning/danger)
 * Sidebar priority panels:

@@ -56,6 +56,8 @@ pub enum Action {
     ReverseSearch,
     SetMark,
     CopySelection,
+    ToggleTheme,
+    ToggleDensity,
 }
 
 // ---------------------------------------------------------------------------
@@ -153,6 +155,10 @@ pub fn default_vscode_bindings() -> KeybindMap {
     m.insert(KeyCombo::new(K::Char('r'), Mod::NONE), A::RejectAction);
     m.insert(KeyCombo::new(K::Char('d'), Mod::NONE), A::ShowDiff);
 
+    // Theme / density toggles — function keys avoid all readline conflicts.
+    m.insert(KeyCombo::new(K::F(6), Mod::NONE), A::ToggleTheme);
+    m.insert(KeyCombo::new(K::F(7), Mod::NONE), A::ToggleDensity);
+
     m
 }
 
@@ -236,6 +242,10 @@ pub fn default_vim_bindings() -> KeybindMap {
         A::ShowKeybindOverlay,
     );
 
+    // Theme / density toggles
+    m.insert(KeyCombo::new(K::F(6), Mod::NONE), A::ToggleTheme);
+    m.insert(KeyCombo::new(K::F(7), Mod::NONE), A::ToggleDensity);
+
     m
 }
 
@@ -318,6 +328,10 @@ pub fn default_emacs_bindings() -> KeybindMap {
         KeyCombo::new(K::Char('?'), Mod::NONE),
         A::ShowKeybindOverlay,
     );
+
+    // Theme / density toggles
+    m.insert(KeyCombo::new(K::F(6), Mod::NONE), A::ToggleTheme);
+    m.insert(KeyCombo::new(K::F(7), Mod::NONE), A::ToggleDensity);
 
     m
 }
@@ -565,6 +579,36 @@ mod tests {
                 bindings.get(&combo).copied(),
                 Some(Action::SendMessage),
                 "{preset:?} does not map Enter to SendMessage"
+            );
+        }
+    }
+
+    #[test]
+    fn all_presets_have_toggle_theme() {
+        for preset in [
+            KeybindPreset::Vscode,
+            KeybindPreset::Vim,
+            KeybindPreset::Emacs,
+        ] {
+            let map = bindings_for_preset(preset);
+            assert!(
+                map.values().any(|a| *a == Action::ToggleTheme),
+                "{preset:?} missing ToggleTheme"
+            );
+        }
+    }
+
+    #[test]
+    fn all_presets_have_toggle_density() {
+        for preset in [
+            KeybindPreset::Vscode,
+            KeybindPreset::Vim,
+            KeybindPreset::Emacs,
+        ] {
+            let map = bindings_for_preset(preset);
+            assert!(
+                map.values().any(|a| *a == Action::ToggleDensity),
+                "{preset:?} missing ToggleDensity"
             );
         }
     }

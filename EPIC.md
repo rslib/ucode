@@ -848,26 +848,26 @@ Search:
 * `/connect` → choose provider → complete method → status updates.
   **Owner:** TUI/Auth
 
-### ISSUE 0706 — Sidebar-first visual system and safety state UX (ucode-tui)
+### ISSUE 0706 — Sidebar-first visual system and safety state UX (ucode-tui) [DONE]
 
 **Goal:** Deliver polished, distinctive TUI UX with persistent operational awareness via sidebar.
 **Scope/Notes:**
 
-* Visual token system: color roles, spacing, border emphasis, semantic states (safe/warning/danger)
-* Sidebar priority panels:
+* Visual token system: color roles, spacing, border emphasis, semantic states (safe/warning/danger) [DONE]
+* Sidebar priority panels: [DONE]
   * active provider/model + effective sandbox tier
   * active skill
   * context pack summary
   * tool call queue with approval state
   * subagent status panel (running/completed/failed)
   * network state indicator
-* Transparent-friendly theme profile (terminal-dependent; no hard dependency)
-* Compact/comfortable density presets
+* Transparent-friendly theme profile (terminal-dependent; no hard dependency) [DONE]
+* Compact/comfortable density presets [DONE]
 * Keyboard-first focus behavior across all panes
   **Acceptance tests:**
-* Critical safety state (sandbox tier, approvals, network) remains visible during normal chat flow.
-* Sidebar remains usable at common terminal dimensions (80x24 minimum).
-* Theme toggle preserves contrast/accessibility in supported terminals.
+* Critical safety state (sandbox tier, approvals, network) remains visible during normal chat flow. [DONE]
+* Sidebar remains usable at common terminal dimensions (80x24 minimum). [DONE]
+* Theme toggle preserves contrast/accessibility in supported terminals. [DONE]
   **Owner:** TUI
 
 ### ISSUE 0707 — Slash command UX + registry integration (ucode-tui + ucode-core)

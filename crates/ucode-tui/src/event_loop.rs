@@ -683,6 +683,18 @@ fn dispatch_action(action: Action, app: &mut AppState, input_box: &mut InputBoxS
             }
         }
 
+        Action::ToggleTheme => {
+            use crate::theme::UcodeTheme;
+            let next = app.theme.preset.next();
+            app.theme = UcodeTheme::from_preset(next);
+            app.mark_dirty();
+        }
+
+        Action::ToggleDensity => {
+            app.density = app.density.next();
+            app.mark_dirty();
+        }
+
         // Future phases — no-op for now.
         _ => {}
     }
@@ -1975,5 +1987,43 @@ mod tests {
         terminal
             .draw(|f| render_frame(f, &app, &input_box, &sidebar_data, 0))
             .expect("draw");
+    }
+
+    // -----------------------------------------------------------------------
+    // dispatch_action ToggleTheme / ToggleDensity
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn dispatch_toggle_theme_cycles_preset() {
+        use crate::theme::ThemePreset;
+
+        let mut app = AppState::new();
+        let mut input_box = InputBoxState::new();
+        assert_eq!(app.theme.preset, ThemePreset::Hybrid);
+
+        dispatch_action(Action::ToggleTheme, &mut app, &mut input_box);
+        assert_eq!(app.theme.preset, ThemePreset::Dark);
+
+        dispatch_action(Action::ToggleTheme, &mut app, &mut input_box);
+        assert_eq!(app.theme.preset, ThemePreset::Light);
+
+        dispatch_action(Action::ToggleTheme, &mut app, &mut input_box);
+        assert_eq!(app.theme.preset, ThemePreset::Hybrid);
+    }
+
+    #[test]
+    fn dispatch_toggle_density_cycles() {
+        use crate::theme::Density;
+
+        let mut app = AppState::new();
+        let mut input_box = InputBoxState::new();
+        // Default density is Comfortable.
+        assert_eq!(app.density, Density::Comfortable);
+
+        dispatch_action(Action::ToggleDensity, &mut app, &mut input_box);
+        assert_eq!(app.density, Density::Compact);
+
+        dispatch_action(Action::ToggleDensity, &mut app, &mut input_box);
+        assert_eq!(app.density, Density::Comfortable);
     }
 }

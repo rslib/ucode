@@ -195,20 +195,83 @@ fn render_icon_strip(data: &SidebarData, theme: &UcodeTheme, area: Rect, buf: &m
         if y >= area.y + area.height {
             break;
         }
+
         let icon = section.id.icon().to_string();
-        let style = if section.collapsed {
+        let icon_style = if section.collapsed {
             theme.muted_style()
         } else {
             theme.accent_style()
         };
-        let line = Line::from(Span::styled(icon, style));
+
+        let (badge, badge_style) = icon_strip_badge(section.id, data, theme);
+
         let row_area = Rect {
             x: area.x,
             y,
             width: area.width,
             height: 1,
         };
-        line.render(row_area, buf);
+
+        if badge.is_empty() {
+            Line::from(Span::styled(icon, icon_style)).render(row_area, buf);
+        } else {
+            // Icon on left, badge on right edge.
+            let line = Line::from(vec![
+                Span::styled(icon, icon_style),
+                Span::styled(" ", Style::default()),
+                Span::styled(badge, badge_style),
+            ]);
+            line.render(row_area, buf);
+        }
+    }
+}
+
+/// Compute the contextual badge for a section in icon-strip mode.
+fn icon_strip_badge(id: SectionId, data: &SidebarData, theme: &UcodeTheme) -> (String, Style) {
+    match id {
+        SectionId::Tools => {
+            let pending = data
+                .tools
+                .entries
+                .iter()
+                .filter(|e| e.status == ToolCallStatus::PendingApproval)
+                .count();
+            if pending > 0 {
+                ("⚠".to_owned(), theme.warning_style())
+            } else {
+                (String::new(), Style::default())
+            }
+        }
+        SectionId::Agents => {
+            let running = data
+                .agents
+                .entries
+                .iter()
+                .filter(|e| e.status == AgentStatus::Running)
+                .count();
+            if running > 0 {
+                ("⟳".to_owned(), theme.accent_style())
+            } else {
+                (String::new(), Style::default())
+            }
+        }
+        SectionId::Jobs => {
+            let running = data.jobs.running_count();
+            if running > 0 {
+                (running.to_string(), theme.accent_style())
+            } else {
+                (String::new(), Style::default())
+            }
+        }
+        SectionId::Mcp => {
+            let active = data.mcp.active_count();
+            if active > 0 {
+                (active.to_string(), theme.safe_style())
+            } else {
+                (String::new(), Style::default())
+            }
+        }
+        _ => (String::new(), Style::default()),
     }
 }
 
@@ -482,10 +545,10 @@ fn tools_lines<'a>(data: &ToolsData, theme: &'a UcodeTheme) -> Vec<Line<'a>> {
         .take(8)
         .map(|e| {
             let (symbol, style) = match e.status {
-                ToolCallStatus::Running => ("⟳", theme.warning_style()),
+                ToolCallStatus::Running => ("⟳", theme.accent_style()),
                 ToolCallStatus::Success => ("✓", theme.safe_style()),
                 ToolCallStatus::Failed => ("✗", theme.danger_style()),
-                ToolCallStatus::PendingApproval => ("?", theme.accent_style()),
+                ToolCallStatus::PendingApproval => ("⚠", theme.warning_style()),
             };
             let dur = e
                 .duration
@@ -511,7 +574,7 @@ fn agents_lines<'a>(data: &AgentsData, theme: &'a UcodeTheme) -> Vec<Line<'a>> {
         .map(|e| {
             let (symbol, style) = match e.status {
                 AgentStatus::Done => ("✓", theme.safe_style()),
-                AgentStatus::Running => ("⟳", theme.warning_style()),
+                AgentStatus::Running => ("⟳", theme.accent_style()),
                 AgentStatus::Failed => ("✗", theme.danger_style()),
             };
             let indent = "  ".repeat(e.depth as usize + 1);
@@ -568,7 +631,7 @@ fn jobs_lines<'a>(data: &JobsData, theme: &'a UcodeTheme) -> Vec<Line<'a>> {
         .take(8)
         .map(|e| {
             let (symbol, style) = match e.status {
-                JobStatus::Running => ("⟳", theme.warning_style()),
+                JobStatus::Running => ("⟳", theme.accent_style()),
                 JobStatus::Done => ("✓", theme.safe_style()),
                 JobStatus::Failed => ("✗", theme.danger_style()),
             };
@@ -1113,5 +1176,79 @@ mod tests {
         ];
         let summary = section_summary(SectionId::Tools, &data);
         assert_eq!(summary, "2 calls, 1 pending");
+    }
+
+    #[test]
+    fn icon_strip_shows_tools_badge_when_pending() {
+        let mut data = SidebarData::new();
+        data.tools.entries = vec![ToolEntry {
+            name: "run_cmd".into(),
+            status: ToolCallStatus::PendingApproval,
+            duration: None,
+        }];
+        let buf = render_sidebar(&data, SidebarMode::IconStrip, 6, 20);
+        let text = buf_text(&buf);
+        assert!(
+            text.contains('⚠'),
+            "expected ⚠ badge in icon strip:\n{text}"
+        );
+    }
+
+    #[test]
+    fn icon_strip_shows_agents_badge_when_running() {
+        let mut data = SidebarData::new();
+        data.agents.entries = vec![AgentEntry {
+            name: "agent-a".into(),
+            status: AgentStatus::Running,
+            duration: None,
+            depth: 0,
+        }];
+        let buf = render_sidebar(&data, SidebarMode::IconStrip, 6, 20);
+        let text = buf_text(&buf);
+        assert!(
+            text.contains('⟳'),
+            "expected ⟳ badge in icon strip:\n{text}"
+        );
+    }
+
+    #[test]
+    fn icon_strip_shows_jobs_count() {
+        let mut data = SidebarData::new();
+        data.jobs.entries = vec![
+            JobEntry {
+                name: "j1".into(),
+                command: "cargo test".into(),
+                status: JobStatus::Running,
+                elapsed: None,
+            },
+            JobEntry {
+                name: "j2".into(),
+                command: "npm build".into(),
+                status: JobStatus::Running,
+                elapsed: None,
+            },
+        ];
+        let buf = render_sidebar(&data, SidebarMode::IconStrip, 6, 20);
+        let text = buf_text(&buf);
+        assert!(
+            text.contains('2'),
+            "expected running count '2' in icon strip:\n{text}"
+        );
+    }
+
+    #[test]
+    fn tools_pending_approval_uses_warning_symbol() {
+        let mut data = SidebarData::new();
+        data.tools.entries = vec![ToolEntry {
+            name: "run_cmd".into(),
+            status: ToolCallStatus::PendingApproval,
+            duration: None,
+        }];
+        let buf = render_sidebar(&data, SidebarMode::Full, 40, 60);
+        let text = buf_text(&buf);
+        assert!(
+            text.contains('⚠'),
+            "expected ⚠ symbol for PendingApproval:\n{text}"
+        );
     }
 }

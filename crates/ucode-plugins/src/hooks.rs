@@ -472,6 +472,113 @@ impl HookEvent {
             | Self::BudgetThresholdReached { .. } => OverrideClass::Guarded,
         }
     }
+
+    /// Hook category for policy scoping.
+    ///
+    /// Maps each event to its WIT category package name (e.g., "session", "tool",
+    /// "model"). Used by [`PluginPolicy`] to restrict which hook categories a
+    /// plugin may handle.
+    pub fn hook_category(&self) -> &'static str {
+        match self {
+            // Session lifecycle
+            Self::SessionStart { .. }
+            | Self::SessionEnd { .. }
+            | Self::SessionTitleGenerated { .. }
+            | Self::SessionTitleUpdated { .. }
+            | Self::ConfigReloaded => "session",
+
+            // Tool lifecycle
+            Self::BeforeToolCall { .. }
+            | Self::AfterToolCall { .. }
+            | Self::ToolError { .. }
+            | Self::ToolTimeout { .. } => "tool",
+
+            // Tool: filesystem
+            Self::BeforeFileRead { .. }
+            | Self::AfterFileRead { .. }
+            | Self::BeforeFileWrite { .. }
+            | Self::AfterFileWrite { .. } => "tool_fs",
+
+            // Tool: command
+            Self::BeforeRunCmd { .. } | Self::AfterRunCmd { .. } => "tool_cmd",
+
+            // Tool: patch
+            Self::BeforeApplyPatch { .. } | Self::AfterApplyPatch { .. } => "tool_patch",
+
+            // Model lifecycle
+            Self::BeforeModelCall { .. }
+            | Self::AfterModelCall { .. }
+            | Self::ModelFallback { .. }
+            | Self::BeforeModelSelect { .. }
+            | Self::RouterDecision { .. }
+            | Self::ModelRateLimited { .. }
+            | Self::ModelQuotaExhausted { .. } => "model",
+
+            // Context
+            Self::ContextOverflow { .. }
+            | Self::ContextCompaction { .. }
+            | Self::ContextDistilled { .. }
+            | Self::TokenUsageUpdated { .. } => "context",
+
+            // Message flow
+            Self::UserMessageReceived { .. }
+            | Self::AssistantResponseStarted { .. }
+            | Self::AssistantResponseCompleted { .. }
+            | Self::MessageRetry { .. } => "message",
+
+            // Agent
+            Self::AgentSpawned { .. }
+            | Self::AgentMessage { .. }
+            | Self::AgentCompleted { .. }
+            | Self::AgentFailed { .. }
+            | Self::AgentCancelled { .. } => "agent",
+
+            // Approval / Sandbox
+            Self::ApprovalRequired { .. }
+            | Self::ApprovalGranted { .. }
+            | Self::ApprovalDenied { .. }
+            | Self::SandboxDecision { .. }
+            | Self::PermissionDecision { .. } => "approval",
+
+            // Auth
+            Self::AuthChanged { .. } | Self::AuthFailed { .. } | Self::ProviderSwitched { .. } => {
+                "auth"
+            }
+
+            // MCP
+            Self::McpServerConnected { .. }
+            | Self::McpServerDisconnected { .. }
+            | Self::McpServerLaunch { .. }
+            | Self::McpServerRestart { .. }
+            | Self::McpServerCrash { .. }
+            | Self::McpToolInvoked { .. } => "mcp",
+
+            // Skill
+            Self::SkillActivated { .. } | Self::SkillDeactivated { .. } => "skill",
+
+            // Plugin
+            Self::PluginLoaded { .. } | Self::PluginUnloaded { .. } | Self::PluginError { .. } => {
+                "plugin"
+            }
+
+            // Checkpoint
+            Self::CheckpointCreated { .. } | Self::CheckpointRestored { .. } => "checkpoint",
+
+            // Budget
+            Self::BudgetThresholdWarning { .. }
+            | Self::BudgetThresholdReached { .. }
+            | Self::CostIncurred { .. } => "budget",
+
+            // Job
+            Self::BackgroundJobStateChanged { .. } => "job",
+
+            // Command / UI
+            Self::CommandInvoked { .. } | Self::PaletteCommandExecuted { .. } => "command",
+
+            // Diagnostic
+            Self::UnhandledError { .. } => "diagnostic",
+        }
+    }
 }
 
 /// A timestamped wrapper around a [`HookEvent`].
@@ -1217,6 +1324,188 @@ mod tests {
             .event_name(),
             "unhandled_error"
         );
+    }
+
+    #[test]
+    fn test_hook_category_session() {
+        assert_eq!(
+            HookEvent::SessionStart {
+                session_id: "s".into()
+            }
+            .hook_category(),
+            "session"
+        );
+        assert_eq!(
+            HookEvent::SessionEnd {
+                session_id: "s".into(),
+                duration_secs: 1.0
+            }
+            .hook_category(),
+            "session"
+        );
+        assert_eq!(
+            HookEvent::SessionTitleGenerated {
+                session_id: "s".into(),
+                title: "t".into()
+            }
+            .hook_category(),
+            "session"
+        );
+    }
+
+    #[test]
+    fn test_hook_category_tool() {
+        assert_eq!(
+            HookEvent::BeforeToolCall {
+                tool_name: "t".into(),
+                args: serde_json::Value::Null
+            }
+            .hook_category(),
+            "tool"
+        );
+        assert_eq!(
+            HookEvent::ToolTimeout {
+                tool_name: "t".into(),
+                timeout_ms: 0
+            }
+            .hook_category(),
+            "tool"
+        );
+    }
+
+    #[test]
+    fn test_hook_category_all_categories() {
+        let cases: Vec<(HookEvent, &str)> = vec![
+            (
+                HookEvent::SessionStart {
+                    session_id: "s".into(),
+                },
+                "session",
+            ),
+            (
+                HookEvent::BeforeToolCall {
+                    tool_name: "t".into(),
+                    args: serde_json::Value::Null,
+                },
+                "tool",
+            ),
+            (
+                HookEvent::BeforeModelCall {
+                    model: "m".into(),
+                    message_count: 0,
+                },
+                "model",
+            ),
+            (
+                HookEvent::ContextOverflow {
+                    current_tokens: 0,
+                    max_tokens: 0,
+                },
+                "context",
+            ),
+            (
+                HookEvent::ApprovalRequired {
+                    tool_name: "t".into(),
+                    risk_level: "r".into(),
+                },
+                "approval",
+            ),
+            (
+                HookEvent::CheckpointCreated {
+                    checkpoint_id: "c".into(),
+                },
+                "checkpoint",
+            ),
+            (
+                HookEvent::PluginLoaded {
+                    plugin_name: "p".into(),
+                },
+                "plugin",
+            ),
+            (
+                HookEvent::McpServerConnected {
+                    server_name: "s".into(),
+                },
+                "mcp",
+            ),
+            (
+                HookEvent::SkillActivated {
+                    skill_name: "s".into(),
+                },
+                "skill",
+            ),
+            (HookEvent::UserMessageReceived { message_len: 0 }, "message"),
+            (
+                HookEvent::AgentSpawned {
+                    agent_id: "a".into(),
+                    task: "t".into(),
+                },
+                "agent",
+            ),
+            (
+                HookEvent::AuthChanged {
+                    provider: "p".into(),
+                },
+                "auth",
+            ),
+            (
+                HookEvent::BudgetThresholdWarning {
+                    current_cost: 0.0,
+                    threshold: 0.0,
+                },
+                "budget",
+            ),
+            (
+                HookEvent::BackgroundJobStateChanged {
+                    job_id: "j".into(),
+                    state: "s".into(),
+                },
+                "job",
+            ),
+            (
+                HookEvent::CommandInvoked {
+                    command: "c".into(),
+                },
+                "command",
+            ),
+            (
+                HookEvent::UnhandledError {
+                    error: "e".into(),
+                    context: "c".into(),
+                },
+                "diagnostic",
+            ),
+            (HookEvent::BeforeFileRead { path: "p".into() }, "tool_fs"),
+            (
+                HookEvent::BeforeRunCmd {
+                    command: "c".into(),
+                },
+                "tool_cmd",
+            ),
+            (
+                HookEvent::BeforeApplyPatch {
+                    file_path: "f".into(),
+                    patch_summary: "s".into(),
+                },
+                "tool_patch",
+            ),
+            (
+                HookEvent::SandboxDecision {
+                    tool_name: "t".into(),
+                    allowed: true,
+                    reason: "r".into(),
+                },
+                "approval",
+            ),
+        ];
+        for (event, expected) in cases {
+            assert_eq!(
+                event.hook_category(),
+                expected,
+                "failed for {}",
+                event.event_name()
+            );
+        }
     }
 
     #[test]

@@ -50,6 +50,18 @@ pub struct PluginCapabilities {
     /// Whether the plugin may issue guarded UI calls (modals, prompts, transcript injection).
     #[serde(default)]
     pub guarded_ui: bool,
+    /// Filesystem path scopes (relative to workspace root). Empty = workspace root only.
+    #[serde(default)]
+    pub filesystem_paths: Vec<String>,
+    /// Network domain access. Empty = all domains (when network is true).
+    #[serde(default)]
+    pub network_domains: Vec<String>,
+    /// Hook categories this plugin wants to handle. Empty = all categories.
+    #[serde(default)]
+    pub hook_categories: Vec<String>,
+    /// Maximum override class: "safe", "guarded", or "risky". None = "safe".
+    #[serde(default)]
+    pub max_override_class: Option<String>,
 }
 
 /// Errors from manifest parsing.
@@ -120,6 +132,14 @@ pub fn validate_manifest(manifest: &PluginManifest) -> Result<(), ManifestError>
                 "hook name must not be empty".into(),
             ));
         }
+    }
+    if let Some(ref class) = manifest.capabilities.max_override_class
+        && !["safe", "guarded", "risky"].contains(&class.as_str())
+    {
+        return Err(ManifestError::Validation(format!(
+            "max_override_class '{}' must be one of: safe, guarded, risky",
+            class
+        )));
     }
     Ok(())
 }
@@ -465,5 +485,66 @@ mod tests {
         let m = parse_manifest(toml).unwrap();
         assert!(m.id.is_none());
         assert_eq!(m.name, "my-plugin");
+    }
+
+    #[test]
+    fn test_parse_manifest_with_scoped_capabilities() {
+        let toml = r#"
+            name = "scoped-plugin"
+            version = "1.0.0"
+
+            [capabilities]
+            filesystem = true
+            network = true
+            process_spawn = false
+            guarded_ui = false
+            filesystem_paths = ["src/", "tests/"]
+            network_domains = ["api.example.com", "cdn.example.com"]
+            hook_categories = ["session", "tool"]
+            max_override_class = "guarded"
+        "#;
+        let m = parse_manifest(toml).unwrap();
+        assert!(m.capabilities.filesystem);
+        assert!(m.capabilities.network);
+        assert_eq!(m.capabilities.filesystem_paths, vec!["src/", "tests/"]);
+        assert_eq!(
+            m.capabilities.network_domains,
+            vec!["api.example.com", "cdn.example.com"]
+        );
+        assert_eq!(m.capabilities.hook_categories, vec!["session", "tool"]);
+        assert_eq!(
+            m.capabilities.max_override_class.as_deref(),
+            Some("guarded")
+        );
+    }
+
+    #[test]
+    fn test_parse_manifest_scoped_caps_default_empty() {
+        let toml = r#"
+            name = "minimal-plugin"
+            version = "1.0.0"
+
+            [capabilities]
+            filesystem = true
+        "#;
+        let m = parse_manifest(toml).unwrap();
+        assert!(m.capabilities.filesystem);
+        assert!(m.capabilities.filesystem_paths.is_empty());
+        assert!(m.capabilities.network_domains.is_empty());
+        assert!(m.capabilities.hook_categories.is_empty());
+        assert!(m.capabilities.max_override_class.is_none());
+    }
+
+    #[test]
+    fn test_validate_invalid_override_class() {
+        let toml = r#"
+            name = "bad-plugin"
+            version = "1.0.0"
+
+            [capabilities]
+            max_override_class = "superadmin"
+        "#;
+        let err = parse_manifest(toml).unwrap_err();
+        assert!(err.to_string().contains("max_override_class"));
     }
 }

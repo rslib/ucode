@@ -3,12 +3,18 @@ use serde::{Deserialize, Serialize};
 /// A parsed plugin manifest from `plugin.toml`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PluginManifest {
+    /// Reverse-domain globally unique identifier (e.g., "org.acme.code-analyzer").
+    pub id: Option<String>,
+    /// Human-readable display name.
     pub name: String,
     pub version: String,
     pub description: Option<String>,
     pub author: Option<String>,
     /// Minimum host API version required.
     pub min_api_version: Option<String>,
+    /// API feature surfaces this plugin requires (e.g., ["hooks", "tools", "ui"]).
+    #[serde(default)]
+    pub required_features: Vec<String>,
     /// Hooks this plugin subscribes to.
     #[serde(default)]
     pub hooks: Vec<String>,
@@ -57,6 +63,8 @@ pub enum ManifestError {
     Validation(String),
 }
 
+const KNOWN_FEATURES: &[&str] = &["hooks", "tools", "ui"];
+
 /// Parse a plugin manifest from TOML string.
 pub fn parse_manifest(toml_str: &str) -> Result<PluginManifest, ManifestError> {
     let manifest: PluginManifest =
@@ -81,11 +89,29 @@ pub fn validate_manifest(manifest: &PluginManifest) -> Result<(), ManifestError>
             "version must not be empty".into(),
         ));
     }
+    if let Some(id) = &manifest.id {
+        validate_plugin_id(id)?;
+    }
+    for feature in &manifest.required_features {
+        if !KNOWN_FEATURES.contains(&feature.as_str()) {
+            return Err(ManifestError::Validation(format!(
+                "unknown feature '{}'; known features: {}",
+                feature,
+                KNOWN_FEATURES.join(", ")
+            )));
+        }
+    }
     for tool in &manifest.tools {
         if tool.name.is_empty() {
             return Err(ManifestError::Validation(
                 "tool name must not be empty".into(),
             ));
+        }
+        if tool.name.contains('.') {
+            return Err(ManifestError::Validation(format!(
+                "tool name '{}' must not contain dots; host constructs FQN from plugin id",
+                tool.name
+            )));
         }
     }
     for hook in &manifest.hooks {
@@ -93,6 +119,40 @@ pub fn validate_manifest(manifest: &PluginManifest) -> Result<(), ManifestError>
             return Err(ManifestError::Validation(
                 "hook name must not be empty".into(),
             ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_plugin_id(id: &str) -> Result<(), ManifestError> {
+    let segments: Vec<&str> = id.split('.').collect();
+    if segments.len() < 3 {
+        return Err(ManifestError::Validation(format!(
+            "plugin id '{}' must have at least 3 dot-separated segments (e.g., org.acme.plugin)",
+            id
+        )));
+    }
+    for segment in &segments {
+        if segment.is_empty() {
+            return Err(ManifestError::Validation(format!(
+                "plugin id '{}' has empty segment",
+                id
+            )));
+        }
+        if !segment
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        {
+            return Err(ManifestError::Validation(format!(
+                "plugin id segment '{}' must contain only lowercase letters, digits, and hyphens",
+                segment
+            )));
+        }
+        if segment.starts_with('-') {
+            return Err(ManifestError::Validation(format!(
+                "plugin id segment '{}' must not start with a hyphen",
+                segment
+            )));
         }
     }
     Ok(())
@@ -191,11 +251,13 @@ mod tests {
         let toml = r#"name = "" \nversion = "1.0.0""#;
         // Build directly to avoid TOML parse ambiguity
         let manifest = PluginManifest {
+            id: None,
             name: String::new(),
             version: "1.0.0".into(),
             description: None,
             author: None,
             min_api_version: None,
+            required_features: vec![],
             hooks: vec![],
             tools: vec![],
             capabilities: PluginCapabilities::default(),
@@ -209,11 +271,13 @@ mod tests {
     #[test]
     fn test_validate_empty_version_fails() {
         let manifest = PluginManifest {
+            id: None,
             name: "ok".into(),
             version: String::new(),
             description: None,
             author: None,
             min_api_version: None,
+            required_features: vec![],
             hooks: vec![],
             tools: vec![],
             capabilities: PluginCapabilities::default(),
@@ -226,11 +290,13 @@ mod tests {
     #[test]
     fn test_validate_empty_tool_name_fails() {
         let manifest = PluginManifest {
+            id: None,
             name: "ok".into(),
             version: "1.0.0".into(),
             description: None,
             author: None,
             min_api_version: None,
+            required_features: vec![],
             hooks: vec![],
             tools: vec![PluginToolDef {
                 name: String::new(),
@@ -247,11 +313,13 @@ mod tests {
     #[test]
     fn test_validate_empty_hook_name_fails() {
         let manifest = PluginManifest {
+            id: None,
             name: "ok".into(),
             version: "1.0.0".into(),
             description: None,
             author: None,
             min_api_version: None,
+            required_features: vec![],
             hooks: vec![String::new()],
             tools: vec![],
             capabilities: PluginCapabilities::default(),
@@ -287,5 +355,115 @@ mod tests {
         let err =
             parse_manifest_file(std::path::Path::new("/nonexistent/plugin.toml")).unwrap_err();
         assert!(matches!(err, ManifestError::Io(_)));
+    }
+
+    // --- New tests for id, required_features, and stricter validation ---
+
+    #[test]
+    fn test_parse_manifest_with_id() {
+        let toml = r#"
+            id = "org.acme.code-analyzer"
+            name = "Code Analyzer"
+            version = "1.0.0"
+        "#;
+        let m = parse_manifest(toml).unwrap();
+        assert_eq!(m.id.as_deref(), Some("org.acme.code-analyzer"));
+        assert_eq!(m.name, "Code Analyzer");
+    }
+
+    #[test]
+    fn test_validate_id_format_valid() {
+        let toml = r#"
+            id = "org.acme.code-analyzer"
+            name = "Code Analyzer"
+            version = "1.0.0"
+        "#;
+        assert!(parse_manifest(toml).is_ok());
+    }
+
+    #[test]
+    fn test_validate_id_format_too_few_segments() {
+        let toml = r#"
+            id = "acme.plugin"
+            name = "Bad Plugin"
+            version = "1.0.0"
+        "#;
+        let err = parse_manifest(toml).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("at least 3 dot-separated segments")
+        );
+    }
+
+    #[test]
+    fn test_validate_id_format_invalid_chars() {
+        let toml = r#"
+            id = "org.Acme.Plugin"
+            name = "Bad Plugin"
+            version = "1.0.0"
+        "#;
+        let err = parse_manifest(toml).unwrap_err();
+        assert!(err.to_string().contains("segment"));
+    }
+
+    #[test]
+    fn test_validate_id_format_empty_segment() {
+        let toml = r#"
+            id = "org..plugin"
+            name = "Bad Plugin"
+            version = "1.0.0"
+        "#;
+        let err = parse_manifest(toml).unwrap_err();
+        assert!(err.to_string().contains("segment"));
+    }
+
+    #[test]
+    fn test_parse_required_features() {
+        let toml = r#"
+            id = "org.acme.logger"
+            name = "Logger"
+            version = "1.0.0"
+            required_features = ["hooks", "tools"]
+        "#;
+        let m = parse_manifest(toml).unwrap();
+        assert_eq!(m.required_features, vec!["hooks", "tools"]);
+    }
+
+    #[test]
+    fn test_validate_unknown_feature() {
+        let toml = r#"
+            id = "org.acme.logger"
+            name = "Logger"
+            version = "1.0.0"
+            required_features = ["hooks", "quantum"]
+        "#;
+        let err = parse_manifest(toml).unwrap_err();
+        assert!(err.to_string().contains("unknown feature"));
+    }
+
+    #[test]
+    fn test_validate_tool_name_no_dots() {
+        let toml = r#"
+            id = "org.acme.tools"
+            name = "Tools"
+            version = "1.0.0"
+
+            [[tools]]
+            name = "my.tool"
+        "#;
+        let err = parse_manifest(toml).unwrap_err();
+        assert!(err.to_string().contains("must not contain dots"));
+    }
+
+    #[test]
+    fn test_backward_compat_name_only() {
+        // Old-style manifest without id should still parse (name used as display name)
+        let toml = r#"
+            name = "my-plugin"
+            version = "1.0.0"
+        "#;
+        let m = parse_manifest(toml).unwrap();
+        assert!(m.id.is_none());
+        assert_eq!(m.name, "my-plugin");
     }
 }

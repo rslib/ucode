@@ -202,11 +202,13 @@ mod tests {
     fn make_info(name: &str) -> PluginInfo {
         PluginInfo {
             manifest: crate::manifest::PluginManifest {
+                id: None,
                 name: name.to_owned(),
                 version: "1.0.0".into(),
                 description: None,
                 author: None,
                 min_api_version: None,
+                required_features: vec![],
                 hooks: vec![],
                 tools: vec![],
                 capabilities: crate::manifest::PluginCapabilities::default(),

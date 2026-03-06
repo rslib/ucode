@@ -41,6 +41,8 @@ struct LoadedPlugin {
     /// FQNs for tools: `{plugin_id}.{tool_name}`.
     tool_fqns: Vec<String>,
     policy: PluginPolicy,
+    /// Minimum payload versions required by this plugin per event name.
+    min_payload_versions: std::collections::HashMap<String, String>,
 }
 
 /// Host runtime that manages plugin lifecycle: load, handshake, dispatch, unload.
@@ -91,6 +93,7 @@ impl PluginHost {
             instance: PluginInstance::WithHooks(Box::new(plugin)),
             tool_fqns: vec![],
             policy: PluginPolicy::default_native(),
+            min_payload_versions: std::collections::HashMap::new(),
         });
         Ok(())
     }
@@ -119,6 +122,7 @@ impl PluginHost {
             instance: PluginInstance::WithTools(Box::new(plugin), specs),
             tool_fqns: fqns,
             policy: PluginPolicy::default_native(),
+            min_payload_versions: std::collections::HashMap::new(),
         });
         Ok(())
     }
@@ -147,6 +151,7 @@ impl PluginHost {
             instance: PluginInstance::Wasm(plugin),
             tool_fqns: vec![],
             policy: PluginPolicy::default_wasm(),
+            min_payload_versions: std::collections::HashMap::new(),
         });
         Ok(())
     }
@@ -241,6 +246,25 @@ impl PluginHost {
                     "skipping plugin: hook category not allowed"
                 );
                 continue;
+            }
+            // Check payload version compatibility
+            let event_name = record.event.event_name();
+            if let Some(min_version) = loaded.min_payload_versions.get(event_name) {
+                let current = record.event.payload_version();
+                if let (Ok(current_ver), Ok(min_ver)) = (
+                    semver::Version::parse(current),
+                    semver::Version::parse(min_version),
+                ) && current_ver < min_ver
+                {
+                    tracing::debug!(
+                        plugin_id = %loaded.plugin_id,
+                        event = event_name,
+                        current = current,
+                        required = %min_version,
+                        "skipping: payload version too old"
+                    );
+                    continue;
+                }
             }
             match &mut loaded.instance {
                 PluginInstance::WithHooks(p) => {
@@ -348,6 +372,85 @@ impl PluginHost {
         (results, aggregate)
     }
 
+    /// Pipeline dispatch for transform events.
+    ///
+    /// Each plugin in `transform_order` sees the output of the previous plugin.
+    /// `Modify` response = full replacement of the payload.
+    /// `Ok` response = pass through unchanged.
+    /// `Veto` response = skip this plugin (payload unchanged).
+    ///
+    /// Returns the final transformed payload.
+    pub fn dispatch_transform(
+        &mut self,
+        event_name: &str,
+        mut payload: String,
+        transform_order: &[String],
+    ) -> String {
+        for plugin_id in transform_order {
+            let Some(loaded) = self.plugins.iter_mut().find(|p| p.plugin_id == *plugin_id) else {
+                continue;
+            };
+
+            // Build the appropriate hook event
+            let event = match event_name {
+                "transform_messages" => HookEvent::TransformMessages {
+                    messages_json: payload.clone(),
+                },
+                "transform_system_prompt" => HookEvent::TransformSystemPrompt {
+                    prompt: payload.clone(),
+                },
+                _ => continue,
+            };
+            let record = HookRecord::new(event);
+
+            let response = match &mut loaded.instance {
+                PluginInstance::WithHooks(p) => {
+                    let resp = p.on_event(&record);
+                    validate_hook_response(
+                        resp,
+                        &loaded.policy,
+                        &record.event.override_class(),
+                        &loaded.plugin_id,
+                    )
+                }
+                PluginInstance::WithTools(_, _) => HookResponse::Ok,
+                #[cfg(feature = "wasm")]
+                PluginInstance::Wasm(_wasm_plugin) => {
+                    // WASM dispatch will be wired in Task 3
+                    HookResponse::Ok
+                }
+            };
+
+            // Pipeline: Modify = replace payload, Ok/Veto = pass through
+            if let HookResponse::Modify { changes } = response {
+                if let Some(s) = changes.as_str() {
+                    payload = s.to_string();
+                } else {
+                    payload = changes.to_string();
+                }
+            }
+        }
+        payload
+    }
+
+    /// Convenience: transform messages before LLM call.
+    pub fn transform_messages(
+        &mut self,
+        messages_json: String,
+        transform_order: &[String],
+    ) -> String {
+        self.dispatch_transform("transform_messages", messages_json, transform_order)
+    }
+
+    /// Convenience: transform system prompt before LLM call.
+    pub fn transform_system_prompt(
+        &mut self,
+        prompt: String,
+        transform_order: &[String],
+    ) -> String {
+        self.dispatch_transform("transform_system_prompt", prompt, transform_order)
+    }
+
     /// Number of currently loaded plugins.
     pub fn loaded_count(&self) -> usize {
         self.plugins.len()
@@ -428,6 +531,14 @@ fn validate_hook_response(
             }
         }
     }
+}
+
+/// Event names that use pipeline dispatch instead of fan-out.
+const TRANSFORM_EVENTS: &[&str] = &["transform_messages", "transform_system_prompt"];
+
+/// Returns true if this event uses pipeline dispatch.
+pub fn is_transform_event(event_name: &str) -> bool {
+    TRANSFORM_EVENTS.contains(&event_name)
 }
 
 impl Default for PluginHost {
@@ -1025,6 +1136,201 @@ mod tests {
                 .unwrap()
                 .isolation_level,
             PluginIsolationLevel::Full
+        );
+    }
+
+    #[test]
+    fn test_is_transform_event() {
+        assert!(is_transform_event("transform_messages"));
+        assert!(is_transform_event("transform_system_prompt"));
+        assert!(!is_transform_event("session_start"));
+    }
+
+    #[test]
+    fn test_dispatch_transform_ok_passes_through() {
+        let mut host = PluginHost::new();
+        host.load(TestPlugin::new("org.test.noop")).unwrap();
+        let input = r#"[{"role":"user","content":"hello"}]"#.to_string();
+        let output = host.dispatch_transform(
+            "transform_messages",
+            input.clone(),
+            &["org.test.noop".to_string()],
+        );
+        // TestPlugin returns Ok, so payload should be unchanged
+        assert_eq!(output, input);
+    }
+
+    #[test]
+    fn test_dispatch_transform_modify_replaces_payload() {
+        struct TransformPlugin;
+        impl Plugin for TransformPlugin {
+            fn handshake(&self) -> HandshakeRequest {
+                HandshakeRequest {
+                    plugin_id: "org.test.transformer".into(),
+                    plugin_version: semver::Version::new(1, 0, 0),
+                    min_api_version: semver::Version::new(1, 0, 0),
+                    required_features: [Feature::Hooks].into(),
+                    capabilities: PluginCapabilities::default(),
+                }
+            }
+            fn initialize(&mut self, _: &HandshakeResponse) -> Result<(), String> {
+                Ok(())
+            }
+            fn shutdown(&mut self) {}
+        }
+        impl HookHandler for TransformPlugin {
+            fn on_event(&mut self, record: &HookRecord) -> HookResponse {
+                if record.event.event_name() == "transform_messages" {
+                    HookResponse::Modify {
+                        changes: serde_json::json!(
+                            "[{\"role\":\"user\",\"content\":\"transformed\"}]"
+                        ),
+                    }
+                } else {
+                    HookResponse::Ok
+                }
+            }
+        }
+        let mut host = PluginHost::new();
+        host.load(TransformPlugin).unwrap();
+        // Set policy to allow Modify
+        let mut policy = PluginPolicy::default_native();
+        policy.max_override_class = OverrideClass::Guarded;
+        host.set_plugin_policy("org.test.transformer", policy);
+
+        let input = r#"[{"role":"user","content":"hello"}]"#.to_string();
+        let output = host.dispatch_transform(
+            "transform_messages",
+            input,
+            &["org.test.transformer".to_string()],
+        );
+        assert!(output.contains("transformed"));
+    }
+
+    #[test]
+    fn test_dispatch_transform_chains_plugins() {
+        struct AppendPlugin {
+            id: String,
+            suffix: String,
+        }
+        impl Plugin for AppendPlugin {
+            fn handshake(&self) -> HandshakeRequest {
+                HandshakeRequest {
+                    plugin_id: self.id.clone(),
+                    plugin_version: semver::Version::new(1, 0, 0),
+                    min_api_version: semver::Version::new(1, 0, 0),
+                    required_features: [Feature::Hooks].into(),
+                    capabilities: PluginCapabilities::default(),
+                }
+            }
+            fn initialize(&mut self, _: &HandshakeResponse) -> Result<(), String> {
+                Ok(())
+            }
+            fn shutdown(&mut self) {}
+        }
+        impl HookHandler for AppendPlugin {
+            fn on_event(&mut self, record: &HookRecord) -> HookResponse {
+                if record.event.event_name() == "transform_system_prompt"
+                    && let HookEvent::TransformSystemPrompt { ref prompt } = record.event
+                {
+                    return HookResponse::Modify {
+                        changes: serde_json::Value::String(format!("{}{}", prompt, self.suffix)),
+                    };
+                }
+                HookResponse::Ok
+            }
+        }
+        let mut host = PluginHost::new();
+        host.load(AppendPlugin {
+            id: "org.test.a".into(),
+            suffix: " [A]".into(),
+        })
+        .unwrap();
+        host.load(AppendPlugin {
+            id: "org.test.b".into(),
+            suffix: " [B]".into(),
+        })
+        .unwrap();
+
+        // Set policies to allow Modify
+        let mut policy = PluginPolicy::default_native();
+        policy.max_override_class = OverrideClass::Guarded;
+        host.set_plugin_policy("org.test.a", policy.clone());
+        host.set_plugin_policy("org.test.b", policy);
+
+        let output = host.dispatch_transform(
+            "transform_system_prompt",
+            "Base prompt".to_string(),
+            &["org.test.a".to_string(), "org.test.b".to_string()],
+        );
+        // A appends " [A]", B sees "Base prompt [A]" and appends " [B]"
+        assert_eq!(output, "Base prompt [A] [B]");
+    }
+
+    #[test]
+    fn test_dispatch_transform_skips_missing_plugin() {
+        let mut host = PluginHost::new();
+        let input = "original".to_string();
+        let output = host.dispatch_transform(
+            "transform_system_prompt",
+            input.clone(),
+            &["org.nonexistent".to_string()],
+        );
+        assert_eq!(output, input);
+    }
+
+    #[test]
+    fn test_dispatch_skips_on_payload_version_mismatch() {
+        let mut host = PluginHost::new();
+        let plugin = TestPlugin::new("org.test.future");
+        host.load(plugin).unwrap();
+
+        // Set min_payload_versions to require 2.0.0 for session_start
+        if let Some(loaded) = host
+            .plugins
+            .iter_mut()
+            .find(|p| p.plugin_id == "org.test.future")
+        {
+            loaded
+                .min_payload_versions
+                .insert("session_start".to_string(), "2.0.0".to_string());
+        }
+
+        // Current payload version is 1.0.0, so this should be skipped
+        let results = host.dispatch_hook(HookEvent::SessionStart {
+            session_id: "s1".into(),
+        });
+        assert_eq!(
+            results.len(),
+            0,
+            "plugin should be skipped due to version mismatch"
+        );
+    }
+
+    #[test]
+    fn test_dispatch_allows_matching_payload_version() {
+        let mut host = PluginHost::new();
+        let plugin = TestPlugin::new("org.test.current");
+        host.load(plugin).unwrap();
+
+        // Set min_payload_versions to require 1.0.0 (matches current)
+        if let Some(loaded) = host
+            .plugins
+            .iter_mut()
+            .find(|p| p.plugin_id == "org.test.current")
+        {
+            loaded
+                .min_payload_versions
+                .insert("session_start".to_string(), "1.0.0".to_string());
+        }
+
+        let results = host.dispatch_hook(HookEvent::SessionStart {
+            session_id: "s1".into(),
+        });
+        assert_eq!(
+            results.len(),
+            1,
+            "plugin should be dispatched with matching version"
         );
     }
 }

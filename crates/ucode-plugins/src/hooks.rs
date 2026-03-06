@@ -308,6 +308,14 @@ pub enum HookEvent {
         error: String,
         context: String,
     },
+
+    // --- Transform (pipeline dispatch) ---
+    TransformMessages {
+        messages_json: String,
+    },
+    TransformSystemPrompt {
+        prompt: String,
+    },
 }
 
 impl HookEvent {
@@ -392,6 +400,9 @@ impl HookEvent {
             Self::PaletteCommandExecuted { .. } => "palette_command_executed",
             // Diagnostics
             Self::UnhandledError { .. } => "unhandled_error",
+            // Transform
+            Self::TransformMessages { .. } => "transform_messages",
+            Self::TransformSystemPrompt { .. } => "transform_system_prompt",
         }
     }
 
@@ -470,8 +481,20 @@ impl HookEvent {
             | Self::BeforeRunCmd { .. }
             | Self::BeforeFileRead { .. }
             | Self::BeforeFileWrite { .. }
-            | Self::BudgetThresholdReached { .. } => OverrideClass::Guarded,
+            | Self::BudgetThresholdReached { .. }
+            | Self::TransformMessages { .. }
+            | Self::TransformSystemPrompt { .. } => OverrideClass::Guarded,
         }
+    }
+
+    /// Returns the semver payload version for this event type.
+    ///
+    /// All events start at "1.0.0". Bump minor for additive fields,
+    /// major for breaking changes.
+    pub fn payload_version(&self) -> &'static str {
+        // All events at v1 initially. When a payload schema changes,
+        // add a match arm for the specific variant(s) that changed.
+        "1.0.0"
     }
 
     /// Hook category for policy scoping.
@@ -578,6 +601,9 @@ impl HookEvent {
 
             // Diagnostic
             Self::UnhandledError { .. } => "diagnostic",
+
+            // Transform
+            Self::TransformMessages { .. } | Self::TransformSystemPrompt { .. } => "transform",
         }
     }
 }
@@ -1340,6 +1366,26 @@ mod tests {
     }
 
     #[test]
+    fn test_transform_messages_event() {
+        let event = HookEvent::TransformMessages {
+            messages_json: r#"[{"role":"user","content":"hello"}]"#.to_string(),
+        };
+        assert_eq!(event.event_name(), "transform_messages");
+        assert_eq!(event.override_class(), OverrideClass::Guarded);
+        assert_eq!(event.hook_category(), "transform");
+    }
+
+    #[test]
+    fn test_transform_system_prompt_event() {
+        let event = HookEvent::TransformSystemPrompt {
+            prompt: "You are a helpful assistant.".to_string(),
+        };
+        assert_eq!(event.event_name(), "transform_system_prompt");
+        assert_eq!(event.override_class(), OverrideClass::Guarded);
+        assert_eq!(event.hook_category(), "transform");
+    }
+
+    #[test]
     fn test_hook_category_session() {
         assert_eq!(
             HookEvent::SessionStart {
@@ -1618,5 +1664,44 @@ mod tests {
             .override_class(),
             OverrideClass::Safe
         );
+    }
+
+    #[test]
+    fn test_payload_version_default() {
+        let event = HookEvent::SessionStart {
+            session_id: "x".into(),
+        };
+        assert_eq!(event.payload_version(), "1.0.0");
+    }
+
+    #[test]
+    fn test_payload_version_all_events_valid_semver() {
+        // Spot check a few events to ensure they all return valid semver
+        let events: Vec<HookEvent> = vec![
+            HookEvent::SessionStart {
+                session_id: "s".into(),
+            },
+            HookEvent::BeforeToolCall {
+                tool_name: "t".into(),
+                args: serde_json::Value::Null,
+            },
+            HookEvent::ContextOverflow {
+                current_tokens: 0,
+                max_tokens: 0,
+            },
+            HookEvent::UnhandledError {
+                error: "e".into(),
+                context: "c".into(),
+            },
+        ];
+        for event in events {
+            let version = event.payload_version();
+            assert!(
+                semver::Version::parse(version).is_ok(),
+                "invalid semver for {}: {}",
+                event.event_name(),
+                version
+            );
+        }
     }
 }

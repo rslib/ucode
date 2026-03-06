@@ -18,6 +18,11 @@ pub struct PluginManifest {
     /// Hooks this plugin subscribes to.
     #[serde(default)]
     pub hooks: Vec<String>,
+    /// Minimum payload versions required by this plugin, keyed by event name.
+    /// If a plugin requires a higher version than the host provides, the event
+    /// is silently skipped for that plugin.
+    #[serde(default)]
+    pub min_payload_versions: std::collections::HashMap<String, String>,
     /// Tools this plugin exports.
     #[serde(default)]
     pub tools: Vec<PluginToolDef>,
@@ -279,6 +284,7 @@ mod tests {
             min_api_version: None,
             required_features: vec![],
             hooks: vec![],
+            min_payload_versions: std::collections::HashMap::new(),
             tools: vec![],
             capabilities: PluginCapabilities::default(),
         };
@@ -299,6 +305,7 @@ mod tests {
             min_api_version: None,
             required_features: vec![],
             hooks: vec![],
+            min_payload_versions: std::collections::HashMap::new(),
             tools: vec![],
             capabilities: PluginCapabilities::default(),
         };
@@ -318,6 +325,7 @@ mod tests {
             min_api_version: None,
             required_features: vec![],
             hooks: vec![],
+            min_payload_versions: std::collections::HashMap::new(),
             tools: vec![PluginToolDef {
                 name: String::new(),
                 description: None,
@@ -341,6 +349,7 @@ mod tests {
             min_api_version: None,
             required_features: vec![],
             hooks: vec![String::new()],
+            min_payload_versions: std::collections::HashMap::new(),
             tools: vec![],
             capabilities: PluginCapabilities::default(),
         };

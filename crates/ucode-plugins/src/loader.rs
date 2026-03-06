@@ -109,6 +109,35 @@ impl Default for PluginRegistry {
     }
 }
 
+/// Returns default plugin search paths in priority order:
+/// 1. `{workspace_root}/.ucode/plugins` (project-local, only when `workspace_root` is `Some`)
+/// 2. `$UCODE_HOME/plugins` (when the env var is set)
+/// 3. `~/.ucode/plugins` (user-level fallback via `$HOME`)
+pub fn default_plugin_search_paths(workspace_root: Option<&Path>) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+
+    if let Some(root) = workspace_root {
+        paths.push(root.join(".ucode/plugins"));
+    }
+
+    if let Ok(ucode_home) = std::env::var("UCODE_HOME") {
+        paths.push(PathBuf::from(ucode_home).join("plugins"));
+    }
+
+    if let Ok(home) = std::env::var("HOME") {
+        paths.push(PathBuf::from(home).join(".ucode/plugins"));
+    }
+
+    paths
+}
+
+/// Combines [`default_plugin_search_paths`] with caller-supplied extra paths appended at the end.
+pub fn plugin_search_paths(workspace_root: Option<&Path>, extras: &[PathBuf]) -> Vec<PathBuf> {
+    let mut paths = default_plugin_search_paths(workspace_root);
+    paths.extend_from_slice(extras);
+    paths
+}
+
 /// Discover plugins from a list of search directories.
 ///
 /// Each directory is scanned for subdirectories containing `plugin.toml`.
@@ -210,6 +239,7 @@ mod tests {
                 min_api_version: None,
                 required_features: vec![],
                 hooks: vec![],
+                min_payload_versions: std::collections::HashMap::new(),
                 tools: vec![],
                 capabilities: crate::manifest::PluginCapabilities::default(),
             },
@@ -291,5 +321,35 @@ mod tests {
             }),
             1
         );
+    }
+
+    #[test]
+    fn test_default_plugin_paths_includes_project_and_user() {
+        let paths = default_plugin_search_paths(Some(Path::new("/fake/project")));
+        assert_eq!(paths[0], PathBuf::from("/fake/project/.ucode/plugins"));
+        assert!(paths.len() >= 2);
+        // Second path ends with "plugins" (either UCODE_HOME/plugins or ~/.ucode/plugins)
+        assert!(paths[1].ends_with("plugins"));
+    }
+
+    #[test]
+    fn test_default_plugin_paths_no_workspace() {
+        let paths = default_plugin_search_paths(None);
+        // At minimum the user-level path must be present (HOME is always set in CI/dev)
+        assert!(!paths.is_empty());
+        assert!(paths[0].ends_with("plugins"));
+    }
+
+    #[test]
+    fn test_plugin_paths_with_extras() {
+        let extras = vec![
+            PathBuf::from("/opt/ucode-plugins"),
+            PathBuf::from("/custom"),
+        ];
+        let paths = plugin_search_paths(Some(Path::new("/project")), &extras);
+        // project + user-level + 2 extras = at least 4
+        assert!(paths.len() >= 4);
+        assert_eq!(paths[paths.len() - 2], PathBuf::from("/opt/ucode-plugins"));
+        assert_eq!(paths[paths.len() - 1], PathBuf::from("/custom"));
     }
 }

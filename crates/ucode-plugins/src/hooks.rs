@@ -3,7 +3,8 @@ use serde::{Deserialize, Serialize};
 
 /// Safety classification for hook events, determining whether the host
 /// auto-applies the hook's side-effects or requires user approval.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum OverrideClass {
     /// Auto-applied; no approval needed (e.g., logging, observability).
     Safe,

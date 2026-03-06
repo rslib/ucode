@@ -1,0 +1,533 @@
+use std::time::Instant;
+
+use crate::keybinds::{KeybindPreset, KeybindResolver};
+use crate::layout::{InputState, SidebarState, TerminalSize};
+use crate::theme::{Density, UcodeTheme};
+
+// ---------------------------------------------------------------------------
+// ToolCallStatus
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ToolCallStatus {
+    Running,
+    Success,
+    Failed,
+    PendingApproval,
+}
+
+// ---------------------------------------------------------------------------
+// StreamingMessage
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+pub struct StreamingMessage {
+    pub content: String,
+    pub started_at: Instant,
+    pub token_count: usize,
+    pub is_complete: bool,
+}
+
+impl StreamingMessage {
+    pub fn new() -> Self {
+        Self {
+            content: String::new(),
+            started_at: Instant::now(),
+            token_count: 0,
+            is_complete: false,
+        }
+    }
+
+    /// Append `token` directly to content and increment the counter.
+    pub fn push_token(&mut self, token: &str) {
+        self.content.push_str(token);
+        self.token_count += 1;
+    }
+
+    pub fn elapsed_secs(&self) -> f64 {
+        self.started_at.elapsed().as_secs_f64()
+    }
+
+    /// Tokens per second since the message started. Returns 0.0 if elapsed is
+    /// effectively zero to avoid division by zero.
+    pub fn tokens_per_sec(&self) -> f64 {
+        let elapsed = self.elapsed_secs();
+        if elapsed < f64::EPSILON {
+            0.0
+        } else {
+            self.token_count as f64 / elapsed
+        }
+    }
+
+    pub fn finalize(&mut self) {
+        self.is_complete = true;
+    }
+}
+
+impl Default for StreamingMessage {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// TranscriptEntry
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum TranscriptEntry {
+    UserMessage(String),
+    /// Completed assistant message.
+    AssistantMessage(String),
+    /// In-progress assistant message.
+    Streaming(StreamingMessage),
+    ToolCall {
+        name: String,
+        status: ToolCallStatus,
+        duration_ms: Option<u64>,
+        summary: Option<String>,
+    },
+    /// e.g. "rate-limit on anthropic -> openai/gpt-4o"
+    RouterEvent(String),
+    /// Info/warning from the system.
+    SystemMessage(String),
+}
+
+// Manual PartialEq for StreamingMessage so TranscriptEntry can derive it.
+// Two StreamingMessages are equal when their content, token_count, and
+// is_complete match; we deliberately ignore started_at (an Instant).
+impl PartialEq for StreamingMessage {
+    fn eq(&self, other: &Self) -> bool {
+        self.content == other.content
+            && self.token_count == other.token_count
+            && self.is_complete == other.is_complete
+    }
+}
+
+// ---------------------------------------------------------------------------
+// FocusTarget
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FocusTarget {
+    #[default]
+    Input,
+    Transcript,
+    Sidebar,
+    Overlay,
+}
+
+// ---------------------------------------------------------------------------
+// Multiplexer detection
+// ---------------------------------------------------------------------------
+
+/// Detect the name of the running terminal multiplexer from environment
+/// variables. Returns `None` when not inside a known multiplexer.
+fn detect_multiplexer() -> Option<String> {
+    // TMUX is set by tmux itself.
+    if std::env::var("TMUX").is_ok() {
+        return Some("tmux".to_owned());
+    }
+    // Zellij sets ZELLIJ.
+    if std::env::var("ZELLIJ").is_ok() {
+        return Some("zellij".to_owned());
+    }
+    // GNU Screen sets STY.
+    if std::env::var("STY").is_ok() {
+        return Some("screen".to_owned());
+    }
+    None
+}
+
+// ---------------------------------------------------------------------------
+// AppState
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+pub struct AppState {
+    pub theme: UcodeTheme,
+    pub density: Density,
+    pub sidebar: SidebarState,
+    pub input: InputState,
+    pub keybinds: KeybindResolver,
+    pub transcript: Vec<TranscriptEntry>,
+    pub scroll_offset: usize,
+    /// When true the view is pinned to the bottom of the transcript.
+    pub auto_scroll: bool,
+    pub focus: FocusTarget,
+    /// Set whenever state changes; cleared by the render loop after drawing.
+    pub dirty: bool,
+    /// True while a streaming response is in progress.
+    pub streaming: bool,
+    pub terminal_size: TerminalSize,
+    pub session_title: String,
+    pub session_id: String,
+    pub parent_title: Option<String>,
+    /// Detected multiplexer name (e.g. "tmux", "zellij", "screen").
+    pub multiplexer: Option<String>,
+}
+
+impl AppState {
+    pub fn new() -> Self {
+        let terminal_size = TerminalSize {
+            width: 120,
+            height: 40,
+        };
+        let sidebar = SidebarState::new(terminal_size.sidebar_mode());
+
+        Self {
+            theme: UcodeTheme::default(),
+            density: Density::default(),
+            sidebar,
+            input: InputState::default(),
+            keybinds: KeybindResolver::new(KeybindPreset::default()),
+            transcript: Vec::new(),
+            scroll_offset: 0,
+            auto_scroll: true,
+            focus: FocusTarget::default(),
+            dirty: true,
+            streaming: false,
+            terminal_size,
+            session_title: String::new(),
+            session_id: String::new(),
+            parent_title: None,
+            multiplexer: detect_multiplexer(),
+        }
+    }
+
+    pub fn mark_dirty(&mut self) {
+        self.dirty = true;
+    }
+
+    // ------------------------------------------------------------------
+    // Streaming
+    // ------------------------------------------------------------------
+
+    /// Push a new [`TranscriptEntry::Streaming`] and enter streaming mode.
+    pub fn start_streaming(&mut self) {
+        self.transcript
+            .push(TranscriptEntry::Streaming(StreamingMessage::new()));
+        self.streaming = true;
+        self.mark_dirty();
+    }
+
+    /// Append `token` to the active streaming entry.
+    ///
+    /// If the last entry is not a `Streaming` variant a new one is created
+    /// (defensive: callers should always call `start_streaming` first).
+    pub fn push_token(&mut self, token: &str) {
+        match self.transcript.last_mut() {
+            Some(TranscriptEntry::Streaming(msg)) => {
+                msg.push_token(token);
+            }
+            _ => {
+                let mut msg = StreamingMessage::new();
+                msg.push_token(token);
+                self.transcript.push(TranscriptEntry::Streaming(msg));
+                self.streaming = true;
+            }
+        }
+
+        if self.auto_scroll {
+            // Keep scroll_offset pointing past the end so the renderer always
+            // shows the latest content.  The renderer clamps to the real max.
+            self.scroll_offset = self.scroll_offset.saturating_add(1);
+        }
+
+        self.mark_dirty();
+    }
+
+    /// Convert the last `Streaming` entry into a completed `AssistantMessage`.
+    pub fn finalize_streaming(&mut self) {
+        if let Some(entry) = self.transcript.last_mut()
+            && let TranscriptEntry::Streaming(msg) = entry
+        {
+            let content = msg.content.clone();
+            *entry = TranscriptEntry::AssistantMessage(content);
+        }
+        self.streaming = false;
+        self.mark_dirty();
+    }
+
+    // ------------------------------------------------------------------
+    // Transcript mutations
+    // ------------------------------------------------------------------
+
+    pub fn push_user_message(&mut self, msg: String) {
+        self.transcript.push(TranscriptEntry::UserMessage(msg));
+        self.mark_dirty();
+    }
+
+    /// Push a new `ToolCall` with `Running` status and return its index.
+    pub fn push_tool_call(&mut self, name: String) -> usize {
+        let index = self.transcript.len();
+        self.transcript.push(TranscriptEntry::ToolCall {
+            name,
+            status: ToolCallStatus::Running,
+            duration_ms: None,
+            summary: None,
+        });
+        self.mark_dirty();
+        index
+    }
+
+    /// Update an existing tool call entry by index.
+    ///
+    /// Silently does nothing if `index` is out of bounds or does not point to
+    /// a `ToolCall` entry.
+    pub fn update_tool_call(
+        &mut self,
+        index: usize,
+        status: ToolCallStatus,
+        duration_ms: Option<u64>,
+        summary: Option<String>,
+    ) {
+        if let Some(TranscriptEntry::ToolCall {
+            status: s,
+            duration_ms: d,
+            summary: sum,
+            ..
+        }) = self.transcript.get_mut(index)
+        {
+            *s = status;
+            *d = duration_ms;
+            *sum = summary;
+            self.dirty = true;
+        }
+    }
+
+    pub fn push_router_event(&mut self, msg: String) {
+        self.transcript.push(TranscriptEntry::RouterEvent(msg));
+        self.mark_dirty();
+    }
+
+    pub fn push_system_message(&mut self, msg: String) {
+        self.transcript.push(TranscriptEntry::SystemMessage(msg));
+        self.mark_dirty();
+    }
+
+    // ------------------------------------------------------------------
+    // Scroll
+    // ------------------------------------------------------------------
+
+    /// Scroll up by `lines`, disengaging auto-scroll.
+    pub fn scroll_up(&mut self, lines: usize) {
+        self.scroll_offset = self.scroll_offset.saturating_sub(lines);
+        self.auto_scroll = false;
+        self.mark_dirty();
+    }
+
+    /// Scroll down by `lines`. Re-engages auto-scroll when at the bottom.
+    pub fn scroll_down(&mut self, lines: usize) {
+        self.scroll_offset = self.scroll_offset.saturating_add(lines);
+        // We treat "at bottom" as scroll_offset >= transcript length.
+        // The renderer is responsible for clamping to the real maximum; here
+        // we just check whether we've reached or passed the end.
+        if self.scroll_offset >= self.transcript.len() {
+            self.auto_scroll = true;
+        }
+        self.mark_dirty();
+    }
+
+    /// Jump to the bottom and re-engage auto-scroll.
+    pub fn scroll_to_bottom(&mut self) {
+        self.scroll_offset = self.transcript.len();
+        self.auto_scroll = true;
+        self.mark_dirty();
+    }
+
+    // ------------------------------------------------------------------
+    // Resize
+    // ------------------------------------------------------------------
+
+    pub fn handle_resize(&mut self, width: u16, height: u16) {
+        self.terminal_size = TerminalSize { width, height };
+        self.sidebar.mode = self.terminal_size.sidebar_mode();
+        self.mark_dirty();
+    }
+}
+
+impl Default for AppState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn streaming_message_push_token() {
+        let mut msg = StreamingMessage::new();
+        msg.push_token("Hello");
+        msg.push_token(", ");
+        msg.push_token("world");
+        assert_eq!(msg.content, "Hello, world");
+        assert_eq!(msg.token_count, 3);
+    }
+
+    #[test]
+    fn streaming_message_tokens_per_sec() {
+        let mut msg = StreamingMessage::new();
+        // Push enough tokens that elapsed > 0 is virtually guaranteed.
+        for _ in 0..10 {
+            msg.push_token("tok");
+        }
+        // Spin briefly so elapsed_secs() is non-zero.
+        let start = Instant::now();
+        while start.elapsed().as_nanos() == 0 {}
+
+        // tok/s should be positive (we can't assert an exact value).
+        assert!(msg.tokens_per_sec() >= 0.0);
+        assert_eq!(msg.token_count, 10);
+    }
+
+    #[test]
+    fn streaming_message_finalize() {
+        let mut msg = StreamingMessage::new();
+        assert!(!msg.is_complete);
+        msg.finalize();
+        assert!(msg.is_complete);
+    }
+
+    #[test]
+    fn app_state_new_defaults() {
+        let app = AppState::new();
+        assert!(app.auto_scroll);
+        assert!(app.dirty);
+        assert!(!app.streaming);
+        assert_eq!(app.focus, FocusTarget::Input);
+        assert_eq!(app.scroll_offset, 0);
+        assert!(app.transcript.is_empty());
+    }
+
+    #[test]
+    fn app_state_push_user_message() {
+        let mut app = AppState::new();
+        app.push_user_message("hello".to_owned());
+        assert_eq!(app.transcript.len(), 1);
+        assert_eq!(
+            app.transcript[0],
+            TranscriptEntry::UserMessage("hello".to_owned())
+        );
+    }
+
+    #[test]
+    fn app_state_streaming_lifecycle() {
+        let mut app = AppState::new();
+        app.start_streaming();
+        assert!(app.streaming);
+        assert_eq!(app.transcript.len(), 1);
+        assert!(matches!(app.transcript[0], TranscriptEntry::Streaming(_)));
+
+        app.push_token("Hello");
+        app.push_token(" ");
+        app.push_token("world");
+
+        app.finalize_streaming();
+        assert!(!app.streaming);
+        assert_eq!(app.transcript.len(), 1);
+        assert_eq!(
+            app.transcript[0],
+            TranscriptEntry::AssistantMessage("Hello world".to_owned())
+        );
+    }
+
+    #[test]
+    fn app_state_scroll_disengages_auto_scroll() {
+        let mut app = AppState::new();
+        app.push_user_message("msg".to_owned());
+        assert!(app.auto_scroll);
+        app.scroll_up(1);
+        assert!(!app.auto_scroll);
+    }
+
+    #[test]
+    fn app_state_scroll_to_bottom_reengages() {
+        let mut app = AppState::new();
+        app.push_user_message("msg".to_owned());
+        app.scroll_up(1);
+        assert!(!app.auto_scroll);
+        app.scroll_to_bottom();
+        assert!(app.auto_scroll);
+    }
+
+    #[test]
+    fn app_state_push_tool_call() {
+        let mut app = AppState::new();
+        let idx = app.push_tool_call("read_file".to_owned());
+        assert_eq!(idx, 0);
+        match &app.transcript[0] {
+            TranscriptEntry::ToolCall { name, status, .. } => {
+                assert_eq!(name, "read_file");
+                assert_eq!(*status, ToolCallStatus::Running);
+            }
+            _ => panic!("expected ToolCall"),
+        }
+    }
+
+    #[test]
+    fn app_state_update_tool_call() {
+        let mut app = AppState::new();
+        let idx = app.push_tool_call("write_file".to_owned());
+        app.update_tool_call(
+            idx,
+            ToolCallStatus::Success,
+            Some(42),
+            Some("wrote 3 lines".to_owned()),
+        );
+        match &app.transcript[idx] {
+            TranscriptEntry::ToolCall {
+                status,
+                duration_ms,
+                summary,
+                ..
+            } => {
+                assert_eq!(*status, ToolCallStatus::Success);
+                assert_eq!(*duration_ms, Some(42));
+                assert_eq!(summary.as_deref(), Some("wrote 3 lines"));
+            }
+            _ => panic!("expected ToolCall"),
+        }
+    }
+
+    #[test]
+    fn app_state_dirty_flag() {
+        let mut app = AppState::new();
+        // new() sets dirty = true
+        assert!(app.dirty);
+
+        // Simulate render loop clearing the flag.
+        app.dirty = false;
+        assert!(!app.dirty);
+
+        // Any mutation re-sets it.
+        app.push_user_message("hi".to_owned());
+        assert!(app.dirty);
+
+        app.dirty = false;
+        app.start_streaming();
+        assert!(app.dirty);
+
+        app.dirty = false;
+        app.push_token("tok");
+        assert!(app.dirty);
+
+        app.dirty = false;
+        app.finalize_streaming();
+        assert!(app.dirty);
+
+        app.dirty = false;
+        app.scroll_up(1);
+        assert!(app.dirty);
+
+        app.dirty = false;
+        app.scroll_to_bottom();
+        assert!(app.dirty);
+    }
+}

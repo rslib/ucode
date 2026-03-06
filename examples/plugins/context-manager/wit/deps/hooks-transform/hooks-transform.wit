@@ -1,0 +1,11 @@
+package ucode:hooks-transform;
+
+interface on-transform-messages {
+    use ucode:hooks-types/types.{hook-response, transform-messages-payload};
+    handle: func(payload: transform-messages-payload) -> hook-response;
+}
+
+interface on-transform-system-prompt {
+    use ucode:hooks-types/types.{hook-response, transform-system-prompt-payload};
+    handle: func(payload: transform-system-prompt-payload) -> hook-response;
+}

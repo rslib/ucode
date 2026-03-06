@@ -1,0 +1,11 @@
+package example:context-manager@0.1.0;
+
+world context-manager-plugin {
+    import ucode:plugin/host-log;
+
+    export ucode:plugin/lifecycle;
+    export ucode:plugin/tool-provider;
+    export ucode:hooks-session/on-start;
+    export ucode:hooks-session/on-end;
+    export ucode:hooks-transform/on-transform-messages;
+}

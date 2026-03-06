@@ -109,6 +109,9 @@ pub fn event_to_wit_interface(event_name: &str) -> Option<&'static str> {
         "palette_command_executed" => "ucode:hooks-command/on-palette-executed",
         // Diagnostic
         "unhandled_error" => "ucode:hooks-diagnostic/on-unhandled-error",
+        // Transform
+        "transform_messages" => "ucode:hooks-transform/on-transform-messages",
+        "transform_system_prompt" => "ucode:hooks-transform/on-transform-system-prompt",
         _ => return None,
     })
 }
@@ -221,6 +224,14 @@ pub const EVENT_INTERFACE_MAP: &[(&str, &str)] = &[
         "unhandled_error",
         "ucode:hooks-diagnostic/on-unhandled-error",
     ),
+    (
+        "transform_messages",
+        "ucode:hooks-transform/on-transform-messages",
+    ),
+    (
+        "transform_system_prompt",
+        "ucode:hooks-transform/on-transform-system-prompt",
+    ),
 ];
 
 #[cfg(test)]
@@ -229,10 +240,9 @@ mod tests {
 
     #[test]
     fn test_event_interface_map_has_64_entries() {
-        // world.wit exports 65 hook interfaces (the task spec said 64, but
-        // the actual WIT has 65 — verified by counting `export ucode:hooks*`
-        // lines in world.wit).
-        assert_eq!(EVENT_INTERFACE_MAP.len(), 65);
+        // world.wit exports 67 hook interfaces — verified by counting
+        // `export ucode:hooks*` lines in world.wit.
+        assert_eq!(EVENT_INTERFACE_MAP.len(), 67);
     }
 
     #[test]

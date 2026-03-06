@@ -1,0 +1,26 @@
+package ucode:hooks-session;
+
+interface on-start {
+    use ucode:hooks-types/types.{hook-response, session-start-payload};
+    handle: func(payload: session-start-payload) -> hook-response;
+}
+
+interface on-end {
+    use ucode:hooks-types/types.{hook-response, session-end-payload};
+    handle: func(payload: session-end-payload) -> hook-response;
+}
+
+interface on-title-generated {
+    use ucode:hooks-types/types.{hook-response, session-title-payload};
+    handle: func(payload: session-title-payload) -> hook-response;
+}
+
+interface on-title-updated {
+    use ucode:hooks-types/types.{hook-response, session-title-payload};
+    handle: func(payload: session-title-payload) -> hook-response;
+}
+
+interface on-config-reloaded {
+    use ucode:hooks-types/types.{hook-response};
+    handle: func() -> hook-response;
+}

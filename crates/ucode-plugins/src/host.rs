@@ -43,6 +43,9 @@ struct LoadedPlugin {
     policy: PluginPolicy,
     /// Minimum payload versions required by this plugin per event name.
     min_payload_versions: std::collections::HashMap<String, String>,
+    /// Tool specs for WASM plugins (empty for native plugins).
+    #[cfg(feature = "wasm")]
+    wasm_tool_specs: Vec<PluginToolDef>,
 }
 
 /// Host runtime that manages plugin lifecycle: load, handshake, dispatch, unload.
@@ -94,6 +97,8 @@ impl PluginHost {
             tool_fqns: vec![],
             policy: PluginPolicy::default_native(),
             min_payload_versions: std::collections::HashMap::new(),
+            #[cfg(feature = "wasm")]
+            wasm_tool_specs: vec![],
         });
         Ok(())
     }
@@ -123,6 +128,8 @@ impl PluginHost {
             tool_fqns: fqns,
             policy: PluginPolicy::default_native(),
             min_payload_versions: std::collections::HashMap::new(),
+            #[cfg(feature = "wasm")]
+            wasm_tool_specs: vec![],
         });
         Ok(())
     }
@@ -145,13 +152,38 @@ impl PluginHost {
         } else {
             plugin.plugin_id().to_string()
         };
+
+        // Probe for tool-provider interface and collect tool specs at load time.
+        let (tool_fqns, wasm_tool_specs) = if plugin.has_tool_provider() {
+            match plugin.list_tools(&PluginPolicy::default_wasm()) {
+                Ok(specs) => {
+                    let fqns = specs
+                        .iter()
+                        .map(|t| format!("{}.{}", plugin_id, t.name))
+                        .collect();
+                    (fqns, specs)
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        plugin_id = %plugin_id,
+                        error = %e,
+                        "failed to list WASM plugin tools"
+                    );
+                    (vec![], vec![])
+                }
+            }
+        } else {
+            (vec![], vec![])
+        };
+
         tracing::info!(plugin_id = %plugin_id, "WASM plugin loaded with default policy");
         self.plugins.push(LoadedPlugin {
             plugin_id,
             instance: PluginInstance::Wasm(plugin),
-            tool_fqns: vec![],
+            tool_fqns,
             policy: PluginPolicy::default_wasm(),
             min_payload_versions: std::collections::HashMap::new(),
+            wasm_tool_specs,
         });
         Ok(())
     }
@@ -318,10 +350,46 @@ impl PluginHost {
                 PluginInstance::Wasm(wasm_plugin) => {
                     let event_name = record.event.event_name();
                     if wasm_plugin.handles_event(event_name) {
-                        results.push(HookResult {
-                            plugin_id: loaded.plugin_id.clone(),
-                            response: HookResponse::Ok,
-                        });
+                        match wasm_plugin.dispatch_hook(&record, &loaded.policy) {
+                            Ok(response) => {
+                                let response = validate_hook_response(
+                                    response,
+                                    &loaded.policy,
+                                    &event_override_class,
+                                    &loaded.plugin_id,
+                                );
+                                if let HookResponse::Modify { ref changes } = response {
+                                    accumulated_changes = Some(match accumulated_changes.take() {
+                                        Some(mut existing) => {
+                                            if let (Some(obj), Some(new_obj)) =
+                                                (existing.as_object_mut(), changes.as_object())
+                                            {
+                                                for (k, v) in new_obj {
+                                                    obj.insert(k.clone(), v.clone());
+                                                }
+                                            }
+                                            existing
+                                        }
+                                        None => changes.clone(),
+                                    });
+                                }
+                                results.push(HookResult {
+                                    plugin_id: loaded.plugin_id.clone(),
+                                    response,
+                                });
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    plugin_id = %loaded.plugin_id,
+                                    error = %e,
+                                    "WASM hook dispatch failed, treating as Ok"
+                                );
+                                results.push(HookResult {
+                                    plugin_id: loaded.plugin_id.clone(),
+                                    response: HookResponse::Ok,
+                                });
+                            }
+                        }
                     }
                 }
             }
@@ -333,10 +401,19 @@ impl PluginHost {
     pub fn plugin_tools(&self) -> Vec<(String, &PluginToolDef)> {
         let mut out = Vec::new();
         for loaded in &self.plugins {
-            if let PluginInstance::WithTools(_, specs) = &loaded.instance {
-                for (fqn, spec) in loaded.tool_fqns.iter().zip(specs.iter()) {
-                    out.push((fqn.clone(), spec));
+            match &loaded.instance {
+                PluginInstance::WithTools(_, specs) => {
+                    for (fqn, spec) in loaded.tool_fqns.iter().zip(specs.iter()) {
+                        out.push((fqn.clone(), spec));
+                    }
                 }
+                #[cfg(feature = "wasm")]
+                PluginInstance::Wasm(_) => {
+                    for (fqn, spec) in loaded.tool_fqns.iter().zip(loaded.wasm_tool_specs.iter()) {
+                        out.push((fqn.clone(), spec));
+                    }
+                }
+                _ => {}
             }
         }
         out
@@ -349,14 +426,27 @@ impl PluginHost {
         args: serde_json::Value,
     ) -> Result<serde_json::Value, String> {
         for loaded in &mut self.plugins {
-            if let PluginInstance::WithTools(provider, _) = &mut loaded.instance
-                && loaded.tool_fqns.iter().any(|f| f == fqn)
-            {
-                // Strip the `{plugin_id}.` prefix to get the local tool name.
-                let local_name = fqn
-                    .strip_prefix(&format!("{}.", loaded.plugin_id))
-                    .unwrap_or(fqn);
-                return provider.invoke_tool(local_name, args);
+            if !loaded.tool_fqns.iter().any(|f| f == fqn) {
+                continue;
+            }
+            let local_name = fqn
+                .strip_prefix(&format!("{}.", loaded.plugin_id))
+                .unwrap_or(fqn)
+                .to_string();
+            match &mut loaded.instance {
+                PluginInstance::WithTools(provider, _) => {
+                    return provider.invoke_tool(&local_name, args);
+                }
+                #[cfg(feature = "wasm")]
+                PluginInstance::Wasm(wasm_plugin) => {
+                    let args_str =
+                        serde_json::to_string(&args).unwrap_or_else(|_| "{}".to_string());
+                    return wasm_plugin
+                        .invoke_tool(&local_name, &args_str, &loaded.policy)
+                        .map(|s| serde_json::from_str(&s).unwrap_or(serde_json::Value::String(s)))
+                        .map_err(|e| e.to_string());
+                }
+                _ => {}
             }
         }
         Err(format!("unknown tool: {fqn}"))
@@ -415,9 +505,23 @@ impl PluginHost {
                 }
                 PluginInstance::WithTools(_, _) => HookResponse::Ok,
                 #[cfg(feature = "wasm")]
-                PluginInstance::Wasm(_wasm_plugin) => {
-                    // WASM dispatch will be wired in Task 3
-                    HookResponse::Ok
+                PluginInstance::Wasm(wasm_plugin) => {
+                    match wasm_plugin.dispatch_hook(&record, &loaded.policy) {
+                        Ok(resp) => validate_hook_response(
+                            resp,
+                            &loaded.policy,
+                            &record.event.override_class(),
+                            &loaded.plugin_id,
+                        ),
+                        Err(e) => {
+                            tracing::warn!(
+                                plugin_id = %loaded.plugin_id,
+                                error = %e,
+                                "WASM transform dispatch failed"
+                            );
+                            HookResponse::Ok
+                        }
+                    }
                 }
             };
 

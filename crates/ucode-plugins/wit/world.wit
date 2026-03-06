@@ -112,6 +112,10 @@ world maximal-plugin {
 
     // Diagnostic hooks
     export ucode:hooks-diagnostic/on-unhandled-error;
+
+    // Transform hooks
+    export ucode:hooks-transform/on-transform-messages;
+    export ucode:hooks-transform/on-transform-system-prompt;
 }
 
 /// Minimal world for plugins that only need lifecycle + logging.

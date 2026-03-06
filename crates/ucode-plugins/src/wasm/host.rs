@@ -122,6 +122,189 @@ impl WasmPlugin {
         wire_host_log(&mut linker)?;
         Ok(linker)
     }
+
+    /// Dispatch a hook event to this WASM plugin component.
+    ///
+    /// Creates a fresh store with policy-enforced resource limits, instantiates
+    /// the component, looks up the event's WIT interface export, and calls its
+    /// `handle` function with the JSON-serialized event payload.
+    ///
+    /// Returns the plugin's [`HookResponse`]. On any error (instantiation failure,
+    /// missing export, fuel exhaustion, call trap), the caller should log a warning
+    /// and treat as `HookResponse::Ok` (fail-open).
+    pub fn dispatch_hook(
+        &self,
+        record: &crate::hooks::HookRecord,
+        policy: &PluginPolicy,
+    ) -> Result<crate::api::HookResponse, WasmPluginError> {
+        use super::convert::{event_to_wit_interface, wit_response_to_native};
+
+        let event_name = record.event.event_name();
+        let wit_iface = event_to_wit_interface(event_name)
+            .ok_or_else(|| WasmPluginError::EventNotHandled(event_name.to_string()))?;
+
+        // Fresh store per dispatch — no cross-call state leakage.
+        let mut store = self.create_store_with_policy(policy, None);
+        let linker = self.create_linker()?;
+
+        let instance = linker
+            .instantiate(&mut store, &self.component)
+            .map_err(WasmPluginError::Instantiate)?;
+
+        // Resolve the `handle` function index via the component's export table.
+        // This avoids string lookups at call time and works with nested interface exports.
+        let iface_idx = self
+            .component
+            .get_export_index(None, wit_iface)
+            .ok_or_else(|| {
+                WasmPluginError::EventNotHandled(format!("{wit_iface} interface not exported"))
+            })?;
+        let handle_idx = self
+            .component
+            .get_export_index(Some(&iface_idx), "handle")
+            .ok_or_else(|| {
+                WasmPluginError::EventNotHandled(format!("no handle fn in {wit_iface}"))
+            })?;
+
+        let handle_fn = instance.get_func(&mut store, &handle_idx).ok_or_else(|| {
+            WasmPluginError::EventNotHandled(format!("handle fn not callable in {wit_iface}"))
+        })?;
+
+        // Serialize the event payload to JSON for the guest.
+        let payload_json =
+            serde_json::to_string(&record.event).unwrap_or_else(|_| "{}".to_string());
+
+        // Call handle(payload: string) -> hook-response.
+        // The result slice must be pre-sized to the number of return values (1).
+        let mut results = vec![wasmtime::component::Val::Bool(false)];
+        handle_fn
+            .call(
+                &mut store,
+                &[wasmtime::component::Val::String(payload_json)],
+                &mut results,
+            )
+            .map_err(WasmPluginError::Call)?;
+
+        let response = parse_hook_response_val(&results[0]);
+        Ok(wit_response_to_native(response))
+    }
+
+    /// Check if this component exports the `ucode:plugin/tool-provider` interface.
+    pub fn has_tool_provider(&self) -> bool {
+        self.component
+            .get_export_index(None, "ucode:plugin/tool-provider")
+            .is_some()
+    }
+
+    /// List tools provided by this WASM plugin.
+    ///
+    /// Instantiates the component and calls `tool-specs` on the
+    /// `ucode:plugin/tool-provider` interface.
+    pub fn list_tools(
+        &self,
+        policy: &PluginPolicy,
+    ) -> Result<Vec<crate::manifest::PluginToolDef>, WasmPluginError> {
+        let mut store = self.create_store_with_policy(policy, None);
+        let linker = self.create_linker()?;
+        let instance = linker
+            .instantiate(&mut store, &self.component)
+            .map_err(WasmPluginError::Instantiate)?;
+
+        let iface_idx = self
+            .component
+            .get_export_index(None, "ucode:plugin/tool-provider")
+            .ok_or_else(|| {
+                WasmPluginError::ToolInvocation("tool-provider interface not exported".into())
+            })?;
+        let fn_idx = self
+            .component
+            .get_export_index(Some(&iface_idx), "tool-specs")
+            .ok_or_else(|| {
+                WasmPluginError::ToolInvocation("tool-specs function not found".into())
+            })?;
+
+        let tool_specs_fn = instance
+            .get_func(&mut store, &fn_idx)
+            .ok_or_else(|| WasmPluginError::ToolInvocation("tool-specs not callable".into()))?;
+
+        let mut results = vec![wasmtime::component::Val::Bool(false)];
+        tool_specs_fn
+            .call(&mut store, &[], &mut results)
+            .map_err(WasmPluginError::Call)?;
+
+        Ok(parse_tool_specs_val(&results[0]))
+    }
+
+    /// Invoke a tool by name with JSON arguments.
+    ///
+    /// Returns the JSON-encoded result string on success, or a
+    /// [`WasmPluginError::ToolInvocation`] on failure.
+    pub fn invoke_tool(
+        &self,
+        name: &str,
+        args: &str,
+        policy: &PluginPolicy,
+    ) -> Result<String, WasmPluginError> {
+        let mut store = self.create_store_with_policy(policy, None);
+        let linker = self.create_linker()?;
+        let instance = linker
+            .instantiate(&mut store, &self.component)
+            .map_err(WasmPluginError::Instantiate)?;
+
+        let iface_idx = self
+            .component
+            .get_export_index(None, "ucode:plugin/tool-provider")
+            .ok_or_else(|| {
+                WasmPluginError::ToolInvocation("tool-provider interface not exported".into())
+            })?;
+        let fn_idx = self
+            .component
+            .get_export_index(Some(&iface_idx), "invoke-tool")
+            .ok_or_else(|| {
+                WasmPluginError::ToolInvocation("invoke-tool function not found".into())
+            })?;
+
+        let invoke_fn = instance
+            .get_func(&mut store, &fn_idx)
+            .ok_or_else(|| WasmPluginError::ToolInvocation("invoke-tool not callable".into()))?;
+
+        let mut results = vec![wasmtime::component::Val::Bool(false)];
+        invoke_fn
+            .call(
+                &mut store,
+                &[
+                    wasmtime::component::Val::String(name.to_string()),
+                    wasmtime::component::Val::String(args.to_string()),
+                ],
+                &mut results,
+            )
+            .map_err(WasmPluginError::Call)?;
+
+        // Parse result<string, string>
+        match &results[0] {
+            wasmtime::component::Val::Result(r) => match r.as_ref() {
+                Ok(Some(val)) => {
+                    if let wasmtime::component::Val::String(s) = val.as_ref() {
+                        Ok(s.clone())
+                    } else {
+                        Ok(String::new())
+                    }
+                }
+                Ok(None) => Ok(String::new()),
+                Err(Some(val)) => {
+                    if let wasmtime::component::Val::String(s) = val.as_ref() {
+                        Err(WasmPluginError::ToolInvocation(s.clone()))
+                    } else {
+                        Err(WasmPluginError::ToolInvocation("unknown error".into()))
+                    }
+                }
+                Err(None) => Err(WasmPluginError::ToolInvocation("unknown error".into())),
+            },
+            _ => Err(WasmPluginError::ToolInvocation(
+                "unexpected return type".into(),
+            )),
+        }
+    }
 }
 
 /// Errors from WASM plugin operations.
@@ -139,6 +322,8 @@ pub enum WasmPluginError {
     Call(wasmtime::Error),
     /// Plugin does not export a handler for this event.
     EventNotHandled(String),
+    /// Failed to invoke a plugin tool.
+    ToolInvocation(String),
 }
 
 impl std::fmt::Display for WasmPluginError {
@@ -150,6 +335,7 @@ impl std::fmt::Display for WasmPluginError {
             Self::Instantiate(e) => write!(f, "instantiation error: {e}"),
             Self::Call(e) => write!(f, "call error: {e}"),
             Self::EventNotHandled(name) => write!(f, "event not handled: {name}"),
+            Self::ToolInvocation(msg) => write!(f, "tool invocation error: {msg}"),
         }
     }
 }
@@ -164,7 +350,7 @@ impl std::error::Error for WasmPluginError {
             | Self::Linker(e)
             | Self::Instantiate(e)
             | Self::Call(e) => e.source(),
-            Self::EventNotHandled(_) => None,
+            Self::EventNotHandled(_) | Self::ToolInvocation(_) => None,
         }
     }
 }
@@ -252,6 +438,111 @@ pub fn create_store_with_policy(
     );
 
     store
+}
+
+/// Parse a `hook-response` record from a wasmtime [`Val`].
+///
+/// The WIT record has two fields: `kind` (enum) and `data` (option<string>).
+/// Falls back to `HookResponseKind::Ok` on unexpected shapes.
+fn parse_hook_response_val(
+    val: &wasmtime::component::Val,
+) -> super::ucode::hooks_types::types::HookResponse {
+    use super::ucode::hooks_types::types::{HookResponse, HookResponseKind};
+
+    if let wasmtime::component::Val::Record(fields) = val {
+        let mut kind = HookResponseKind::Ok;
+        let mut data = None;
+
+        for (name, field_val) in fields {
+            match name.as_str() {
+                "kind" => {
+                    if let wasmtime::component::Val::Enum(discriminant) = field_val {
+                        kind = match discriminant.as_str() {
+                            "ok" => HookResponseKind::Ok,
+                            "modify" => HookResponseKind::Modify,
+                            "veto" => HookResponseKind::Veto,
+                            _ => HookResponseKind::Ok,
+                        };
+                    }
+                }
+                "data" => {
+                    if let wasmtime::component::Val::Option(opt) = field_val {
+                        data = opt.as_ref().and_then(|v| {
+                            if let wasmtime::component::Val::String(s) = v.as_ref() {
+                                Some(s.clone())
+                            } else {
+                                None
+                            }
+                        });
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        HookResponse { kind, data }
+    } else {
+        HookResponse {
+            kind: HookResponseKind::Ok,
+            data: None,
+        }
+    }
+}
+
+/// Parse a `list<tool-spec>` Val into `Vec<PluginToolDef>`.
+fn parse_tool_specs_val(val: &wasmtime::component::Val) -> Vec<crate::manifest::PluginToolDef> {
+    let mut specs = Vec::new();
+    if let wasmtime::component::Val::List(items) = val {
+        for item in items {
+            if let wasmtime::component::Val::Record(fields) = item {
+                let mut name = String::new();
+                let mut description = None;
+                let mut input_schema = None;
+
+                for (field_name, field_val) in fields {
+                    match field_name.as_str() {
+                        "name" => {
+                            if let wasmtime::component::Val::String(s) = field_val {
+                                name = s.clone();
+                            }
+                        }
+                        "description" => {
+                            if let wasmtime::component::Val::Option(opt) = field_val {
+                                description = opt.as_ref().and_then(|v| {
+                                    if let wasmtime::component::Val::String(s) = v.as_ref() {
+                                        Some(s.clone())
+                                    } else {
+                                        None
+                                    }
+                                });
+                            }
+                        }
+                        "input-schema" => {
+                            if let wasmtime::component::Val::Option(opt) = field_val {
+                                input_schema = opt.as_ref().and_then(|v| {
+                                    if let wasmtime::component::Val::String(s) = v.as_ref() {
+                                        serde_json::from_str(s).ok()
+                                    } else {
+                                        None
+                                    }
+                                });
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+
+                if !name.is_empty() {
+                    specs.push(crate::manifest::PluginToolDef {
+                        name,
+                        description,
+                        input_schema,
+                    });
+                }
+            }
+        }
+    }
+    specs
 }
 
 /// Wire the `ucode:plugin/host-log` import into `linker`.
@@ -358,5 +649,150 @@ mod tests {
         };
         let store = Store::new(&engine, plugin_state);
         assert!(store.data().log_messages.is_empty());
+    }
+
+    #[test]
+    fn test_wasm_plugin_error_tool_invocation_display() {
+        let err = WasmPluginError::ToolInvocation("tool not found".into());
+        assert_eq!(err.to_string(), "tool invocation error: tool not found");
+    }
+
+    #[test]
+    fn test_wasm_plugin_error_tool_invocation_source() {
+        use std::error::Error;
+        let err = WasmPluginError::ToolInvocation("x".into());
+        assert!(err.source().is_none());
+    }
+
+    #[test]
+    fn test_parse_hook_response_val_ok() {
+        use super::super::ucode::hooks_types::types::HookResponseKind;
+        let val = wasmtime::component::Val::Record(vec![
+            (
+                "kind".to_string(),
+                wasmtime::component::Val::Enum("ok".to_string()),
+            ),
+            ("data".to_string(), wasmtime::component::Val::Option(None)),
+        ]);
+        let resp = parse_hook_response_val(&val);
+        assert!(matches!(resp.kind, HookResponseKind::Ok));
+        assert!(resp.data.is_none());
+    }
+
+    #[test]
+    fn test_parse_hook_response_val_modify() {
+        use super::super::ucode::hooks_types::types::HookResponseKind;
+        let val = wasmtime::component::Val::Record(vec![
+            (
+                "kind".to_string(),
+                wasmtime::component::Val::Enum("modify".to_string()),
+            ),
+            (
+                "data".to_string(),
+                wasmtime::component::Val::Option(Some(Box::new(wasmtime::component::Val::String(
+                    r#"{"key":"val"}"#.to_string(),
+                )))),
+            ),
+        ]);
+        let resp = parse_hook_response_val(&val);
+        assert!(matches!(resp.kind, HookResponseKind::Modify));
+        assert_eq!(resp.data.as_deref(), Some(r#"{"key":"val"}"#));
+    }
+
+    #[test]
+    fn test_parse_hook_response_val_veto() {
+        use super::super::ucode::hooks_types::types::HookResponseKind;
+        let val = wasmtime::component::Val::Record(vec![
+            (
+                "kind".to_string(),
+                wasmtime::component::Val::Enum("veto".to_string()),
+            ),
+            (
+                "data".to_string(),
+                wasmtime::component::Val::Option(Some(Box::new(wasmtime::component::Val::String(
+                    "blocked".to_string(),
+                )))),
+            ),
+        ]);
+        let resp = parse_hook_response_val(&val);
+        assert!(matches!(resp.kind, HookResponseKind::Veto));
+        assert_eq!(resp.data.as_deref(), Some("blocked"));
+    }
+
+    #[test]
+    fn test_parse_hook_response_val_unknown_shape() {
+        use super::super::ucode::hooks_types::types::HookResponseKind;
+        // Non-record Val falls back to Ok
+        let val = wasmtime::component::Val::Bool(false);
+        let resp = parse_hook_response_val(&val);
+        assert!(matches!(resp.kind, HookResponseKind::Ok));
+        assert!(resp.data.is_none());
+    }
+
+    #[test]
+    fn test_parse_tool_specs_val_empty_list() {
+        let val = wasmtime::component::Val::List(vec![]);
+        let specs = parse_tool_specs_val(&val);
+        assert!(specs.is_empty());
+    }
+
+    #[test]
+    fn test_parse_tool_specs_val_with_entries() {
+        let val = wasmtime::component::Val::List(vec![wasmtime::component::Val::Record(vec![
+            (
+                "name".to_string(),
+                wasmtime::component::Val::String("search".to_string()),
+            ),
+            (
+                "description".to_string(),
+                wasmtime::component::Val::Option(Some(Box::new(wasmtime::component::Val::String(
+                    "Search the web".to_string(),
+                )))),
+            ),
+            (
+                "input-schema".to_string(),
+                wasmtime::component::Val::Option(None),
+            ),
+        ])]);
+        let specs = parse_tool_specs_val(&val);
+        assert_eq!(specs.len(), 1);
+        assert_eq!(specs[0].name, "search");
+        assert_eq!(specs[0].description.as_deref(), Some("Search the web"));
+        assert!(specs[0].input_schema.is_none());
+    }
+
+    #[test]
+    fn test_parse_tool_specs_val_skips_empty_name() {
+        let val = wasmtime::component::Val::List(vec![wasmtime::component::Val::Record(vec![
+            (
+                "name".to_string(),
+                wasmtime::component::Val::String(String::new()),
+            ),
+            (
+                "description".to_string(),
+                wasmtime::component::Val::Option(None),
+            ),
+            (
+                "input-schema".to_string(),
+                wasmtime::component::Val::Option(None),
+            ),
+        ])]);
+        let specs = parse_tool_specs_val(&val);
+        assert!(specs.is_empty(), "empty-name tool should be skipped");
+    }
+
+    #[test]
+    fn test_wasm_dispatch_hook_method_exists() {
+        // Verify the method signature compiles.
+        let _: fn(
+            &WasmPlugin,
+            &crate::hooks::HookRecord,
+            &PluginPolicy,
+        ) -> Result<crate::api::HookResponse, WasmPluginError> = WasmPlugin::dispatch_hook;
+    }
+
+    #[test]
+    fn test_wasm_has_tool_provider_method_exists() {
+        let _: fn(&WasmPlugin) -> bool = WasmPlugin::has_tool_provider;
     }
 }

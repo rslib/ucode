@@ -1,0 +1,11 @@
+id = "org.example.context-manager"
+name = "Context Manager"
+version = "0.1.0"
+description = "Demo plugin: deduplicates messages, provides context stats tool"
+min_api_version = "1.0.0"
+
+hooks = ["session_start", "session_end", "transform_messages"]
+
+[[tools]]
+name = "context_stats"
+description = "Returns message count and total size"

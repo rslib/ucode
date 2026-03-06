@@ -62,6 +62,29 @@ pub enum TuiEvent {
         title: String,
         body: Option<String>,
     },
+    CheckpointCreated {
+        name: String,
+    },
+    BudgetWarning {
+        used_pct: f64,
+        message: String,
+    },
+    AgentCompleted {
+        agent_id: String,
+        name: String,
+    },
+    AgentFailed {
+        agent_id: String,
+        name: String,
+        error: String,
+    },
+    McpServerCrashed {
+        server_name: String,
+        error: String,
+    },
+    AuthExpired {
+        provider: String,
+    },
     Quit,
 }
 
@@ -817,6 +840,35 @@ fn handle_tui_event(event: TuiEvent, app: &mut AppState) -> bool {
                 app.toast(level, title);
             }
         }
+        TuiEvent::CheckpointCreated { name } => {
+            app.toast(ToastLevel::Info, format!("Checkpoint created: {name}"));
+        }
+        TuiEvent::BudgetWarning {
+            used_pct: _,
+            message,
+        } => {
+            app.toast_with_body(ToastLevel::Warning, "Budget warning", message);
+        }
+        TuiEvent::AgentCompleted { agent_id: _, name } => {
+            app.toast(ToastLevel::Success, format!("Agent completed: {name}"));
+        }
+        TuiEvent::AgentFailed {
+            agent_id: _,
+            name,
+            error,
+        } => {
+            app.toast_with_body(ToastLevel::Error, format!("Agent failed: {name}"), error);
+        }
+        TuiEvent::McpServerCrashed { server_name, error } => {
+            app.toast_with_body(
+                ToastLevel::Error,
+                format!("MCP server crashed: {server_name}"),
+                error,
+            );
+        }
+        TuiEvent::AuthExpired { provider } => {
+            app.toast(ToastLevel::Warning, format!("Auth expired: {provider}"));
+        }
         TuiEvent::Quit => return true,
     }
     false
@@ -1064,6 +1116,29 @@ mod tests {
             command: "cargo test".to_owned(),
             cwd: "/tmp".to_owned(),
             sandbox_label: "ws".to_owned(),
+        };
+        let _ = TuiEvent::CheckpointCreated {
+            name: "v1.0".to_owned(),
+        };
+        let _ = TuiEvent::BudgetWarning {
+            used_pct: 75.0,
+            message: "75% used".to_owned(),
+        };
+        let _ = TuiEvent::AgentCompleted {
+            agent_id: "a1".to_owned(),
+            name: "reviewer".to_owned(),
+        };
+        let _ = TuiEvent::AgentFailed {
+            agent_id: "a1".to_owned(),
+            name: "reviewer".to_owned(),
+            error: "timeout".to_owned(),
+        };
+        let _ = TuiEvent::McpServerCrashed {
+            server_name: "filesystem".to_owned(),
+            error: "segfault".to_owned(),
+        };
+        let _ = TuiEvent::AuthExpired {
+            provider: "github".to_owned(),
         };
         let _ = TuiEvent::Quit;
     }
@@ -2571,5 +2646,116 @@ mod tests {
         assert_eq!(app.toasts.len(), 1);
         assert_eq!(app.toasts.visible()[0].title, "Something failed");
         assert_eq!(app.toasts.visible()[0].body.as_deref(), Some("check logs"));
+    }
+
+    // -----------------------------------------------------------------------
+    // System-triggered semantic toast events (ISSUE 0708b)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn tui_event_checkpoint_created() {
+        let mut app = AppState::new();
+        let exited = handle_tui_event(
+            TuiEvent::CheckpointCreated {
+                name: "v1.0".to_owned(),
+            },
+            &mut app,
+        );
+        assert!(!exited);
+        assert_eq!(app.toasts.len(), 1);
+        let toast = &app.toasts.visible()[0];
+        assert_eq!(toast.level, ToastLevel::Info);
+        assert_eq!(toast.title, "Checkpoint created: v1.0");
+        assert!(toast.body.is_none());
+    }
+
+    #[test]
+    fn tui_event_budget_warning() {
+        let mut app = AppState::new();
+        let exited = handle_tui_event(
+            TuiEvent::BudgetWarning {
+                used_pct: 75.0,
+                message: "75% of token budget used".to_owned(),
+            },
+            &mut app,
+        );
+        assert!(!exited);
+        assert_eq!(app.toasts.len(), 1);
+        let toast = &app.toasts.visible()[0];
+        assert_eq!(toast.level, ToastLevel::Warning);
+        assert_eq!(toast.title, "Budget warning");
+        assert_eq!(toast.body.as_deref(), Some("75% of token budget used"));
+    }
+
+    #[test]
+    fn tui_event_agent_completed() {
+        let mut app = AppState::new();
+        let exited = handle_tui_event(
+            TuiEvent::AgentCompleted {
+                agent_id: "agent-42".to_owned(),
+                name: "code-reviewer".to_owned(),
+            },
+            &mut app,
+        );
+        assert!(!exited);
+        assert_eq!(app.toasts.len(), 1);
+        let toast = &app.toasts.visible()[0];
+        assert_eq!(toast.level, ToastLevel::Success);
+        assert_eq!(toast.title, "Agent completed: code-reviewer");
+        assert!(toast.body.is_none());
+    }
+
+    #[test]
+    fn tui_event_agent_failed() {
+        let mut app = AppState::new();
+        let exited = handle_tui_event(
+            TuiEvent::AgentFailed {
+                agent_id: "agent-42".to_owned(),
+                name: "code-reviewer".to_owned(),
+                error: "timeout after 30s".to_owned(),
+            },
+            &mut app,
+        );
+        assert!(!exited);
+        assert_eq!(app.toasts.len(), 1);
+        let toast = &app.toasts.visible()[0];
+        assert_eq!(toast.level, ToastLevel::Error);
+        assert_eq!(toast.title, "Agent failed: code-reviewer");
+        assert_eq!(toast.body.as_deref(), Some("timeout after 30s"));
+    }
+
+    #[test]
+    fn tui_event_mcp_server_crashed() {
+        let mut app = AppState::new();
+        let exited = handle_tui_event(
+            TuiEvent::McpServerCrashed {
+                server_name: "filesystem".to_owned(),
+                error: "segfault".to_owned(),
+            },
+            &mut app,
+        );
+        assert!(!exited);
+        assert_eq!(app.toasts.len(), 1);
+        let toast = &app.toasts.visible()[0];
+        assert_eq!(toast.level, ToastLevel::Error);
+        assert_eq!(toast.title, "MCP server crashed: filesystem");
+        assert_eq!(toast.body.as_deref(), Some("segfault"));
+    }
+
+    #[test]
+    fn tui_event_auth_expired() {
+        let mut app = AppState::new();
+        let exited = handle_tui_event(
+            TuiEvent::AuthExpired {
+                provider: "github".to_owned(),
+            },
+            &mut app,
+        );
+        assert!(!exited);
+        assert_eq!(app.toasts.len(), 1);
+        let toast = &app.toasts.visible()[0];
+        assert_eq!(toast.level, ToastLevel::Warning);
+        assert_eq!(toast.title, "Auth expired: github");
+        assert!(toast.body.is_none());
     }
 }

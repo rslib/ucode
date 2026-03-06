@@ -333,6 +333,12 @@ fn handle_terminal_event(
                 if is_bare_char || is_shift_char {
                     if let crossterm::event::KeyCode::Char(c) = key.code {
                         input_box.insert_char(c);
+                        if input_box.has_slash_prefix() {
+                            let entries = app.slash_completions(&input_box.content);
+                            input_box.autocomplete.show(entries);
+                        } else {
+                            input_box.autocomplete.hide();
+                        }
                         app.mark_dirty();
                     }
                     return false;
@@ -343,11 +349,23 @@ fn handle_terminal_event(
                     match key.code {
                         crossterm::event::KeyCode::Backspace => {
                             input_box.delete_char();
+                            if input_box.has_slash_prefix() {
+                                let entries = app.slash_completions(&input_box.content);
+                                input_box.autocomplete.show(entries);
+                            } else {
+                                input_box.autocomplete.hide();
+                            }
                             app.mark_dirty();
                             return false;
                         }
                         crossterm::event::KeyCode::Delete => {
                             input_box.delete_forward();
+                            if input_box.has_slash_prefix() {
+                                let entries = app.slash_completions(&input_box.content);
+                                input_box.autocomplete.show(entries);
+                            } else {
+                                input_box.autocomplete.hide();
+                            }
                             app.mark_dirty();
                             return false;
                         }
@@ -372,12 +390,20 @@ fn handle_terminal_event(
                             return false;
                         }
                         crossterm::event::KeyCode::Up => {
-                            input_box.move_up();
+                            if input_box.autocomplete.visible {
+                                input_box.autocomplete.prev();
+                            } else {
+                                input_box.move_up();
+                            }
                             app.mark_dirty();
                             return false;
                         }
                         crossterm::event::KeyCode::Down => {
-                            input_box.move_down();
+                            if input_box.autocomplete.visible {
+                                input_box.autocomplete.next();
+                            } else {
+                                input_box.move_down();
+                            }
                             app.mark_dirty();
                             return false;
                         }
@@ -687,6 +713,21 @@ fn dispatch_action(action: Action, app: &mut AppState, input_box: &mut InputBoxS
 
         Action::ToggleDensity => {
             app.density = app.density.next();
+            app.mark_dirty();
+        }
+
+        Action::AcceptAutocomplete => {
+            if let Some(entry) = input_box.autocomplete.selected_entry().cloned() {
+                input_box.content.clear();
+                input_box.cursor_pos = 0;
+                input_box.cursor_col = 0;
+                for c in entry.name.chars() {
+                    input_box.insert_char(c);
+                }
+                // Trailing space so the user can immediately type arguments.
+                input_box.insert_char(' ');
+                input_box.autocomplete.hide();
+            }
             app.mark_dirty();
         }
 
@@ -2026,5 +2067,251 @@ mod tests {
 
         dispatch_action(Action::ToggleDensity, &mut app, &mut input_box);
         assert_eq!(app.density, Density::Comfortable);
+    }
+
+    // -----------------------------------------------------------------------
+    // Slash command autocomplete
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_slash_completions_method() {
+        let app = AppState::new();
+        // Empty query after "/" returns all commands.
+        let all = app.slash_completions("/");
+        assert!(!all.is_empty());
+
+        // Prefix "session" narrows results.
+        let session = app.slash_completions("/session");
+        assert!(!session.is_empty());
+        assert!(session.iter().all(|e| e.name.contains("session")));
+
+        // Non-matching query returns empty.
+        let none = app.slash_completions("/zzznomatch");
+        assert!(none.is_empty());
+    }
+
+    #[test]
+    fn test_slash_prefix_triggers_autocomplete() {
+        let mut app = AppState::new();
+        app.focus = FocusTarget::Input;
+        let mut input_box = InputBoxState::new();
+        let mut sidebar_data = SidebarData::new();
+
+        // Type "/con" — should trigger autocomplete.
+        for c in "/con".chars() {
+            let ev = make_key_event(
+                crossterm::event::KeyCode::Char(c),
+                crossterm::event::KeyModifiers::NONE,
+            );
+            handle_terminal_event(ev, &mut app, &mut input_box, &mut sidebar_data);
+        }
+
+        assert!(
+            input_box.autocomplete.visible,
+            "autocomplete should be visible after /con"
+        );
+        assert!(
+            !input_box.autocomplete.entries.is_empty(),
+            "should have matching entries for /con"
+        );
+        // "/connect" should be among the results.
+        assert!(
+            input_box
+                .autocomplete
+                .entries
+                .iter()
+                .any(|e| e.name == "/connect"),
+            "/connect should appear in completions for /con"
+        );
+    }
+
+    #[test]
+    fn test_non_slash_input_no_autocomplete() {
+        let mut app = AppState::new();
+        app.focus = FocusTarget::Input;
+        let mut input_box = InputBoxState::new();
+        let mut sidebar_data = SidebarData::new();
+
+        for c in "hello".chars() {
+            let ev = make_key_event(
+                crossterm::event::KeyCode::Char(c),
+                crossterm::event::KeyModifiers::NONE,
+            );
+            handle_terminal_event(ev, &mut app, &mut input_box, &mut sidebar_data);
+        }
+
+        assert!(
+            !input_box.autocomplete.visible,
+            "autocomplete must not show for non-slash input"
+        );
+    }
+
+    #[test]
+    fn test_backspace_updates_autocomplete() {
+        let mut app = AppState::new();
+        app.focus = FocusTarget::Input;
+        let mut input_box = InputBoxState::new();
+        let mut sidebar_data = SidebarData::new();
+
+        // Type "/con".
+        for c in "/con".chars() {
+            let ev = make_key_event(
+                crossterm::event::KeyCode::Char(c),
+                crossterm::event::KeyModifiers::NONE,
+            );
+            handle_terminal_event(ev, &mut app, &mut input_box, &mut sidebar_data);
+        }
+        assert!(input_box.autocomplete.visible);
+        let entries_before = input_box.autocomplete.entries.clone();
+
+        // Backspace → "/co".
+        let bs = make_key_event(
+            crossterm::event::KeyCode::Backspace,
+            crossterm::event::KeyModifiers::NONE,
+        );
+        handle_terminal_event(bs, &mut app, &mut input_box, &mut sidebar_data);
+
+        assert_eq!(input_box.content, "/co");
+        assert!(
+            input_box.autocomplete.visible,
+            "autocomplete should still be visible after backspace"
+        );
+        // The entry set may differ (broader match for "/co").
+        let entries_after = &input_box.autocomplete.entries;
+        // "/co" matches at least as many commands as "/con".
+        assert!(entries_after.len() >= entries_before.len());
+    }
+
+    #[test]
+    fn test_backspace_removes_slash_hides_autocomplete() {
+        let mut app = AppState::new();
+        app.focus = FocusTarget::Input;
+        let mut input_box = InputBoxState::new();
+        let mut sidebar_data = SidebarData::new();
+
+        // Type "/" only.
+        let slash = make_key_event(
+            crossterm::event::KeyCode::Char('/'),
+            crossterm::event::KeyModifiers::NONE,
+        );
+        handle_terminal_event(slash, &mut app, &mut input_box, &mut sidebar_data);
+        assert!(input_box.autocomplete.visible);
+
+        // Backspace removes the "/" → empty input, no slash prefix.
+        let bs = make_key_event(
+            crossterm::event::KeyCode::Backspace,
+            crossterm::event::KeyModifiers::NONE,
+        );
+        handle_terminal_event(bs, &mut app, &mut input_box, &mut sidebar_data);
+
+        assert!(input_box.content.is_empty());
+        assert!(
+            !input_box.autocomplete.visible,
+            "autocomplete should hide when slash is removed"
+        );
+    }
+
+    #[test]
+    fn test_accept_autocomplete_replaces_input() {
+        let mut app = AppState::new();
+        let mut input_box = InputBoxState::new();
+
+        // Manually show autocomplete with a known entry.
+        use crate::components::input::AutocompleteEntry;
+        input_box.autocomplete.show(vec![
+            AutocompleteEntry::new("/connect", "Connect provider", "[builtin]"),
+            AutocompleteEntry::new("/skills", "Browse skills", "[builtin]"),
+        ]);
+        assert!(input_box.autocomplete.visible);
+        assert_eq!(input_box.autocomplete.selected, 0);
+
+        dispatch_action(Action::AcceptAutocomplete, &mut app, &mut input_box);
+
+        // Input should be the selected entry name + trailing space.
+        assert_eq!(input_box.content, "/connect ");
+        assert!(
+            !input_box.autocomplete.visible,
+            "autocomplete should hide after accept"
+        );
+    }
+
+    #[test]
+    fn test_accept_autocomplete_no_op_when_hidden() {
+        let mut app = AppState::new();
+        let mut input_box = InputBoxState::new();
+
+        for c in "hello".chars() {
+            input_box.insert_char(c);
+        }
+        // Autocomplete is not visible.
+        assert!(!input_box.autocomplete.visible);
+
+        dispatch_action(Action::AcceptAutocomplete, &mut app, &mut input_box);
+
+        // Input should be unchanged.
+        assert_eq!(input_box.content, "hello");
+    }
+
+    #[test]
+    fn test_up_down_navigate_autocomplete() {
+        let mut app = AppState::new();
+        app.focus = FocusTarget::Input;
+        let mut input_box = InputBoxState::new();
+        let mut sidebar_data = SidebarData::new();
+
+        // Type "/" to open autocomplete with all commands.
+        let slash = make_key_event(
+            crossterm::event::KeyCode::Char('/'),
+            crossterm::event::KeyModifiers::NONE,
+        );
+        handle_terminal_event(slash, &mut app, &mut input_box, &mut sidebar_data);
+        assert!(input_box.autocomplete.visible);
+        assert_eq!(input_box.autocomplete.selected, 0);
+
+        // Down arrow should advance selection.
+        let down = make_key_event(
+            crossterm::event::KeyCode::Down,
+            crossterm::event::KeyModifiers::NONE,
+        );
+        handle_terminal_event(down, &mut app, &mut input_box, &mut sidebar_data);
+        assert_eq!(input_box.autocomplete.selected, 1);
+
+        // Up arrow should go back.
+        let up = make_key_event(
+            crossterm::event::KeyCode::Up,
+            crossterm::event::KeyModifiers::NONE,
+        );
+        handle_terminal_event(up, &mut app, &mut input_box, &mut sidebar_data);
+        assert_eq!(input_box.autocomplete.selected, 0);
+
+        // Input content should be unchanged (arrows navigated autocomplete, not cursor).
+        assert_eq!(input_box.content, "/");
+    }
+
+    #[test]
+    fn test_esc_hides_autocomplete_via_dismiss() {
+        let mut app = AppState::new();
+        let mut input_box = InputBoxState::new();
+
+        use crate::components::input::AutocompleteEntry;
+        input_box.autocomplete.show(vec![AutocompleteEntry::new(
+            "/connect",
+            "Connect provider",
+            "[builtin]",
+        )]);
+        assert!(input_box.autocomplete.visible);
+
+        // Dismiss action hides autocomplete without clearing input.
+        for c in "/con".chars() {
+            input_box.insert_char(c);
+        }
+        dispatch_action(Action::Dismiss, &mut app, &mut input_box);
+
+        assert!(
+            !input_box.autocomplete.visible,
+            "Dismiss should hide autocomplete"
+        );
+        // Content should be preserved (not cleared) when autocomplete was visible.
+        assert_eq!(input_box.content, "/con");
     }
 }

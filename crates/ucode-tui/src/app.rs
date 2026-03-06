@@ -3,6 +3,7 @@ use std::time::Instant;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::command_registry::CommandRegistry;
+use crate::components::input::AutocompleteEntry;
 use crate::keybinds::{KeybindPreset, KeybindResolver};
 use crate::layout::{InputState, SidebarState, TerminalSize};
 use crate::overlays::approval_modal::ApprovalModalState;
@@ -238,6 +239,17 @@ impl AppState {
 
     pub fn mark_dirty(&mut self) {
         self.dirty = true;
+    }
+
+    /// Query the command registry for commands matching the current input prefix
+    /// and return autocomplete entries.
+    pub fn slash_completions(&self, input: &str) -> Vec<AutocompleteEntry> {
+        let query = input.strip_prefix('/').unwrap_or(input);
+        self.command_registry
+            .search(query)
+            .into_iter()
+            .map(|cmd| AutocompleteEntry::new(&cmd.name, &cmd.description, cmd.source.badge()))
+            .collect()
     }
 
     // ------------------------------------------------------------------

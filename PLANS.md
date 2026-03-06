@@ -815,21 +815,21 @@ Terminal compatibility:
 * Fallback clipboard works when OSC 52 is unavailable.
 * `mouse_enabled = false` disables mouse capture, allowing tmux mouse passthrough.
 
-### Task 7.8 Keybinding presets (ucode-tui)
+### Task 7.8 Keybinding presets (ucode-tui) [DONE]
 
 > See `docs/plans/2026-03-05-tui-design.md` §10 (Keybinding presets).
 
 * Three built-in presets: `vscode` (default), `vim` (modal), `emacs` (Meta+x)
-* Config: `[tui.keybinds] preset = "vscode"` in `ucode.toml`
-* Individual key overrides layer on top of active preset
-* vim preset: `Esc`/`i` for normal/insert mode, `j`/`k` scroll, `:` palette, `gg`/`G` jump
+* `override_binding()` / `remove_binding()` for individual key overrides on top of preset
+* vim preset: `Esc`/`i` for normal/insert mode, `j`/`k` scroll, `:` palette, `Ctrl+U`/`Ctrl+D` half-page
 * emacs preset: `Meta+x` palette, `Ctrl+N`/`Ctrl+P` scroll, `Ctrl+S` search, `Ctrl+G` cancel
+* Config file integration (`[tui.keybinds] preset = "vscode"`) deferred to config system
 
 **Acceptance**
 
 * `preset = "vim"` activates modal editing with `i`/`Esc` mode switching.
 * `preset = "emacs"` activates emacs-style navigation and `Meta+x` palette.
-* Individual overrides (e.g., `palette = "ctrl+shift+p"`) work on top of any preset.
+* `override_binding()` / `remove_binding()` allow individual overrides on top of any preset.
 * Default preset is `vscode` when no config is set.
 
 ---

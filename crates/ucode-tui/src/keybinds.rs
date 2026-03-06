@@ -428,6 +428,20 @@ impl KeybindResolver {
         self.mode = mode;
     }
 
+    /// Override a single keybinding. The new binding replaces any existing
+    /// binding for the same key combo. This allows individual customization
+    /// on top of the active preset.
+    ///
+    /// To remove a binding, use `remove_binding`.
+    pub fn override_binding(&mut self, combo: KeyCombo, action: Action) {
+        self.bindings.insert(combo, action);
+    }
+
+    /// Remove a keybinding. Returns the previously bound action, if any.
+    pub fn remove_binding(&mut self, combo: &KeyCombo) -> Option<Action> {
+        self.bindings.remove(combo)
+    }
+
     /// Iterate over all (KeyCombo, Action) pairs in the active binding map.
     pub fn bindings(&self) -> impl Iterator<Item = (&KeyCombo, &Action)> {
         self.bindings.iter()
@@ -616,6 +630,49 @@ mod tests {
                 "{preset:?} missing ToggleDensity"
             );
         }
+    }
+
+    #[test]
+    fn override_binding_replaces_existing() {
+        let mut resolver = KeybindResolver::new(KeybindPreset::Vscode);
+        // Ctrl+P is OpenPalette by default in vscode preset
+        let combo = KeyCombo::new(KeyCode::Char('p'), KeyModifiers::CONTROL);
+        let key = KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL);
+        assert_eq!(resolver.resolve(&key), Some(Action::OpenPalette));
+
+        resolver.override_binding(combo, Action::SearchTranscript);
+        assert_eq!(resolver.resolve(&key), Some(Action::SearchTranscript));
+    }
+
+    #[test]
+    fn override_binding_adds_new() {
+        let mut resolver = KeybindResolver::new(KeybindPreset::Vscode);
+        // Ctrl+T is not bound by default
+        let combo = KeyCombo::new(KeyCode::Char('t'), KeyModifiers::CONTROL);
+        let key = KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL);
+        assert_eq!(resolver.resolve(&key), None);
+
+        resolver.override_binding(combo, Action::ToggleTheme);
+        assert_eq!(resolver.resolve(&key), Some(Action::ToggleTheme));
+    }
+
+    #[test]
+    fn remove_binding_removes_existing() {
+        let mut resolver = KeybindResolver::new(KeybindPreset::Vscode);
+        let combo = KeyCombo::new(KeyCode::Char('p'), KeyModifiers::CONTROL);
+        let key = KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL);
+        assert_eq!(resolver.resolve(&key), Some(Action::OpenPalette));
+
+        let removed = resolver.remove_binding(&combo);
+        assert_eq!(removed, Some(Action::OpenPalette));
+        assert_eq!(resolver.resolve(&key), None);
+    }
+
+    #[test]
+    fn remove_binding_returns_none_for_unbound() {
+        let mut resolver = KeybindResolver::new(KeybindPreset::Vscode);
+        let combo = KeyCombo::new(KeyCode::Char('t'), KeyModifiers::CONTROL);
+        assert_eq!(resolver.remove_binding(&combo), None);
     }
 
     #[test]

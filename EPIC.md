@@ -987,6 +987,28 @@ Search:
 
 **Completed:** 502 TUI tests (7 new). Created `terminal.rs` with `set_terminal_title`, `restore_terminal_title`, `ColorSupport` enum, and `detect_color_support`. Added `color_support` and `mouse_enabled` fields to `AppState`. Terminal title set on startup and restored in `TerminalGuard::drop`. Mouse capture conditional on `app.mouse_enabled`.
 
+### ISSUE 0712 — Keybinding presets (ucode-tui) [DONE]
+
+**Goal:** Three built-in keybinding presets (vscode, vim, emacs) with individual override support.
+
+**Scope/Notes:**
+
+* Three presets: vscode (default), vim (modal with Normal/Insert), emacs (Meta+x)
+* `KeybindResolver` resolves key events to `Action`s based on active preset
+* Vim modal editing: `InputMode::Normal`/`Insert`, mode-aware action suppression
+* `override_binding()` and `remove_binding()` for individual customization
+* Config file integration deferred to config system build-out
+
+**Acceptance tests:**
+
+* `preset = "vim"` activates modal editing with `i`/`Esc` mode switching.
+* `preset = "emacs"` activates emacs-style navigation and `Meta+x` palette.
+* `override_binding()` / `remove_binding()` allow individual overrides on top of any preset.
+* Default preset is `vscode` when no config is set.
+  **Owner:** TUI
+
+**Completed:** 506 TUI tests (4 new override tests). `KeybindResolver` with 3 presets, vim modal editing, and `override_binding`/`remove_binding` methods. Preset-aware search overlay and keybind overlay from ISSUE 0709.
+
 ---
 
 ## EPIC 8 — Plugins + hooks (user customization)

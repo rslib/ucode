@@ -1123,17 +1123,25 @@ Version negotiation:
 
 **Owner:** Plugins/Tools
 
-### ISSUE 0804 — WIT interface + wasmtime WASM runtime (ucode-plugins)
+### ISSUE 0804 — WIT interface + wasmtime WASM runtime (ucode-plugins) [DONE]
+
+**Status:** DONE. 115 plugin tests (111 unit + 4 integration), 0 clippy warnings.
 
 **Goal:** Translate the Rust trait API (from ISSUE 0803) into WIT/component-model interfaces and integrate wasmtime for WASM plugin execution.
 **Scope/Notes:**
 
-* Define `.wit` files mirroring the `Plugin`, `HookHandler`, `ToolProvider` traits
-* Integrate `wasmtime` with component-model support for loading `.wasm` plugins
-* `wit-bindgen` for generating host and guest bindings
-* WASM plugin lifecycle: load `.wasm` -> handshake -> activate -> dispatch hooks
-* Rust SDK crate for authoring WASM plugins (compiles to `wasm32-wasip1`)
-* Example WASM plugin demonstrating handshake + hook handling + tool export
+* 65 WIT hook interfaces across 20 versioned category packages + shared types + lifecycle/tool-provider
+* wasmtime 42 host runtime with component-model support and dynamic export probing
+* `wasmtime::component::bindgen!` for host-side type generation; `wit_bindgen::generate!` for guest-side bindings
+* WASM plugin lifecycle: load `.wasm` -> probe exports -> build dispatch table -> dispatch hooks
+* `ucode-plugin-sdk` guest SDK crate (minimal-plugin world, compiles to `wasm32-wasip2`)
+* `hello-wasm` example plugin demonstrating lifecycle + session/on-start hook
+* Host-log import wired for plugin-to-host logging
+* `WasmPlugin` integrated into `PluginHost` via `Wasm` variant with `load_wasm()` method
+
+Implementation plan: `docs/plans/2026-03-06-wasm-runtime.md` (10 tasks)
+Design doc: `docs/plans/2026-03-06-wasm-runtime-design.md`
+
   **Acceptance tests:**
 * Rust WASM plugin compiled to `.wasm` loads via wasmtime and passes handshake.
 * WASM plugin receives hook events and returns `HookResponse`.

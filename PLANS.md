@@ -1016,13 +1016,15 @@ Traits-first approach: define the v1 API as Rust traits, test with in-process pl
 * Plugin tool registered with namespaced FQN and invocable through host registry.
 * All 64 hook events have `event_name()` and `override_class()` implementations.
 
-### Task 8.4 WIT interface + wasmtime WASM runtime (ucode-plugins)
+### Task 8.4 WIT interface + wasmtime WASM runtime (ucode-plugins) [DONE]
+
+DONE. 115 plugin tests (111 unit + 4 integration), 0 clippy warnings. Implemented: 65 WIT hook interfaces across 20 category packages, wasmtime 42 host runtime with dynamic export probing, guest SDK crate (ucode-plugin-sdk), example WASM plugin (hello-wasm), integration tests.
 
 * Translate Rust trait API (from Task 8.3) into `.wit` component-model interfaces
 * Integrate `wasmtime` with component-model support for loading `.wasm` plugins
 * `wit-bindgen` for host and guest binding generation
 * WASM plugin lifecycle: load `.wasm` -> handshake -> activate -> dispatch hooks
-* Rust SDK crate for authoring WASM plugins (compiles to `wasm32-wasip1`)
+* Rust SDK crate for authoring WASM plugins (compiles to `wasm32-wasip2`)
 * Example WASM plugin demonstrating handshake + hook handling + tool export
 
 **Acceptance**

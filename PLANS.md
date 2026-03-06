@@ -1126,42 +1126,87 @@ the actual context-management strategies on top.
 * Hook payloads include version field; version mismatch is handled gracefully.
 * Permission escalation attempts are blocked and recorded in audit logs.
 
-### Task 8.8 Combined context management system (ucode-context + ucode-plugins) [P0]
+### Task 8.8 Native context management system (ucode-context crate) [P0]
 
-Built-in context management combining strategies from opencode-dcp, rlm-skill, and context-mode.
-Requires Task 8.6 infrastructure (message transform hooks, plugin tool registration).
+Native context management as a core crate — not a plugin. Combines strategies from opencode-dcp,
+rlm-skill, and context-mode. Runs directly in the LLM call path with zero serialization overhead.
 
-**8.8.1 Automatic zero-cost strategies (from opencode-dcp)**
+**Why native, not plugin:** The automatic strategies (dedup/supersede/purge) are pure algorithmic
+message rewrites. The knowledge base is core infrastructure. Session continuity is inherently a
+host concern. Routing these through WASM plugin boundaries adds latency and complexity for no
+benefit. External plugins (Task 8.6) can still hook into the system for custom strategies.
+
+**8.8.1 Per-model context management configuration**
+
+* Context management is configurable per model/provider in `ucode.toml`:
+  ```toml
+  [context_management]
+  enabled = true                    # global toggle
+
+  [context_management.strategies]
+  dedup = true                      # on by default (zero cost)
+  supersede_writes = true           # on by default (zero cost)
+  purge_errors = true               # on by default (zero cost)
+  purge_errors_after_turns = 3
+  sandbox_large_outputs = true      # on by default
+  sandbox_threshold_chars = 2000
+  knowledge_base = true             # on by default
+  session_continuity = true         # on by default
+
+  [context_management.pruning]
+  enabled = true                    # LLM-driven pruning tools
+  trigger_threshold_pct = 60        # trigger when context > 60% capacity
+  model = "auto"                    # "auto" = use session model, or explicit model name
+
+  # Per-model overrides — disable LLM pruning for expensive models
+  [context_management.pruning.overrides."claude-opus-4"]
+  enabled = false                   # Opus: rely on automatic strategies only
+
+  [context_management.pruning.overrides."claude-sonnet-4"]
+  enabled = true                    # Sonnet: cheap enough for LLM pruning
+  trigger_threshold_pct = 50        # trigger earlier for Sonnet
+  ```
+* When LLM pruning is disabled for a model, automatic strategies + sandbox + knowledge base
+  still run (zero LLM cost). The model just doesn't get distill/compress/prune tools.
+* `model = "auto"` uses the session's current model. Can be overridden to use a cheaper model
+  (e.g., use Haiku for pruning even when session runs on Opus).
+
+**8.8.2 Automatic zero-cost strategies (from opencode-dcp)**
 
 * **Deduplication:** Remove duplicate tool reads of the same file within a session.
-  Track file read hashes; on duplicate, replace with `[already in context]` placeholder.
+  Track file content hashes; on duplicate, replace with `[already in context]` placeholder.
 * **Supersede-writes:** When a file is written then later read, remove the earlier write's
   full content (the read has the current state).
 * **Purge-errors:** After N turns (configurable, default 3), remove errored tool call
   inputs/outputs (they're no longer actionable).
-* All strategies run in `experimental.chat.messages.transform` before each LLM call.
-* Zero LLM cost — pure algorithmic message rewriting.
+* All strategies run as a native message transform pass before each LLM call.
+* Zero LLM cost — pure algorithmic message rewriting in Rust.
 
-**8.8.2 Sandbox execution (from rlm-skill / context-mode)**
+**8.8.3 Sandbox execution (from rlm-skill / context-mode)**
 
-* `PreToolUse` hook intercepts large tool outputs (Read, Bash, WebFetch).
+* Intercept large tool outputs (Read, Bash, WebFetch) before they enter context.
 * Configurable threshold (default: 2000 chars). Outputs above threshold are:
-  * Stored in knowledge base (Task 8.8.4)
+  * Stored in knowledge base (Task 8.8.5)
   * Replaced in context with metadata summary (line count, file type, first/last lines)
 * LLM sees summary + can retrieve full content via knowledge base search tool.
 * Opt-out per tool via config.
 
-**8.8.3 LLM-driven pruning tools (from opencode-dcp)**
+**8.8.4 Smart LLM-driven pruning tools (from opencode-dcp, improved)**
 
-* Register tools the LLM can call autonomously to manage its own context:
+* Register built-in tools the LLM can call to manage its own context:
   * `context_distill` — Summarize a range of messages into a compact digest
   * `context_compress` — Replace verbose tool outputs with key findings
   * `context_prune` — Remove messages by index/range that are no longer relevant
-* System prompt injection (via `experimental.chat.system.transform`) tells LLM these tools
-  exist and when to use them (e.g., "when context exceeds 60% capacity").
-* Tools are registered via Task 8.6.4 plugin tool registration.
+* System prompt injection tells LLM these tools exist and when to use them.
+* **Smart triggering:** Only inject pruning instructions when context exceeds threshold
+  (default 60% of model's context window). Below threshold, no system prompt overhead.
+* **Per-model control:** Disable entirely for expensive models (Opus), enable for cheaper
+  models (Sonnet/Haiku). Configurable via `[context_management.pruning.overrides]`.
+* **Cheaper-model delegation:** Option to route pruning tool calls to a cheaper model
+  (e.g., Haiku summarizes, Opus keeps working). Avoids Opus spending output tokens on summaries.
+* Tools are registered as native built-in tools (not via plugin tool registration).
 
-**8.8.4 FTS5 knowledge base (from rlm-skill / context-mode)**
+**8.8.5 FTS5 knowledge base (from rlm-skill / context-mode)**
 
 * SQLite FTS5 index for content that was sandboxed out of context.
 * Porter stemming + trigram substring matching for fuzzy search.
@@ -1169,21 +1214,23 @@ Requires Task 8.6 infrastructure (message transform hooks, plugin tool registrat
 * `knowledge_store` tool for LLM to explicitly index important findings.
 * Per-session database file in session directory.
 
-**8.8.5 Session continuity (from context-mode)**
+**8.8.6 Session continuity (from context-mode)**
 
-* `PostToolUse` hook captures significant events (file changes, test results, decisions).
+* Capture significant events (file changes, test results, decisions) after tool use.
 * Event log persisted to session directory.
-* `PreCompact` hook creates compaction snapshot (summary of session state before compaction).
-* `SessionStart` hook restores context from previous compaction snapshot if resuming.
+* Create compaction snapshot (summary of session state before compaction).
+* Restore context from previous compaction snapshot on session resume.
 * Enables sessions to survive multiple compaction cycles without losing critical state.
 
 **Acceptance**
 
 * Dedup/supersede/purge reduce message array size measurably on repeated file operations.
 * Large tool outputs are sandboxed and retrievable via knowledge base search.
-* LLM can autonomously call distill/compress/prune to manage its context.
+* LLM-driven pruning is configurable per model; disabled for Opus by default.
+* Pruning can delegate to a cheaper model when configured.
 * Knowledge base search returns relevant results with fuzzy matching.
 * Session survives compaction and resumes with prior state context.
+* All strategies respect `ucode.toml` configuration and per-model overrides.
 
 ### Task 8.7 Remote plugin install/update distribution with trust verification (ucode-plugins + security) [P1]
 

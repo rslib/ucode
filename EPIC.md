@@ -1195,40 +1195,48 @@ Design doc: `docs/plans/2026-03-06-wasm-runtime-design.md`
 * Permission escalation blocked and auditable.
   **Owner:** Plugins/Core/Security
 
-### ISSUE 0808 — Combined context management system (ucode-context + ucode-plugins) [P0]
+### ISSUE 0808 — Native context management system (ucode-context crate) [P0]
 
-**Goal:** Built-in context management combining strategies from opencode-dcp (message rewriting + LLM pruning tools), rlm-skill (sandbox execution + knowledge base), and context-mode (session continuity). Requires ISSUE 0806 infrastructure.
+**Goal:** Native context management as a core crate combining strategies from opencode-dcp, rlm-skill, and context-mode. Runs directly in the LLM call path — not through the plugin system. Per-model configurable so users can tune strategies per model (e.g., disable LLM pruning for Opus, enable for Sonnet).
 **Scope/Notes:**
 
+* **Native, not plugin:** Automatic strategies are pure Rust message rewrites in the call path. Knowledge base and session continuity are core infrastructure. No WASM boundary overhead. External plugins (ISSUE 0806) can still add custom strategies.
+* **Per-model configuration** via `ucode.toml`:
+  * Global toggle + per-strategy toggles (dedup, supersede, purge, sandbox, pruning)
+  * `[context_management.pruning.overrides."model-name"]` for per-model LLM pruning control
+  * Disable LLM pruning for expensive models (Opus), enable for cheaper ones (Sonnet/Haiku)
+  * Option to delegate pruning to a cheaper model (e.g., Haiku summarizes while Opus works)
 * **Automatic zero-cost strategies** (from opencode-dcp):
   * Deduplication — remove duplicate file reads within session
   * Supersede-writes — remove earlier writes when file was subsequently read
   * Purge-errors — remove errored tool inputs after N turns (default 3)
-  * All run in `experimental.chat.messages.transform`, zero LLM cost
+  * All run as native message transform pass, zero LLM cost
 * **Sandbox execution** (from rlm-skill / context-mode):
-  * `PreToolUse` intercepts large tool outputs (>2000 chars configurable)
+  * Intercept large tool outputs (>2000 chars configurable)
   * Store full content in knowledge base, replace in context with metadata summary
   * LLM retrieves via knowledge base search tool
-* **LLM-driven pruning tools** (from opencode-dcp):
-  * `context_distill` — summarize message range into compact digest
-  * `context_compress` — replace verbose outputs with key findings
-  * `context_prune` — remove messages by index/range
-  * System prompt injection tells LLM when/how to use these tools
+* **Smart LLM-driven pruning** (from opencode-dcp, improved):
+  * `context_distill`, `context_compress`, `context_prune` as native built-in tools
+  * Smart triggering: only inject pruning instructions when context > threshold (default 60%)
+  * Per-model control: disable for Opus (rely on automatic strategies), enable for Sonnet
+  * Cheaper-model delegation: route pruning calls to Haiku while session runs on Opus
 * **FTS5 knowledge base** (from rlm-skill / context-mode):
   * SQLite FTS5 with Porter stemming + trigram matching
   * `knowledge_search` and `knowledge_store` tools for LLM
   * Per-session database in session directory
 * **Session continuity** (from context-mode):
-  * `PostToolUse` captures significant events; `PreCompact` creates snapshots
-  * `SessionStart` restores context from prior compaction snapshot
+  * Capture significant events; create compaction snapshots
+  * Restore context on session resume
   * Sessions survive multiple compaction cycles
   **Acceptance tests:**
 * Dedup/supersede/purge measurably reduce message array on repeated file ops.
 * Large tool outputs sandboxed and retrievable via knowledge base.
-* LLM autonomously calls distill/compress/prune to manage context.
+* LLM pruning configurable per model; disabled for Opus by default.
+* Pruning delegates to cheaper model when configured.
 * Knowledge base search returns relevant results with fuzzy matching.
 * Session survives compaction and resumes with prior state.
-  **Owner:** Core/Plugins/Context
+* All strategies respect `ucode.toml` config and per-model overrides.
+  **Owner:** Core/Context
 
 ### ISSUE 0807 — Plugin install/update distribution with trust verification (ucode-plugins + security) [P1]
 

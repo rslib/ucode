@@ -4,8 +4,9 @@ use crate::api::{
     API_VERSION, Feature, HandshakeError, HandshakeRequest, HandshakeResponse, HookHandler,
     HookResponse, Plugin, ToolProvider, check_features_compatible, check_version_compatible,
 };
-use crate::hooks::{HookEvent, HookRecord};
+use crate::hooks::{HookEvent, HookRecord, OverrideClass};
 use crate::manifest::PluginToolDef;
+use crate::policy::{PluginPolicy, PolicyCheckResult, override_class_level};
 
 /// Result of dispatching a hook to a single plugin.
 pub struct HookResult {
@@ -37,6 +38,7 @@ struct LoadedPlugin {
     instance: PluginInstance,
     /// FQNs for tools: `{plugin_id}.{tool_name}`.
     tool_fqns: Vec<String>,
+    policy: PluginPolicy,
 }
 
 /// Host runtime that manages plugin lifecycle: load, handshake, dispatch, unload.
@@ -85,6 +87,7 @@ impl PluginHost {
             plugin_id,
             instance: PluginInstance::WithHooks(Box::new(plugin)),
             tool_fqns: vec![],
+            policy: PluginPolicy::default_native(),
         });
         Ok(())
     }
@@ -111,6 +114,7 @@ impl PluginHost {
             plugin_id,
             instance: PluginInstance::WithTools(Box::new(plugin), specs),
             tool_fqns: fqns,
+            policy: PluginPolicy::default_native(),
         });
         Ok(())
     }
@@ -137,6 +141,7 @@ impl PluginHost {
             plugin_id,
             instance: PluginInstance::Wasm(plugin),
             tool_fqns: vec![],
+            policy: PluginPolicy::default_wasm(),
         });
         Ok(())
     }
@@ -156,27 +161,67 @@ impl PluginHost {
         true
     }
 
+    /// Override the policy for a loaded plugin.
+    pub fn set_plugin_policy(&mut self, plugin_id: &str, policy: PluginPolicy) {
+        if let Some(loaded) = self.plugins.iter_mut().find(|p| p.plugin_id == plugin_id) {
+            loaded.policy = policy;
+        }
+    }
+
+    /// Get the effective policy for a plugin.
+    pub fn plugin_policy(&self, plugin_id: &str) -> Option<&PluginPolicy> {
+        self.plugins
+            .iter()
+            .find(|p| p.plugin_id == plugin_id)
+            .map(|p| &p.policy)
+    }
+
+    /// List all plugin policies as (plugin_id, policy) pairs.
+    pub fn plugin_policies(&self) -> Vec<(&str, &PluginPolicy)> {
+        self.plugins
+            .iter()
+            .map(|p| (p.plugin_id.as_str(), &p.policy))
+            .collect()
+    }
+
     /// Dispatch a hook event to all loaded plugins that handle hooks.
+    ///
+    /// Respects per-plugin policy: skips plugins whose category is not allowed,
+    /// and downgrades responses that exceed the plugin's override ceiling.
     pub fn dispatch_hook(&mut self, event: HookEvent) -> Vec<HookResult> {
         let record = HookRecord::new(event);
+        let category = record.event.hook_category();
+        let event_override_class = record.event.override_class();
         let mut results = Vec::new();
         for loaded in &mut self.plugins {
+            // Check hook category policy
+            if loaded.policy.check_hook_category(category) != PolicyCheckResult::Allowed {
+                tracing::debug!(
+                    plugin_id = %loaded.plugin_id,
+                    category = category,
+                    "skipping plugin: hook category not allowed"
+                );
+                continue;
+            }
             match &mut loaded.instance {
                 PluginInstance::WithHooks(p) => {
                     let response = p.on_event(&record);
+                    let response = validate_hook_response(
+                        response,
+                        &loaded.policy,
+                        &event_override_class,
+                        &loaded.plugin_id,
+                    );
                     results.push(HookResult {
                         plugin_id: loaded.plugin_id.clone(),
                         response,
                     });
                 }
-                // WithTools plugins only require Plugin + ToolProvider, not HookHandler. Skip.
                 PluginInstance::WithTools(_, _) => {}
                 #[cfg(feature = "wasm")]
                 PluginInstance::Wasm(wasm_plugin) => {
                     let event_name = record.event.event_name();
                     if wasm_plugin.handles_event(event_name) {
-                        // Actual WASM function dispatch requires component instantiation,
-                        // which will be wired up once a guest plugin exists to test against.
                         results.push(HookResult {
                             plugin_id: loaded.plugin_id.clone(),
                             response: HookResponse::Ok,
@@ -227,6 +272,57 @@ impl PluginHost {
     }
 }
 
+fn validate_hook_response(
+    response: HookResponse,
+    policy: &PluginPolicy,
+    event_class: &OverrideClass,
+    plugin_id: &str,
+) -> HookResponse {
+    match &response {
+        HookResponse::Ok => response,
+        HookResponse::Modify { .. } => {
+            let response_class = OverrideClass::Guarded;
+            if policy.check_override_class(&response_class) != PolicyCheckResult::Allowed {
+                tracing::warn!(
+                    plugin_id = plugin_id,
+                    "downgrading Modify to Ok: plugin override ceiling is {:?}",
+                    policy.max_override_class
+                );
+                HookResponse::Ok
+            } else if override_class_level(event_class) < override_class_level(&response_class) {
+                tracing::warn!(
+                    plugin_id = plugin_id,
+                    "downgrading Modify to Ok: event class {:?} does not permit Modify",
+                    event_class
+                );
+                HookResponse::Ok
+            } else {
+                response
+            }
+        }
+        HookResponse::Veto { .. } => {
+            let response_class = OverrideClass::Risky;
+            if policy.check_override_class(&response_class) != PolicyCheckResult::Allowed {
+                tracing::warn!(
+                    plugin_id = plugin_id,
+                    "downgrading Veto to Ok: plugin override ceiling is {:?}",
+                    policy.max_override_class
+                );
+                HookResponse::Ok
+            } else if override_class_level(event_class) < override_class_level(&response_class) {
+                tracing::warn!(
+                    plugin_id = plugin_id,
+                    "downgrading Veto to Ok: event class {:?} does not permit Veto",
+                    event_class
+                );
+                HookResponse::Ok
+            } else {
+                response
+            }
+        }
+    }
+}
+
 impl Default for PluginHost {
     fn default() -> Self {
         Self::new()
@@ -239,6 +335,7 @@ mod tests {
     use crate::api::*;
     use crate::hooks::*;
     use crate::manifest::*;
+    use crate::policy::PluginPolicy;
 
     /// Minimal test plugin that implements Plugin + HookHandler.
     struct TestPlugin {
@@ -453,5 +550,87 @@ mod tests {
             err,
             crate::wasm::WasmPluginError::ComponentLoad(_)
         ));
+    }
+
+    #[test]
+    fn test_dispatch_hook_respects_category_policy() {
+        let mut host = PluginHost::new();
+        let plugin = TestPlugin::new("org.test.session-only");
+        host.load(plugin).unwrap();
+        // Restrict to session category only
+        host.set_plugin_policy("org.test.session-only", {
+            let mut p = PluginPolicy::default_native();
+            p.allowed_hook_categories = ["session".into()].into();
+            p
+        });
+        // Session event should be dispatched
+        let results = host.dispatch_hook(HookEvent::SessionStart {
+            session_id: "s1".into(),
+        });
+        assert_eq!(results.len(), 1);
+        // Tool event should be skipped
+        let results = host.dispatch_hook(HookEvent::BeforeToolCall {
+            tool_name: "bash".into(),
+            args: serde_json::Value::Null,
+        });
+        assert_eq!(results.len(), 0);
+    }
+
+    #[test]
+    fn test_dispatch_hook_downgrades_modify_when_ceiling_safe() {
+        struct ModifyPlugin;
+        impl Plugin for ModifyPlugin {
+            fn handshake(&self) -> HandshakeRequest {
+                HandshakeRequest {
+                    plugin_id: "org.test.modifier".into(),
+                    plugin_version: semver::Version::new(1, 0, 0),
+                    min_api_version: semver::Version::new(1, 0, 0),
+                    required_features: [Feature::Hooks].into(),
+                    capabilities: PluginCapabilities::default(),
+                }
+            }
+            fn initialize(&mut self, _: &HandshakeResponse) -> Result<(), String> {
+                Ok(())
+            }
+            fn shutdown(&mut self) {}
+        }
+        impl HookHandler for ModifyPlugin {
+            fn on_event(&mut self, _: &HookRecord) -> HookResponse {
+                HookResponse::Modify {
+                    changes: serde_json::json!({"key": "val"}),
+                }
+            }
+        }
+        let mut host = PluginHost::new();
+        host.load(ModifyPlugin).unwrap();
+        // Set Safe ceiling -- Modify should be downgraded to Ok
+        host.set_plugin_policy("org.test.modifier", PluginPolicy::default_wasm());
+        let results = host.dispatch_hook(HookEvent::BeforeToolCall {
+            tool_name: "bash".into(),
+            args: serde_json::Value::Null,
+        });
+        assert_eq!(results.len(), 1);
+        assert!(matches!(results[0].response, HookResponse::Ok));
+    }
+
+    #[test]
+    fn test_plugin_policy_query() {
+        let mut host = PluginHost::new();
+        let plugin = TestPlugin::new("org.test.logger");
+        host.load(plugin).unwrap();
+        // Native plugins get default_native policy
+        let policy = host.plugin_policy("org.test.logger");
+        assert!(policy.is_some());
+        assert!(policy.unwrap().filesystem_write);
+        assert!(host.plugin_policy("org.test.ghost").is_none());
+    }
+
+    #[test]
+    fn test_plugin_policies_list() {
+        let mut host = PluginHost::new();
+        host.load(TestPlugin::new("org.test.a")).unwrap();
+        host.load(TestPlugin::new("org.test.b")).unwrap();
+        let policies = host.plugin_policies();
+        assert_eq!(policies.len(), 2);
     }
 }

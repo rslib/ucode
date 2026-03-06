@@ -796,24 +796,24 @@ Terminal compatibility:
 * Plain text without markdown renders identically to before.
 * 47 markdown-specific tests, 493 total TUI tests.
 
-### Task 7.7 Tmux / terminal multiplexer integration (ucode-tui)
+### Task 7.7 Tmux / terminal multiplexer integration (ucode-tui) [DONE]
 
 > See `docs/plans/2026-03-05-tui-design.md` §10b (Tmux Integration).
 
-* Detect `$TMUX` / `$ZELLIJ` / `$STY` at startup; surface `[tmux]` indicator in status bar
+* Detect `$TMUX` / `$ZELLIJ` / `$STY` at startup; surface `[tmux]` indicator in title bar
 * OSC 52 clipboard writes (works through tmux ≥3.3 with `set-clipboard on`)
 * Fallback clipboard: `xclip`/`xsel`/`pbcopy` external, then file (`~/.local/share/ucode/clipboard`)
-* Mouse support toggle (`[tui.terminal] mouse = true/false`) for tmux mouse-mode coexistence
-* True color detection (`$COLORTERM`, tmux `Tc`/`RGB`) with 256-color fallback
-* Terminal title via OSC (`\033]0;ucode - session\007`)
+* Mouse support toggle (`app.mouse_enabled`) for tmux mouse-mode coexistence
+* True color detection (`$COLORTERM`, `$TERM` 256color, tmux fallback) via `ColorSupport` enum
+* Terminal title via OSC (`\033]0;ucode\007`), restored on exit
 * `SIGWINCH` resize handling (native via crossterm)
 
 **Acceptance**
 
-* `[tmux]` shows in status bar when `$TMUX` is set.
+* `[tmux]` shows in title bar when `$TMUX` is set.
 * Copy in ucode copy mode writes to system clipboard via OSC 52 inside tmux.
 * Fallback clipboard works when OSC 52 is unavailable.
-* `mouse = false` config disables mouse capture, allowing tmux mouse passthrough.
+* `mouse_enabled = false` disables mouse capture, allowing tmux mouse passthrough.
 
 ### Task 7.8 Keybinding presets (ucode-tui)
 

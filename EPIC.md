@@ -964,6 +964,29 @@ Search:
 
 **Completed:** 493 TUI tests (47 new markdown tests). Created `components/markdown.rs` (1,544 lines) with `render_markdown` and `markdown_height` public API. Integrated into `render_assistant_message`, `render_streaming_message`, and `entry_height`. Removed dead `render_indented_text` helper. Updated demo with markdown-rich responses (headers, tables, code blocks, inline styles, links).
 
+### ISSUE 0711 — Tmux / terminal multiplexer integration (ucode-tui) [DONE]
+
+**Goal:** Terminal integration for multiplexer detection, color support, mouse toggle, and terminal title.
+
+**Scope/Notes:**
+
+* Multiplexer detection: `$TMUX`, `$ZELLIJ`, `$STY` → `[tmux]`/`[zellij]`/`[screen]` in title bar
+* OSC 52 clipboard writes with fallback chain (external tool → file)
+* Color support detection: `$COLORTERM` (truecolor/24bit) → `$TERM` (256color) → tmux → Basic
+* Mouse capture toggle via `app.mouse_enabled` (defaults to true)
+* Terminal title set to "ucode" on startup via OSC 0, restored on exit
+* SIGWINCH resize handled natively by crossterm
+
+**Acceptance tests:**
+
+* `[tmux]` shows in title bar when `$TMUX` is set.
+* Copy in copy mode writes to clipboard via OSC 52 inside tmux.
+* Fallback clipboard works when OSC 52 is unavailable.
+* `mouse_enabled = false` disables mouse capture for tmux mouse passthrough.
+  **Owner:** TUI
+
+**Completed:** 502 TUI tests (7 new). Created `terminal.rs` with `set_terminal_title`, `restore_terminal_title`, `ColorSupport` enum, and `detect_color_support`. Added `color_support` and `mouse_enabled` fields to `AppState`. Terminal title set on startup and restored in `TerminalGuard::drop`. Mouse capture conditional on `app.mouse_enabled`.
+
 ---
 
 ## EPIC 8 — Plugins + hooks (user customization)

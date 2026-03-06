@@ -112,6 +112,7 @@ impl Drop for TerminalGuard {
         // Best-effort cleanup — ignore errors during drop.
         let _ = disable_raw_mode();
         let mut stderr = std::io::stderr();
+        let _ = crate::terminal::restore_terminal_title(&mut stderr);
         if self.mouse_enabled {
             let _ = execute!(
                 stderr,
@@ -142,8 +143,15 @@ pub async fn run_event_loop(
     let mut stderr = std::io::stderr();
     execute!(stderr, EnterAlternateScreen)?;
 
-    // Mouse capture is optional; we enable it but ignore mouse events for now.
-    let mouse_enabled = execute!(stderr, crossterm::event::EnableMouseCapture).is_ok();
+    // Set terminal title.
+    let _ = crate::terminal::set_terminal_title("ucode", &mut stderr);
+
+    // Mouse capture is optional and can be disabled for tmux mouse-mode coexistence.
+    let mouse_enabled = if app.mouse_enabled {
+        execute!(stderr, crossterm::event::EnableMouseCapture).is_ok()
+    } else {
+        false
+    };
 
     // The guard restores the terminal on drop (including panics).
     let _guard = TerminalGuard::new(mouse_enabled);

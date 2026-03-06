@@ -8,6 +8,7 @@ pub mod event_loop;
 pub mod keybinds;
 pub mod layout;
 pub mod overlays;
+pub mod terminal;
 pub mod theme;
 
 /// Channel sender for external systems to send events to the TUI.

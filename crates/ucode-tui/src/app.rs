@@ -204,6 +204,10 @@ pub struct AppState {
     /// window expires or when the double-Ctrl+C exit fires.
     pub ctrl_c_hint: Option<String>,
     pub toasts: ToastState,
+    pub color_support: crate::terminal::ColorSupport,
+    /// Whether mouse capture is enabled. When false, mouse events pass through
+    /// to the terminal multiplexer.
+    pub mouse_enabled: bool,
 }
 
 impl AppState {
@@ -246,6 +250,8 @@ impl AppState {
             last_ctrl_c: None,
             ctrl_c_hint: None,
             toasts: ToastState::new(),
+            color_support: crate::terminal::detect_color_support(),
+            mouse_enabled: true,
         }
     }
 
@@ -1133,5 +1139,34 @@ mod tests {
         assert_eq!(app.command_registry.list().len(), before - 2);
         assert!(app.command_registry.resolve("/cmd1").is_none());
         assert!(app.command_registry.resolve("/cmd2").is_none());
+    }
+
+    // ------------------------------------------------------------------
+    // Mouse enabled
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn app_state_mouse_enabled_default() {
+        let app = AppState::new();
+        assert!(app.mouse_enabled);
+    }
+
+    #[test]
+    fn app_state_mouse_disabled() {
+        let mut app = AppState::new();
+        app.mouse_enabled = false;
+        assert!(!app.mouse_enabled);
+    }
+
+    // ------------------------------------------------------------------
+    // Color support
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn app_state_color_support_is_initialized() {
+        // color_support is set from the environment; just verify it doesn't panic
+        // and returns a valid variant.
+        let app = AppState::new();
+        let _ = app.color_support;
     }
 }

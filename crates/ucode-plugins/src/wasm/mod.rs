@@ -7,6 +7,11 @@
 //! low-level [`wasmtime::component::Instance`] API for dynamic export
 //! probing since plugins export different subsets of the 64 hook interfaces.
 
+pub mod convert;
+pub mod host;
+
+pub use host::{WasmHostState, WasmPlugin, WasmPluginError};
+
 // Generate Rust types from WIT definitions.
 wasmtime::component::bindgen!({
     path: "wit",

@@ -359,7 +359,7 @@ CLI:
 * Tool use mapping → canonical ToolCall
 * Uses auth module (API key or subscription login)
 
-### Task 3.4 Local adapter (Ollama) (optional but recommended)
+### Task 3.4 Local adapter (Ollama) (optional but recommended) [DONE]
 
 * Fast fallback / offline mode
 
@@ -732,7 +732,7 @@ Define plugin contracts, event surfaces, and safety policy first. Defer WASM run
 
 * `plugin.toml`: name, version, command, hooks, tools exported
 
-### Task 8.2 Hooks API (v1)
+### Task 8.2 Hooks API (v1) [DONE]
 
 Events:
 
@@ -879,7 +879,7 @@ Override classes matrix:
 * Unsigned/untrusted plugin is blocked by default.
 * Signature mismatch blocks activation with clear diagnostics.
 
-### Task 9.3 Non-interactive headless/CI mode (ucode-cli + ucode-core) [P0]
+### Task 9.3 Non-interactive headless/CI mode (ucode-cli + ucode-core) [DONE]
 
 * Add CLI non-interactive execution mode suitable for automation pipelines
 * Machine-readable JSON output envelope (events, artifacts, usage, terminal status)

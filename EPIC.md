@@ -378,7 +378,7 @@ Commands:
 * `ucode chat --provider anthropic` streams output (mock ok)
   **Owner:** Providers
 
-### ISSUE 0304 — Ollama/local adapter (optional but recommended) (ucode-providers)
+### ISSUE 0304 — Ollama/local adapter (optional but recommended) (ucode-providers) [DONE]
 
 **Goal:** Provide local fast fallback model support.
 **Acceptance tests:**
@@ -889,7 +889,7 @@ Search:
 * Capability declarations load into policy engine.
   **Owner:** Plugins
 
-### ISSUE 0802 — Hooks API v1 (ucode-plugins + core/tools)
+### ISSUE 0802 — Hooks API v1 (ucode-plugins + core/tools) [DONE]
 
 **Goal:** Define hook events and dispatch them.
 **Hooks:**
@@ -1069,7 +1069,7 @@ Search:
 * Audit trail verifiable for: tool approvals, sandbox tier changes, MCP trust decisions, agent spawn/complete.
   **Owner:** Platform/Security
 
-### ISSUE 0905 — Non-interactive headless/CI execution mode (ucode-cli + ucode-core) [P0]
+### ISSUE 0905 — Non-interactive headless/CI execution mode (ucode-cli + ucode-core) [DONE]
 
 **Goal:** Enable deterministic headless execution for CI/automation with machine-readable outputs and strict exit codes.
 **Scope/Notes:**

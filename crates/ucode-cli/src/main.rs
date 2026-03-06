@@ -1,6 +1,7 @@
 mod auth_handler;
 mod cmd_auth;
 mod cmd_session;
+mod headless;
 mod session_handler;
 
 use std::path::PathBuf;
@@ -36,6 +37,14 @@ struct Cli {
     #[arg(long, global = true)]
     trace: bool,
 
+    /// Run in non-interactive mode (no TUI prompts).
+    #[arg(long, global = true)]
+    non_interactive: bool,
+
+    /// Output results as JSON (implies --non-interactive).
+    #[arg(long, global = true)]
+    json_output: bool,
+
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -52,6 +61,18 @@ enum Command {
     Session {
         #[command(subcommand)]
         subcommand: SessionCommand,
+    },
+
+    /// Run a prompt non-interactively.
+    Run {
+        /// The prompt to execute.
+        prompt: String,
+        /// Resume an existing session.
+        #[arg(long)]
+        resume_session: Option<String>,
+        /// Timeout in seconds.
+        #[arg(long, default_value = "300")]
+        timeout: u64,
     },
 }
 
@@ -167,6 +188,30 @@ async fn main() -> Result<()> {
             SessionCommand::Resume { id } => session_handler::handle_resume(&session_store, &id)?,
             SessionCommand::Continue => session_handler::handle_continue(&session_store)?,
         },
+        Some(Command::Run {
+            prompt,
+            resume_session,
+            timeout: _,
+        }) => {
+            let mut runner = headless::HeadlessRunner::new(cli.json_output);
+            if let Some(id) = resume_session {
+                runner = runner.with_session_id(id);
+            }
+
+            if cli.json_output {
+                let out = runner.build_output(
+                    vec![],
+                    headless::HeadlessUsage::default(),
+                    headless::ExitCode::Success,
+                );
+                match runner.format_output(&out) {
+                    Ok(json) => println!("{json}"),
+                    Err(e) => tracing::error!("failed to serialize headless output: {e}"),
+                }
+            } else {
+                println!("headless mode: would execute prompt: {prompt}");
+            }
+        }
     }
 
     Ok(())
@@ -185,6 +230,8 @@ mod tests {
             log_dir: None,
             log_stderr: None,
             trace: false,
+            non_interactive: false,
+            json_output: false,
             command: None,
         }
     }

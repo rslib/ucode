@@ -4,6 +4,7 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use crate::keybinds::{KeybindPreset, KeybindResolver};
 use crate::layout::{InputState, SidebarState, TerminalSize};
+use crate::overlays::approval_modal::ApprovalModalState;
 use crate::overlays::diff_modal::DiffModalState;
 use crate::overlays::palette::PaletteState;
 use crate::theme::{Density, UcodeTheme};
@@ -180,6 +181,7 @@ pub struct AppState {
     pub message_tx: Option<UnboundedSender<String>>,
     pub palette: PaletteState,
     pub diff_modal: DiffModalState,
+    pub approval_modal: ApprovalModalState,
     /// Timestamp of the last Ctrl+C press, for double-Ctrl+C exit detection.
     pub last_ctrl_c: Option<Instant>,
     /// Transient hint set after the first Ctrl+C; cleared when the 2-second
@@ -215,6 +217,7 @@ impl AppState {
             message_tx: None,
             palette: PaletteState::new(),
             diff_modal: DiffModalState::new(),
+            approval_modal: ApprovalModalState::new(),
             last_ctrl_c: None,
             ctrl_c_hint: None,
         }
@@ -342,6 +345,22 @@ impl AppState {
             patch_id: patch_id.clone(),
         });
         self.diff_modal.open(file_path, &raw_diff, patch_id);
+        self.focus = FocusTarget::Overlay;
+        self.mark_dirty();
+    }
+
+    /// Push a tool call with `PendingApproval` status and open the approval modal.
+    pub fn request_approval(
+        &mut self,
+        tool_name: String,
+        command: String,
+        cwd: String,
+        sandbox_label: String,
+    ) {
+        let index = self.push_tool_call(tool_name.clone());
+        self.update_tool_call(index, ToolCallStatus::PendingApproval, None, None);
+        self.approval_modal
+            .open_run_cmd(tool_name, command, cwd, sandbox_label, Some(index));
         self.focus = FocusTarget::Overlay;
         self.mark_dirty();
     }
@@ -552,6 +571,28 @@ mod tests {
             app.transcript[0],
             TranscriptEntry::PatchProposed { .. }
         ));
+    }
+
+    #[test]
+    fn app_state_request_approval() {
+        let mut app = AppState::new();
+        app.request_approval(
+            "run_cmd".to_owned(),
+            "cargo test --workspace".to_owned(),
+            "/home/user/code/ucode".to_owned(),
+            "ws workspace".to_owned(),
+        );
+        assert!(app.approval_modal.visible);
+        assert_eq!(app.approval_modal.tool_name, "run_cmd");
+        assert_eq!(app.focus, FocusTarget::Overlay);
+        assert_eq!(app.transcript.len(), 1);
+        match &app.transcript[0] {
+            TranscriptEntry::ToolCall { name, status, .. } => {
+                assert_eq!(name, "run_cmd");
+                assert_eq!(*status, ToolCallStatus::PendingApproval);
+            }
+            _ => panic!("expected ToolCall"),
+        }
     }
 
     #[test]

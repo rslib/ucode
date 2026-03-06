@@ -641,7 +641,17 @@ pub fn section_summary(id: SectionId, data: &SidebarData) -> String {
         }
         SectionId::Tools => {
             let n = data.tools.entries.len();
-            format!("{n} calls")
+            let pending = data
+                .tools
+                .entries
+                .iter()
+                .filter(|e| e.status == ToolCallStatus::PendingApproval)
+                .count();
+            if pending > 0 {
+                format!("{n} calls, {pending} pending")
+            } else {
+                format!("{n} calls")
+            }
         }
         SectionId::Agents => {
             let (done, running, failed) = data.agents.count_by_status();
@@ -1072,5 +1082,36 @@ mod tests {
     fn sandbox_tier_default_is_off() {
         use crate::theme::SandboxTier;
         assert_eq!(SandboxTier::default(), SandboxTier::Off);
+    }
+
+    #[test]
+    fn section_summary_tools_no_pending() {
+        let mut data = SidebarData::new();
+        data.tools.entries = vec![ToolEntry {
+            name: "read_file".into(),
+            status: ToolCallStatus::Success,
+            duration: Some("0.1s".into()),
+        }];
+        let summary = section_summary(SectionId::Tools, &data);
+        assert_eq!(summary, "1 calls");
+    }
+
+    #[test]
+    fn section_summary_tools_with_pending() {
+        let mut data = SidebarData::new();
+        data.tools.entries = vec![
+            ToolEntry {
+                name: "read_file".into(),
+                status: ToolCallStatus::Success,
+                duration: Some("0.1s".into()),
+            },
+            ToolEntry {
+                name: "run_cmd".into(),
+                status: ToolCallStatus::PendingApproval,
+                duration: None,
+            },
+        ];
+        let summary = section_summary(SectionId::Tools, &data);
+        assert_eq!(summary, "2 calls, 1 pending");
     }
 }

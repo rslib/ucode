@@ -46,6 +46,12 @@ pub enum TuiEvent {
         raw_diff: String,
         patch_id: Option<String>,
     },
+    ApprovalRequired {
+        tool_name: String,
+        command: String,
+        cwd: String,
+        sandbox_label: String,
+    },
     Quit,
 }
 
@@ -277,6 +283,40 @@ fn handle_terminal_event(
                     }
                     crossterm::event::KeyCode::PageDown => {
                         app.diff_modal.scroll_down(10);
+                        app.mark_dirty();
+                    }
+                    _ => {}
+                }
+                return false;
+            }
+
+            // When the approval modal is open, route keys to it.
+            if app.approval_modal.visible {
+                match key.code {
+                    crossterm::event::KeyCode::Esc => {
+                        app.approval_modal.close();
+                        app.focus = FocusTarget::Input;
+                        app.mark_dirty();
+                    }
+                    crossterm::event::KeyCode::Char('o') => {
+                        let tool = app.approval_modal.tool_name.clone();
+                        app.approval_modal.approve_once();
+                        app.push_system_message(format!("Approved once: {tool}"));
+                        app.focus = FocusTarget::Input;
+                        app.mark_dirty();
+                    }
+                    crossterm::event::KeyCode::Char('s') => {
+                        let tool = app.approval_modal.tool_name.clone();
+                        app.approval_modal.approve_session();
+                        app.push_system_message(format!("Approved for session: {tool}"));
+                        app.focus = FocusTarget::Input;
+                        app.mark_dirty();
+                    }
+                    crossterm::event::KeyCode::Char('d') => {
+                        let tool = app.approval_modal.tool_name.clone();
+                        app.approval_modal.deny();
+                        app.push_system_message(format!("Denied: {tool}"));
+                        app.focus = FocusTarget::Input;
                         app.mark_dirty();
                     }
                     _ => {}
@@ -679,6 +719,14 @@ fn handle_tui_event(event: TuiEvent, app: &mut AppState) -> bool {
         } => {
             app.propose_patch(file_path, raw_diff, patch_id);
         }
+        TuiEvent::ApprovalRequired {
+            tool_name,
+            command,
+            cwd,
+            sandbox_label,
+        } => {
+            app.request_approval(tool_name, command, cwd, sandbox_label);
+        }
         TuiEvent::Quit => return true,
     }
     false
@@ -757,6 +805,12 @@ pub fn render_frame(
     if app.diff_modal.visible {
         use crate::overlays::diff_modal::DiffModal;
         f.render_widget(DiffModal::new(&app.diff_modal, &app.theme), area);
+    }
+
+    // Approval modal overlay.
+    if app.approval_modal.visible {
+        use crate::overlays::approval_modal::ApprovalModal;
+        f.render_widget(ApprovalModal::new(&app.approval_modal, &app.theme), area);
     }
 }
 
@@ -896,7 +950,35 @@ mod tests {
         };
         let _ = TuiEvent::RouterEvent("rerouted".to_owned());
         let _ = TuiEvent::SystemMessage("info".to_owned());
+        let _ = TuiEvent::PatchProposed {
+            file_path: "src/lib.rs".to_owned(),
+            raw_diff: "+added".to_owned(),
+            patch_id: None,
+        };
+        let _ = TuiEvent::ApprovalRequired {
+            tool_name: "run_cmd".to_owned(),
+            command: "cargo test".to_owned(),
+            cwd: "/tmp".to_owned(),
+            sandbox_label: "ws".to_owned(),
+        };
         let _ = TuiEvent::Quit;
+    }
+
+    #[test]
+    fn tui_event_approval_required() {
+        let mut app = AppState::new();
+        let exited = handle_tui_event(
+            TuiEvent::ApprovalRequired {
+                tool_name: "run_cmd".to_owned(),
+                command: "cargo test".to_owned(),
+                cwd: "/tmp".to_owned(),
+                sandbox_label: "ws".to_owned(),
+            },
+            &mut app,
+        );
+        assert!(!exited);
+        assert!(app.approval_modal.visible);
+        assert_eq!(app.focus, FocusTarget::Overlay);
     }
 
     // -----------------------------------------------------------------------
@@ -1761,6 +1843,132 @@ mod tests {
             "+added\n-removed\n context".to_owned(),
             None,
         );
+        let input_box = InputBoxState::new();
+        let sidebar_data = SidebarData::new();
+
+        terminal
+            .draw(|f| render_frame(f, &app, &input_box, &sidebar_data, 0))
+            .expect("draw");
+    }
+
+    // -----------------------------------------------------------------------
+    // Approval modal key handling
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn approval_modal_esc_closes() {
+        let mut app = AppState::new();
+        let mut input_box = InputBoxState::new();
+        let mut sidebar_data = SidebarData::new();
+
+        app.request_approval(
+            "run_cmd".to_owned(),
+            "cargo test".to_owned(),
+            "/tmp".to_owned(),
+            "ws".to_owned(),
+        );
+        assert!(app.approval_modal.visible);
+
+        let esc = Event::Key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Esc,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        handle_terminal_event(esc, &mut app, &mut input_box, &mut sidebar_data);
+        assert!(!app.approval_modal.visible);
+        assert_eq!(app.focus, FocusTarget::Input);
+    }
+
+    #[test]
+    fn approval_modal_approve_once() {
+        let mut app = AppState::new();
+        let mut input_box = InputBoxState::new();
+        let mut sidebar_data = SidebarData::new();
+
+        app.request_approval(
+            "run_cmd".to_owned(),
+            "cargo test".to_owned(),
+            "/tmp".to_owned(),
+            "ws".to_owned(),
+        );
+
+        let key_o = Event::Key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('o'),
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        handle_terminal_event(key_o, &mut app, &mut input_box, &mut sidebar_data);
+        assert!(!app.approval_modal.visible);
+        assert_eq!(app.focus, FocusTarget::Input);
+        // Should have a system message about approval.
+        let has_approved_msg = app.transcript.iter().any(
+            |e| matches!(e, TranscriptEntry::SystemMessage(msg) if msg.contains("Approved once")),
+        );
+        assert!(has_approved_msg);
+    }
+
+    #[test]
+    fn approval_modal_approve_session() {
+        let mut app = AppState::new();
+        let mut input_box = InputBoxState::new();
+        let mut sidebar_data = SidebarData::new();
+
+        app.request_approval(
+            "run_cmd".to_owned(),
+            "cargo test".to_owned(),
+            "/tmp".to_owned(),
+            "ws".to_owned(),
+        );
+
+        let key_s = Event::Key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('s'),
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        handle_terminal_event(key_s, &mut app, &mut input_box, &mut sidebar_data);
+        assert!(!app.approval_modal.visible);
+        let has_session_msg = app.transcript.iter().any(|e| {
+            matches!(e, TranscriptEntry::SystemMessage(msg) if msg.contains("Approved for session"))
+        });
+        assert!(has_session_msg);
+    }
+
+    #[test]
+    fn approval_modal_deny() {
+        let mut app = AppState::new();
+        let mut input_box = InputBoxState::new();
+        let mut sidebar_data = SidebarData::new();
+
+        app.request_approval(
+            "run_cmd".to_owned(),
+            "cargo test".to_owned(),
+            "/tmp".to_owned(),
+            "ws".to_owned(),
+        );
+
+        let key_d = Event::Key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('d'),
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        handle_terminal_event(key_d, &mut app, &mut input_box, &mut sidebar_data);
+        assert!(!app.approval_modal.visible);
+        let has_denied_msg = app
+            .transcript
+            .iter()
+            .any(|e| matches!(e, TranscriptEntry::SystemMessage(msg) if msg.contains("Denied")));
+        assert!(has_denied_msg);
+    }
+
+    #[test]
+    fn render_frame_with_approval_modal() {
+        let backend = TestBackend::new(120, 40);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+
+        let mut app = AppState::new();
+        app.request_approval(
+            "run_cmd".to_owned(),
+            "cargo test --workspace".to_owned(),
+            "/home/user/code/ucode".to_owned(),
+            "ws workspace".to_owned(),
+        );
+
         let input_box = InputBoxState::new();
         let sidebar_data = SidebarData::new();
 

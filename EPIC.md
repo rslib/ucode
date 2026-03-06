@@ -832,7 +832,7 @@ Search:
 * Model proposes patch → diff modal appears → apply modifies file.
   **Owner:** TUI/Tools
 
-### ISSUE 0704 — Tool call log + approvals UX (ucode-tui)
+### ISSUE 0704 — Tool call log + approvals UX (ucode-tui) [DONE]
 
 **Goal:** Show tool calls in UI and require approvals for `run_cmd` (and optionally patch).
 **Acceptance tests:**

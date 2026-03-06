@@ -690,10 +690,10 @@ Terminal compatibility:
 * True color detection (`$COLORTERM`, tmux `Tc`/`RGB`) with 256-color fallback
 * `SIGWINCH` resize handling (native via crossterm)
 
-### Task 7.2 Approvals UX
+### Task 7.2 Approvals UX [DONE]
 
 * Diff modal: approve/apply, reject [DONE]
-* run_cmd modal: approve once / approve session / deny
+* run_cmd modal: approve once / approve session / deny [DONE]
 
 ### Task 7.3 Visual system + sidebar-first information design (ucode-tui)
 

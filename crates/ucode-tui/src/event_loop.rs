@@ -24,6 +24,7 @@ use crate::components::toast::ToastLevel;
 use crate::components::transcript::TranscriptView;
 use crate::keybinds::{Action, InputMode};
 use crate::layout::compute_layout;
+use crate::overlays::connect_modal::ConnectPhase;
 
 // ---------------------------------------------------------------------------
 // TuiEvent
@@ -424,6 +425,87 @@ fn handle_terminal_event(
                         app.mark_dirty();
                     }
                     _ => {}
+                }
+                return false;
+            }
+
+            // When the connect modal is open, route keys to it.
+            if app.connect_modal.visible {
+                match &app.connect_modal.phase {
+                    ConnectPhase::ProviderList => match key.code {
+                        crossterm::event::KeyCode::Esc => {
+                            app.connect_modal.close();
+                            app.focus = FocusTarget::Input;
+                            app.mark_dirty();
+                        }
+                        crossterm::event::KeyCode::Enter => {
+                            if let Some(provider) = app.connect_modal.selected_provider().cloned() {
+                                app.connect_modal.select_provider(&provider);
+                                app.mark_dirty();
+                            }
+                        }
+                        crossterm::event::KeyCode::Up => {
+                            app.connect_modal.move_up();
+                            app.mark_dirty();
+                        }
+                        crossterm::event::KeyCode::Down => {
+                            app.connect_modal.move_down();
+                            app.mark_dirty();
+                        }
+                        crossterm::event::KeyCode::Backspace => {
+                            app.connect_modal.delete_char();
+                            app.mark_dirty();
+                        }
+                        crossterm::event::KeyCode::Char(c) => {
+                            app.connect_modal.insert_char(c);
+                            app.mark_dirty();
+                        }
+                        _ => {}
+                    },
+                    ConnectPhase::MethodPicker { .. } => match key.code {
+                        crossterm::event::KeyCode::Esc => {
+                            app.connect_modal.phase = ConnectPhase::ProviderList;
+                            app.mark_dirty();
+                        }
+                        crossterm::event::KeyCode::Enter => {
+                            app.connect_modal.select_method();
+                            app.mark_dirty();
+                        }
+                        crossterm::event::KeyCode::Up => {
+                            app.connect_modal.method_up();
+                            app.mark_dirty();
+                        }
+                        crossterm::event::KeyCode::Down => {
+                            app.connect_modal.method_down();
+                            app.mark_dirty();
+                        }
+                        _ => {}
+                    },
+                    ConnectPhase::ApiKeyEntry { .. } => match key.code {
+                        crossterm::event::KeyCode::Esc => {
+                            app.connect_modal.phase = ConnectPhase::ProviderList;
+                            app.mark_dirty();
+                        }
+                        crossterm::event::KeyCode::Enter => {
+                            // Task 6 will handle submission.
+                        }
+                        crossterm::event::KeyCode::Backspace => {
+                            app.connect_modal.api_key_delete_char();
+                            app.mark_dirty();
+                        }
+                        crossterm::event::KeyCode::Char(c) => {
+                            app.connect_modal.api_key_insert_char(c);
+                            app.mark_dirty();
+                        }
+                        _ => {}
+                    },
+                    ConnectPhase::BrowserOAuth { .. } | ConnectPhase::DeviceCode { .. } => {
+                        if key.code == crossterm::event::KeyCode::Esc {
+                            app.connect_modal.phase = ConnectPhase::ProviderList;
+                            app.mark_dirty();
+                        }
+                    }
+                    ConnectPhase::Verifying { .. } => {}
                 }
                 return false;
             }

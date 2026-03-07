@@ -4896,8 +4896,12 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "ucode-agent",
  "ucode-auth",
  "ucode-core",
+ "ucode-providers",
+ "ucode-tools",
+ "ucode-tui",
 ]
 
 [[package]]

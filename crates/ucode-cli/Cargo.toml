@@ -10,6 +10,10 @@ path = "src/main.rs"
 [dependencies]
 ucode-core = { workspace = true }
 ucode-auth = { workspace = true }
+ucode-agent = { workspace = true }
+ucode-tools = { workspace = true }
+ucode-tui = { workspace = true }
+ucode-providers = { workspace = true }
 tokio = { workspace = true }
 clap = { workspace = true }
 tracing = { workspace = true }

@@ -37,3 +37,14 @@ pub use policy::{
 };
 pub use registry::{RegisteredTool, ToolHandler, ToolRegistry, ToolSpec};
 pub use search_tool::register_search_tool;
+
+/// Register all built-in tools with the given registry.
+pub fn register_builtins(registry: &mut ToolRegistry) {
+    register_all_git_tools(registry);
+    register_fs_tools(registry);
+    register_search_tool(registry);
+    register_cmd_tool(registry);
+    register_patch_tool(registry);
+    register_ast_search_tool(registry);
+    register_ast_rewrite_tool(registry);
+}

@@ -14,6 +14,61 @@ use ucode_core::logging::{LogConfig, LogLevel, default_log_dir, init_logging};
 use cmd_auth::AuthCommand;
 use cmd_session::SessionCommand;
 
+fn default_model_for(adapter: &ucode_providers::config::AdapterKind) -> String {
+    use ucode_providers::config::AdapterKind;
+    match adapter {
+        AdapterKind::Anthropic => "claude-sonnet-4-20250514".to_owned(),
+        AdapterKind::Openai => "gpt-4o".to_owned(),
+        AdapterKind::Gemini => "gemini-2.0-flash".to_owned(),
+        AdapterKind::Ollama => "llama3.2".to_owned(),
+        AdapterKind::Copilot => "gpt-4o".to_owned(),
+    }
+}
+
+fn agent_event_to_core_event(ev: &ucode_agent::AgentEvent) -> ucode_core::Event {
+    use ucode_agent::AgentEvent;
+    match ev {
+        AgentEvent::Token(t) => ucode_core::Event::Token(t.clone()),
+        AgentEvent::StreamDone => ucode_core::Event::Done,
+        AgentEvent::Error(e) => {
+            ucode_core::Event::Error(ucode_core::CoreError::Internal { message: e.clone() })
+        }
+        AgentEvent::SystemMessage(m) => ucode_core::Event::Log(m.clone()),
+        AgentEvent::ToolCallStarted { name } => {
+            ucode_core::Event::Log(format!("tool call: {name}"))
+        }
+        AgentEvent::ToolCallCompleted {
+            name,
+            success,
+            duration_ms,
+            ..
+        } => ucode_core::Event::Log(format!(
+            "tool {name} {} in {duration_ms}ms",
+            if *success { "succeeded" } else { "failed" }
+        )),
+    }
+}
+
+fn print_agent_event(ev: &ucode_agent::AgentEvent) {
+    use ucode_agent::AgentEvent;
+    match ev {
+        AgentEvent::Token(t) => print!("{t}"),
+        AgentEvent::StreamDone => println!(),
+        AgentEvent::SystemMessage(m) => eprintln!("[system] {m}"),
+        AgentEvent::Error(e) => eprintln!("[error] {e}"),
+        AgentEvent::ToolCallStarted { name } => eprintln!("[tool] starting: {name}"),
+        AgentEvent::ToolCallCompleted {
+            name,
+            success,
+            duration_ms,
+            ..
+        } => {
+            let status = if *success { "ok" } else { "failed" };
+            eprintln!("[tool] {name}: {status} ({duration_ms}ms)");
+        }
+    }
+}
+
 #[derive(Debug, Parser)]
 #[command(name = "ucode", about = "ucode agentic tool")]
 struct Cli {
@@ -160,7 +215,54 @@ async fn main() -> Result<()> {
 
     match cli.command {
         None => {
-            println!("ucode v{}", env!("CARGO_PKG_VERSION"));
+            let app_config = ucode_agent::AppConfig::load_default()
+                .map_err(|e| anyhow::anyhow!("config error: {e}"))?;
+
+            let (event_tx, event_rx) = ucode_tui::create_event_channel();
+
+            if !app_config.has_providers() {
+                eprintln!(
+                    "No providers configured. Set ANTHROPIC_API_KEY, OPENAI_API_KEY, \
+                     or create ~/.config/ucode/ucode.toml"
+                );
+                eprintln!("Run `ucode auth status` to check credentials.");
+                ucode_tui::run(event_tx, event_rx, None)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+            } else {
+                let provider_name = app_config
+                    .default_provider()
+                    .expect("has_providers was true")
+                    .to_owned();
+                let provider_config = app_config.providers[&provider_name].clone();
+                let model = default_model_for(&provider_config.adapter);
+
+                let cred_store: std::sync::Arc<dyn ucode_auth::CredentialStore> =
+                    std::sync::Arc::new(store);
+
+                let session = session_store.create(std::env::current_dir().unwrap_or_default())?;
+                let session_store_arc = std::sync::Arc::new(session_store);
+
+                let mut tool_registry = ucode_tools::ToolRegistry::new();
+                ucode_tools::register_builtins(&mut tool_registry);
+                let tool_registry = std::sync::Arc::new(tool_registry);
+
+                let agent_config = ucode_tui::AgentConfig {
+                    loop_config: ucode_agent::AgentLoopConfig {
+                        provider_name,
+                        provider_config,
+                        model,
+                        credential_store: Some(cred_store),
+                    },
+                    session_store: session_store_arc,
+                    session,
+                    tool_registry,
+                };
+
+                ucode_tui::run(event_tx, event_rx, Some(agent_config))
+                    .await
+                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+            }
         }
         Some(Command::Auth { subcommand }) => match subcommand {
             AuthCommand::Status => auth_handler::handle_status(&store)?,
@@ -195,25 +297,91 @@ async fn main() -> Result<()> {
         Some(Command::Run {
             prompt,
             resume_session,
-            timeout: _,
+            timeout,
         }) => {
-            let mut runner = headless::HeadlessRunner::new(cli.json_output);
-            if let Some(id) = resume_session {
-                runner = runner.with_session_id(id);
+            let app_config = ucode_agent::AppConfig::load_default()
+                .map_err(|e| anyhow::anyhow!("config error: {e}"))?;
+
+            let provider_name = app_config
+                .default_provider()
+                .ok_or_else(|| anyhow::anyhow!("No providers configured"))?
+                .to_owned();
+            let provider_config = app_config.providers[&provider_name].clone();
+            let model = default_model_for(&provider_config.adapter);
+
+            let cred_store: std::sync::Arc<dyn ucode_auth::CredentialStore> =
+                std::sync::Arc::new(store);
+
+            let session = if let Some(ref id) = resume_session {
+                session_store.load(id)?
+            } else {
+                session_store.create(std::env::current_dir().unwrap_or_default())?
+            };
+            let session_store = std::sync::Arc::new(session_store);
+
+            let mut tool_registry = ucode_tools::ToolRegistry::new();
+            ucode_tools::register_builtins(&mut tool_registry);
+            let tool_registry = std::sync::Arc::new(tool_registry);
+
+            let loop_config = ucode_agent::AgentLoopConfig {
+                provider_name,
+                provider_config,
+                model,
+                credential_store: Some(cred_store),
+            };
+
+            let (msg_tx, msg_rx) = tokio::sync::mpsc::unbounded_channel();
+            let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
+
+            let _ = msg_tx.send(prompt);
+            drop(msg_tx);
+
+            let agent_handle = tokio::spawn(ucode_agent::run_agent_loop(
+                msg_rx,
+                event_tx,
+                loop_config,
+                session_store,
+                session,
+                tool_registry,
+            ));
+
+            let runner = headless::HeadlessRunner::new(cli.json_output)
+                .with_session_id(resume_session.unwrap_or_default());
+            let mut events = Vec::new();
+            let timeout_dur = std::time::Duration::from_secs(timeout);
+            let deadline = tokio::time::Instant::now() + timeout_dur;
+
+            loop {
+                tokio::select! {
+                    ev = event_rx.recv() => {
+                        match ev {
+                            Some(agent_ev) => {
+                                let he = runner.record_event(&agent_event_to_core_event(&agent_ev));
+                                events.push(he);
+                                if !cli.json_output {
+                                    print_agent_event(&agent_ev);
+                                }
+                            }
+                            None => break,
+                        }
+                    }
+                    _ = tokio::time::sleep_until(deadline) => {
+                        eprintln!("timeout after {timeout}s");
+                        break;
+                    }
+                }
             }
 
+            agent_handle.await.ok();
+
             if cli.json_output {
-                let out = runner.build_output(
-                    vec![],
-                    headless::HeadlessUsage::default(),
-                    headless::ExitCode::Success,
-                );
+                let exit_code = headless::HeadlessRunner::determine_exit_code(&events);
+                let out =
+                    runner.build_output(events, headless::HeadlessUsage::default(), exit_code);
                 match runner.format_output(&out) {
                     Ok(json) => println!("{json}"),
-                    Err(e) => tracing::error!("failed to serialize headless output: {e}"),
+                    Err(e) => tracing::error!("failed to serialize: {e}"),
                 }
-            } else {
-                println!("headless mode: would execute prompt: {prompt}");
             }
         }
     }

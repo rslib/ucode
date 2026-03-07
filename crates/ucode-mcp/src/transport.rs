@@ -1,9 +1,36 @@
+use std::future::Future;
+use std::pin::Pin;
+
+use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::task::JoinHandle;
 
 use crate::error::McpError;
 use crate::jsonrpc::{JsonRpcNotification, JsonRpcRequest, JsonRpcResponse};
+
+/// Transport abstraction for MCP communication.
+///
+/// All MCP transports (stdio, SSE, HTTP) implement this trait.
+/// The client uses `Box<dyn Transport>` for runtime polymorphism.
+pub trait Transport: Send {
+    /// Send a JSON-RPC request and wait for the matching response.
+    fn request(
+        &mut self,
+        method: &str,
+        params: Option<Value>,
+    ) -> Pin<Box<dyn Future<Output = Result<Value, McpError>> + Send + '_>>;
+
+    /// Send a JSON-RPC notification (no response expected).
+    fn notify(
+        &mut self,
+        method: &str,
+        params: Option<Value>,
+    ) -> Pin<Box<dyn Future<Output = Result<(), McpError>> + Send + '_>>;
+
+    /// Shut down the transport and release resources.
+    fn shutdown(&mut self) -> Pin<Box<dyn Future<Output = Result<(), McpError>> + Send + '_>>;
+}
 
 /// Stdio transport for MCP communication.
 ///
@@ -95,11 +122,11 @@ impl StdioTransport {
     }
 
     /// Send a JSON-RPC request and wait for the matching response.
-    pub async fn request(
+    pub async fn send_request(
         &mut self,
         method: &str,
-        params: Option<serde_json::Value>,
-    ) -> Result<serde_json::Value, McpError> {
+        params: Option<Value>,
+    ) -> Result<Value, McpError> {
         let id = self.next_id;
         self.next_id += 1;
 
@@ -130,10 +157,10 @@ impl StdioTransport {
     }
 
     /// Send a JSON-RPC notification (no response expected).
-    pub async fn notify(
+    pub async fn send_notify(
         &mut self,
         method: &str,
-        params: Option<serde_json::Value>,
+        params: Option<Value>,
     ) -> Result<(), McpError> {
         let notif = JsonRpcNotification::new(method, params);
         let mut line = serde_json::to_string(&notif)?;
@@ -155,7 +182,7 @@ impl StdioTransport {
     }
 
     /// Kill the child process and clean up the stderr reader task.
-    pub async fn shutdown(&mut self) -> Result<(), McpError> {
+    pub async fn shutdown_process(&mut self) -> Result<(), McpError> {
         // Stop the stderr drain before killing the child so the task doesn't
         // race against a closed pipe.
         if let Some(task) = self.stderr_task.take() {
@@ -169,5 +196,29 @@ impl StdioTransport {
     /// The command used to spawn this transport's child process.
     pub fn server_command(&self) -> &str {
         &self.server_command
+    }
+}
+
+impl Transport for StdioTransport {
+    fn request(
+        &mut self,
+        method: &str,
+        params: Option<Value>,
+    ) -> Pin<Box<dyn Future<Output = Result<Value, McpError>> + Send + '_>> {
+        let method = method.to_owned();
+        Box::pin(async move { self.send_request(&method, params).await })
+    }
+
+    fn notify(
+        &mut self,
+        method: &str,
+        params: Option<Value>,
+    ) -> Pin<Box<dyn Future<Output = Result<(), McpError>> + Send + '_>> {
+        let method = method.to_owned();
+        Box::pin(async move { self.send_notify(&method, params).await })
+    }
+
+    fn shutdown(&mut self) -> Pin<Box<dyn Future<Output = Result<(), McpError>> + Send + '_>> {
+        Box::pin(async move { self.shutdown_process().await })
     }
 }

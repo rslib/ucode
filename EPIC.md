@@ -707,13 +707,47 @@ This ensures consistent behavior, no runtime dependency on installed binaries, a
 
 ### ISSUE 0505 — MCP transport parity (stdio + SSE + HTTP) (ucode-mcp) [P0]
 
+> Implementation plan: `docs/plans/2026-03-06-mcp-transport-parity.md`
+
 **Goal:** Match common agentic-tool MCP connectivity by supporting stdio, SSE, and HTTP transports.
 **Scope/Notes:**
 
-* Add configurable MCP transports: stdio, SSE, HTTP
-* Auth header/token config for networked transports
-* Reconnect/backoff strategy for unstable remote transports
-* Transport capability and health visible in logs/TUI
+* Extract `Transport` trait from `StdioTransport` with boxed futures for `Box<dyn Transport>` object safety
+* `McpClient` refactored to use `Box<dyn Transport>` with `from_transport()` and `connect_with_config()` factory
+* `ClientInfo` struct supporting optional `client_name`/`client_version` overrides (for Kimi-style servers)
+* `HttpTransport` — Streamable HTTP (2025-03-26 spec):
+  * Single POST endpoint, server responds with JSON or SSE stream
+  * `Mcp-Session-Id` header for session management (server sends, client echoes)
+* `SseTransport` — Legacy SSE (2024-11-05 spec):
+  * GET `/sse` for long-lived SSE stream with `endpoint` and `message` events
+  * POST to endpoint URL for client→server JSON-RPC requests
+  * Background tokio task reads SSE events, routes responses via mpsc channel
+* `ReconnectConfig` with 3 strategies:
+  * Simple: 3 retries, exponential backoff (1s base, 30s cap)
+  * Persistent: unlimited retries, capped exponential backoff
+  * Configurable: user-defined max_retries, backoff_base_ms, backoff_cap_ms
+* Permanent errors (4xx except 429) fail immediately; transient errors (5xx, connection reset, 429) retry per strategy
+* `ServerConfig` with TOML parsing supporting both string shorthand (`reconnect = "simple"`) and struct form
+* `${VAR}` env var expansion in header values (missing vars → empty string)
+* `reqwest` 0.12 with rustls-tls, json, stream features
+* `tracing::warn!` on each retry attempt, `tracing::error!` on final failure
+* New `McpError` variants: `Http { status, body }`, `SseConnection(String)`, `ReconnectExhausted { attempts }`, `InvalidConfig(String)`
+* 4 new files: `reconnect.rs`, `server_config.rs`, `transport_http.rs`, `transport_sse.rs`
+* ~22 new tests
+
+TOML config:
+```toml
+[mcp.servers.my-remote]
+transport = "sse"
+url = "https://example.com/mcp"
+reconnect = "simple"
+client_name = "kimi-code"
+
+[mcp.servers.my-remote.headers]
+Authorization = "Bearer ${MCP_TOKEN}"
+X-Custom = "value"
+```
+
   **Acceptance tests:**
 * Tool discovery/invocation works across stdio, SSE, and HTTP servers.
 * Transport disconnect triggers bounded reconnect with diagnostics.

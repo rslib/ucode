@@ -1,7 +1,10 @@
 use serde_json::json;
 
 use crate::error::McpError;
-use crate::transport::StdioTransport;
+use crate::server_config::{ServerConfig, TransportType};
+use crate::transport::{StdioTransport, Transport};
+use crate::transport_http::HttpTransport;
+use crate::transport_sse::SseTransport;
 use crate::types::{
     McpPromptDef, McpPromptMessage, McpResourceContent, McpResourceDef, McpToolDef, McpToolResult,
     ServerCapabilities, ServerInfo,
@@ -9,11 +12,40 @@ use crate::types::{
 
 const PROTOCOL_VERSION: &str = "2024-11-05";
 
+/// Client identity sent during the MCP initialize handshake.
+#[derive(Debug, Clone)]
+pub struct ClientInfo {
+    pub name: String,
+    pub version: String,
+}
+
+impl Default for ClientInfo {
+    fn default() -> Self {
+        Self {
+            name: "ucode".into(),
+            version: "0.1.0".into(),
+        }
+    }
+}
+
+impl ClientInfo {
+    pub fn from_config(config: &ServerConfig) -> Self {
+        Self {
+            name: config.client_name.clone().unwrap_or_else(|| "ucode".into()),
+            version: config
+                .client_version
+                .clone()
+                .unwrap_or_else(|| "0.1.0".into()),
+        }
+    }
+}
+
 /// High-level MCP client that manages the protocol lifecycle.
 pub struct McpClient {
-    transport: StdioTransport,
+    transport: Box<dyn Transport>,
     server_info: Option<ServerInfo>,
     server_capabilities: Option<ServerCapabilities>,
+    client_info: ClientInfo,
 }
 
 impl McpClient {
@@ -21,10 +53,42 @@ impl McpClient {
     pub async fn connect(command: &str, args: &[&str]) -> Result<Self, McpError> {
         let transport = StdioTransport::spawn(command, args).await?;
         Ok(Self {
+            transport: Box::new(transport),
+            server_info: None,
+            server_capabilities: None,
+            client_info: ClientInfo::default(),
+        })
+    }
+
+    /// Connect to an MCP server using a `ServerConfig`.
+    pub async fn connect_with_config(config: &ServerConfig) -> Result<Self, McpError> {
+        let headers = config.expanded_headers();
+        let client_info = ClientInfo::from_config(config);
+        let transport: Box<dyn Transport> = match &config.transport_type {
+            TransportType::Stdio { command, args, .. } => {
+                let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+                Box::new(StdioTransport::spawn(command, &args_refs).await?)
+            }
+            TransportType::Sse { url } => Box::new(
+                SseTransport::connect(url.clone(), &headers, config.reconnect.clone()).await?,
+            ),
+            TransportType::StreamableHttp { url } => Box::new(HttpTransport::new(
+                url.clone(),
+                &headers,
+                config.reconnect.clone(),
+            )?),
+        };
+        Ok(Self::from_transport(transport, client_info))
+    }
+
+    /// Create a client from an existing transport.
+    pub fn from_transport(transport: Box<dyn Transport>, client_info: ClientInfo) -> Self {
+        Self {
             transport,
             server_info: None,
             server_capabilities: None,
-        })
+            client_info,
+        }
     }
 
     /// Perform the MCP initialize handshake.
@@ -36,8 +100,8 @@ impl McpClient {
             "protocolVersion": PROTOCOL_VERSION,
             "capabilities": {},
             "clientInfo": {
-                "name": "ucode",
-                "version": "0.1.0"
+                "name": self.client_info.name,
+                "version": self.client_info.version
             }
         });
 
@@ -163,5 +227,77 @@ impl McpClient {
     /// Returns server capabilities if `initialize` has been called.
     pub fn server_capabilities(&self) -> Option<&ServerCapabilities> {
         self.server_capabilities.as_ref()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::reconnect::ReconnectConfig;
+    use crate::server_config::TransportType;
+    use std::collections::HashMap;
+
+    #[test]
+    fn client_info_default() {
+        let info = ClientInfo::default();
+        assert_eq!(info.name, "ucode");
+        assert_eq!(info.version, "0.1.0");
+    }
+
+    #[test]
+    fn client_info_from_config_custom() {
+        let config = ServerConfig {
+            name: "test".into(),
+            transport_type: TransportType::Stdio {
+                command: "echo".into(),
+                args: vec![],
+                env: HashMap::new(),
+            },
+            headers: HashMap::new(),
+            reconnect: ReconnectConfig::default(),
+            client_name: Some("kimi-code".into()),
+            client_version: Some("2.0.0".into()),
+        };
+        let info = ClientInfo::from_config(&config);
+        assert_eq!(info.name, "kimi-code");
+        assert_eq!(info.version, "2.0.0");
+    }
+
+    #[test]
+    fn client_info_from_config_partial() {
+        let config = ServerConfig {
+            name: "test".into(),
+            transport_type: TransportType::Stdio {
+                command: "echo".into(),
+                args: vec![],
+                env: HashMap::new(),
+            },
+            headers: HashMap::new(),
+            reconnect: ReconnectConfig::default(),
+            client_name: Some("custom".into()),
+            client_version: None,
+        };
+        let info = ClientInfo::from_config(&config);
+        assert_eq!(info.name, "custom");
+        assert_eq!(info.version, "0.1.0");
+    }
+
+    #[test]
+    fn client_info_from_config_defaults() {
+        let config = ServerConfig {
+            name: "test".into(),
+            transport_type: TransportType::Stdio {
+                command: "echo".into(),
+                args: vec![],
+                env: HashMap::new(),
+            },
+            headers: HashMap::new(),
+            reconnect: ReconnectConfig::default(),
+            client_name: None,
+            client_version: None,
+        };
+        let info = ClientInfo::from_config(&config);
+        assert_eq!(info.name, "ucode");
+        assert_eq!(info.version, "0.1.0");
     }
 }

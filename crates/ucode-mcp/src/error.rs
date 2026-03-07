@@ -22,4 +22,12 @@ pub enum McpError {
         expected: String,
         actual: String,
     },
+    #[error("HTTP error {status}: {body}")]
+    Http { status: u16, body: String },
+    #[error("SSE connection error: {0}")]
+    SseConnection(String),
+    #[error("reconnect exhausted after {attempts} attempts")]
+    ReconnectExhausted { attempts: usize },
+    #[error("invalid transport config: {0}")]
+    InvalidConfig(String),
 }

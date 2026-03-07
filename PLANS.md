@@ -597,12 +597,35 @@ CLI:
 * Crash/restart cycle produces clear diagnostics.
 
 ### Task 5.5 MCP transport parity (stdio + SSE + HTTP) (ucode-mcp) [P0]
-<!-- Deferred: needs reqwest/eventsource HTTP client dependencies -->
 
-* Support stdio, SSE, and HTTP MCP transports
-* Add auth header/token config for remote transports
-* Reconnect/backoff strategy for transient transport failures
-* Surface transport health in logs/UI
+> Implementation plan: `docs/plans/2026-03-06-mcp-transport-parity.md`
+
+* Extract `Transport` trait from `StdioTransport` (boxed futures for object safety)
+* `McpClient` refactored to `Box<dyn Transport>` with `from_transport()` and `connect_with_config()`
+* `ClientInfo` struct with optional `client_name`/`client_version` overrides (for Kimi and similar servers)
+* `HttpTransport` — Streamable HTTP (2025-03-26 spec): single POST endpoint, JSON or SSE response, `Mcp-Session-Id` header
+* `SseTransport` — Legacy SSE (2024-11-05 spec): GET `/sse` for `endpoint`/`message` events, POST to endpoint URL
+* `ReconnectConfig` with 3 strategies: Simple (3 retries), Persistent (unlimited), Configurable (user-defined)
+* Exponential backoff with cap; permanent errors (4xx except 429) fail immediately
+* `ServerConfig` with TOML parsing, `${VAR}` env var expansion in headers, transport type routing
+* `reqwest` 0.12 (rustls-tls, json, stream features) as HTTP client
+* `tracing::warn!` on retry attempts, `tracing::error!` on final failure
+* New error variants: `Http`, `SseConnection`, `ReconnectExhausted`, `InvalidConfig`
+* 4 new files: `reconnect.rs`, `server_config.rs`, `transport_http.rs`, `transport_sse.rs`
+* ~22 new tests
+
+TOML config example:
+```toml
+[mcp.servers.my-remote]
+transport = "sse"
+url = "https://example.com/mcp"
+reconnect = "simple"
+client_name = "kimi-code"
+
+[mcp.servers.my-remote.headers]
+Authorization = "Bearer ${MCP_TOKEN}"
+X-Custom = "value"
+```
 
 **Acceptance**
 

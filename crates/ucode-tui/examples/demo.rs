@@ -390,7 +390,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (user_tx, user_rx) = mpsc::unbounded_channel::<String>();
 
     // Spawn the scripted LLM responder.
-    tokio::spawn(fake_llm(user_rx, tui_tx));
+    tokio::spawn(fake_llm(user_rx, tui_tx.clone()));
 
     // Build app state with a demo plugin command that showcases the plugin badge
     // and args_hint rendering in both the autocomplete dropdown and palette.
@@ -420,5 +420,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         priority: 100,
         collapsed: false,
     });
-    ucode_tui::event_loop::run_event_loop(&mut app, &mut input_box, &mut sidebar_data, tui_rx).await
+    ucode_tui::event_loop::run_event_loop(
+        &mut app,
+        &mut input_box,
+        &mut sidebar_data,
+        tui_tx,
+        tui_rx,
+    )
+    .await
 }

@@ -10,7 +10,8 @@ use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::Rect;
 use tokio::sync::mpsc;
-use tokio::sync::mpsc::UnboundedReceiver;
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
+use tokio::task::JoinHandle;
 use tokio::time;
 
 use ucode_core::directive::{Directive, parse_input};
@@ -150,10 +151,14 @@ impl Drop for TerminalGuard {
 const RENDER_INTERVAL_MS: u64 = 16; // ~60 fps
 
 /// Main async event loop. Blocks until the user exits or a `Quit` event arrives.
+///
+/// `event_tx` / `event_rx` are the two ends of the same channel; the sender is
+/// cloned into spawned auth tasks so they can push results back into the loop.
 pub async fn run_event_loop(
     app: &mut AppState,
     input_box: &mut InputBoxState,
     sidebar_data: &mut SidebarData,
+    event_tx: UnboundedSender<TuiEvent>,
     mut event_rx: UnboundedReceiver<TuiEvent>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // --- Terminal setup ---
@@ -196,6 +201,8 @@ pub async fn run_event_loop(
     render_tick.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
 
     let mut frame_counter: u64 = 0;
+    // Tracks a running browser-OAuth or device-code task. Aborted on Esc.
+    let mut auth_task: Option<JoinHandle<()>> = None;
 
     // Initial render.
     terminal.draw(|f| render_frame(f, app, input_box, sidebar_data, frame_counter))?;
@@ -210,13 +217,13 @@ pub async fn run_event_loop(
             maybe_event = term_rx.recv() => {
                 match maybe_event {
                     Some(event) => {
-                        if handle_terminal_event(event, app, input_box, sidebar_data) {
+                        if handle_terminal_event(event, app, input_box, sidebar_data, &event_tx, &mut auth_task) {
                             break;
                         }
                         // Drain any remaining buffered events from the channel
                         // so we batch multiple keystrokes into one render frame.
                         while let Ok(event) = term_rx.try_recv() {
-                            if handle_terminal_event(event, app, input_box, sidebar_data) {
+                            if handle_terminal_event(event, app, input_box, sidebar_data, &event_tx, &mut auth_task) {
                                 break;
                             }
                         }
@@ -264,6 +271,148 @@ pub async fn run_event_loop(
 }
 
 // ---------------------------------------------------------------------------
+// Auth task helpers
+// ---------------------------------------------------------------------------
+
+/// Return the `BrowserOAuthConfig` for the given provider / display-name pair.
+fn get_oauth_config(
+    provider_id: &str,
+    display_name: &str,
+) -> Option<ucode_auth::BrowserOAuthConfig> {
+    match provider_id {
+        "openai" => Some(ucode_auth::openai_subscription_oauth_config()),
+        "anthropic" => {
+            if display_name.contains("Max") {
+                Some(ucode_auth::anthropic_max_oauth_config())
+            } else {
+                Some(ucode_auth::anthropic_console_oauth_config())
+            }
+        }
+        _ => None,
+    }
+}
+
+/// If the connect modal just transitioned to `BrowserOAuth` or `DeviceCode`,
+/// abort any existing auth task and spawn the appropriate async flow.
+fn maybe_spawn_auth_task(
+    app: &mut AppState,
+    event_tx: &UnboundedSender<TuiEvent>,
+    auth_task: &mut Option<JoinHandle<()>>,
+) {
+    // Abort any previously running task before starting a new one.
+    if let Some(old) = auth_task.take() {
+        old.abort();
+    }
+
+    match &app.connect_modal.phase {
+        ConnectPhase::BrowserOAuth {
+            provider_id,
+            display_name,
+            ..
+        } => {
+            let provider_id = provider_id.clone();
+            let display_name = display_name.clone();
+            let tx = event_tx.clone();
+
+            let Some(config) = get_oauth_config(&provider_id, &display_name) else {
+                return;
+            };
+
+            // Update the phase with the auth URL so the UI can display it.
+            app.connect_modal.phase = ConnectPhase::BrowserOAuth {
+                provider_id: provider_id.clone(),
+                display_name: display_name.clone(),
+                url: Some(config.auth_url.clone()),
+            };
+
+            // `browser_oauth_authorize` uses `rand::thread_rng()` internally,
+            // which is `!Send`. Run it on a dedicated blocking thread with its
+            // own single-threaded tokio runtime so it never crosses a Send
+            // boundary in the main executor.
+            let handle = tokio::task::spawn_blocking(move || {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("auth rt");
+                rt.block_on(async move {
+                    match ucode_auth::browser_oauth_authorize(&config).await {
+                        Ok(material) => {
+                            use ucode_auth::CredentialStore as _;
+                            let store = ucode_auth::KeyringStore::new();
+                            let _ = store.store(&provider_id, &material);
+                            let _ = tx.send(TuiEvent::AuthCompleted {
+                                provider: provider_id,
+                            });
+                        }
+                        Err(e) => {
+                            let _ = tx.send(TuiEvent::AuthFailed {
+                                provider: provider_id,
+                                error: e.to_string(),
+                            });
+                        }
+                    }
+                });
+            });
+            // Wrap in a plain JoinHandle<()> so auth_task stays homogeneous.
+            *auth_task = Some(tokio::spawn(async move {
+                let _ = handle.await;
+            }));
+        }
+
+        ConnectPhase::DeviceCode { provider_id, .. } => {
+            let provider_id = provider_id.clone();
+            let tx = event_tx.clone();
+
+            let config = match provider_id.as_str() {
+                "github-copilot" => Some(ucode_auth::github_copilot_device_config(None)),
+                _ => None,
+            };
+            let Some(config) = config else {
+                return;
+            };
+
+            let handle = tokio::spawn(async move {
+                let client = reqwest::Client::new();
+                match ucode_auth::request_device_code(&client, &config).await {
+                    Ok(pending) => {
+                        let _ = tx.send(TuiEvent::DeviceCodeReady {
+                            provider: provider_id.clone(),
+                            user_code: pending.user_code.clone(),
+                            verification_uri: pending.verification_uri.clone(),
+                        });
+                        match ucode_auth::poll_for_token(&client, &config, &pending).await {
+                            Ok(material) => {
+                                use ucode_auth::CredentialStore as _;
+                                let store = ucode_auth::KeyringStore::new();
+                                let _ = store.store(&provider_id, &material);
+                                let _ = tx.send(TuiEvent::AuthCompleted {
+                                    provider: provider_id,
+                                });
+                            }
+                            Err(e) => {
+                                let _ = tx.send(TuiEvent::AuthFailed {
+                                    provider: provider_id,
+                                    error: e.to_string(),
+                                });
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        let _ = tx.send(TuiEvent::AuthFailed {
+                            provider: provider_id,
+                            error: e.to_string(),
+                        });
+                    }
+                }
+            });
+            *auth_task = Some(handle);
+        }
+
+        _ => {}
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Terminal event handler
 // ---------------------------------------------------------------------------
 
@@ -273,6 +422,8 @@ fn handle_terminal_event(
     app: &mut AppState,
     input_box: &mut InputBoxState,
     _sidebar_data: &mut SidebarData,
+    event_tx: &UnboundedSender<TuiEvent>,
+    auth_task: &mut Option<JoinHandle<()>>,
 ) -> bool {
     match event {
         Event::Key(key) if key.kind == KeyEventKind::Press => {
@@ -458,6 +609,7 @@ fn handle_terminal_event(
                         crossterm::event::KeyCode::Enter => {
                             if let Some(provider) = app.connect_modal.selected_provider().cloned() {
                                 app.connect_modal.select_provider(&provider);
+                                maybe_spawn_auth_task(app, event_tx, auth_task);
                                 app.mark_dirty();
                             }
                         }
@@ -486,6 +638,7 @@ fn handle_terminal_event(
                         }
                         crossterm::event::KeyCode::Enter => {
                             app.connect_modal.select_method();
+                            maybe_spawn_auth_task(app, event_tx, auth_task);
                             app.mark_dirty();
                         }
                         crossterm::event::KeyCode::Up => {
@@ -545,6 +698,9 @@ fn handle_terminal_event(
                     },
                     ConnectPhase::BrowserOAuth { .. } | ConnectPhase::DeviceCode { .. } => {
                         if key.code == crossterm::event::KeyCode::Esc {
+                            if let Some(handle) = auth_task.take() {
+                                handle.abort();
+                            }
                             app.connect_modal.phase = ConnectPhase::ProviderList;
                             app.mark_dirty();
                         }
@@ -1556,6 +1712,19 @@ mod tests {
     use super::*;
     use ratatui::backend::TestBackend;
 
+    /// Thin wrapper used by tests: creates a throwaway channel and auth_task
+    /// so tests don't need to thread those through every call site.
+    fn term_event(
+        event: Event,
+        app: &mut AppState,
+        input_box: &mut InputBoxState,
+        sidebar_data: &mut SidebarData,
+    ) -> bool {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<TuiEvent>();
+        let mut auth_task: Option<JoinHandle<()>> = None;
+        handle_terminal_event(event, app, input_box, sidebar_data, &tx, &mut auth_task)
+    }
+
     // -----------------------------------------------------------------------
     // TuiEvent variants
     // -----------------------------------------------------------------------
@@ -1896,7 +2065,7 @@ mod tests {
             crossterm::event::KeyCode::Backspace,
             crossterm::event::KeyModifiers::NONE,
         ));
-        handle_terminal_event(event, &mut app, &mut input_box, &mut sidebar_data);
+        term_event(event, &mut app, &mut input_box, &mut sidebar_data);
         assert_eq!(input_box.content, "ab");
     }
 
@@ -1915,7 +2084,7 @@ mod tests {
             crossterm::event::KeyCode::Left,
             crossterm::event::KeyModifiers::NONE,
         ));
-        handle_terminal_event(left, &mut app, &mut input_box, &mut sidebar_data);
+        term_event(left, &mut app, &mut input_box, &mut sidebar_data);
 
         input_box.insert_char('x');
         assert_eq!(input_box.content, "axb");
@@ -1937,7 +2106,7 @@ mod tests {
             crossterm::event::KeyCode::Home,
             crossterm::event::KeyModifiers::NONE,
         ));
-        handle_terminal_event(home, &mut app, &mut input_box, &mut sidebar_data);
+        term_event(home, &mut app, &mut input_box, &mut sidebar_data);
         input_box.insert_char('z');
         assert_eq!(input_box.content, "zabc");
 
@@ -1946,7 +2115,7 @@ mod tests {
             crossterm::event::KeyCode::End,
             crossterm::event::KeyModifiers::NONE,
         ));
-        handle_terminal_event(end, &mut app, &mut input_box, &mut sidebar_data);
+        term_event(end, &mut app, &mut input_box, &mut sidebar_data);
         input_box.insert_char('!');
         assert_eq!(input_box.content, "zabc!");
     }
@@ -1977,7 +2146,7 @@ mod tests {
             crossterm::event::KeyCode::Esc,
             crossterm::event::KeyModifiers::NONE,
         ));
-        handle_terminal_event(esc, &mut app, &mut input_box, &mut sidebar_data);
+        term_event(esc, &mut app, &mut input_box, &mut sidebar_data);
         assert!(!app.palette.visible);
         assert_eq!(app.focus, FocusTarget::Input);
     }
@@ -1995,7 +2164,7 @@ mod tests {
                 crossterm::event::KeyCode::Char(c),
                 crossterm::event::KeyModifiers::NONE,
             ));
-            handle_terminal_event(ev, &mut app, &mut input_box, &mut sidebar_data);
+            term_event(ev, &mut app, &mut input_box, &mut sidebar_data);
         }
 
         assert_eq!(app.palette.filtered_indices.len(), 3);
@@ -2013,7 +2182,7 @@ mod tests {
             crossterm::event::KeyCode::Enter,
             crossterm::event::KeyModifiers::NONE,
         ));
-        handle_terminal_event(enter, &mut app, &mut input_box, &mut sidebar_data);
+        term_event(enter, &mut app, &mut input_box, &mut sidebar_data);
 
         assert!(!app.palette.visible);
         // execute_command always emits at least one system message (the echo line).
@@ -2065,7 +2234,7 @@ mod tests {
             crossterm::event::KeyCode::Char('a'),
             crossterm::event::KeyModifiers::CONTROL,
         );
-        handle_terminal_event(ev, &mut app, &mut input_box, &mut sidebar_data);
+        term_event(ev, &mut app, &mut input_box, &mut sidebar_data);
         // insert 'z' at cursor (now at start)
         input_box.insert_char('z');
         assert_eq!(input_box.content, "zhello");
@@ -2088,7 +2257,7 @@ mod tests {
             crossterm::event::KeyCode::Char('e'),
             crossterm::event::KeyModifiers::CONTROL,
         );
-        handle_terminal_event(ev, &mut app, &mut input_box, &mut sidebar_data);
+        term_event(ev, &mut app, &mut input_box, &mut sidebar_data);
         input_box.insert_char('!');
         assert_eq!(input_box.content, "hello!");
     }
@@ -2112,7 +2281,7 @@ mod tests {
             crossterm::event::KeyCode::Char('k'),
             crossterm::event::KeyModifiers::CONTROL,
         );
-        handle_terminal_event(ev, &mut app, &mut input_box, &mut sidebar_data);
+        term_event(ev, &mut app, &mut input_box, &mut sidebar_data);
         assert_eq!(input_box.content, "hello");
     }
 
@@ -2130,7 +2299,7 @@ mod tests {
             crossterm::event::KeyCode::Char('w'),
             crossterm::event::KeyModifiers::CONTROL,
         );
-        handle_terminal_event(ev, &mut app, &mut input_box, &mut sidebar_data);
+        term_event(ev, &mut app, &mut input_box, &mut sidebar_data);
         assert_eq!(input_box.content, "hello ");
     }
 
@@ -2149,7 +2318,7 @@ mod tests {
             crossterm::event::KeyCode::Left,
             crossterm::event::KeyModifiers::ALT,
         );
-        handle_terminal_event(ev, &mut app, &mut input_box, &mut sidebar_data);
+        term_event(ev, &mut app, &mut input_box, &mut sidebar_data);
         input_box.insert_char('X');
         assert_eq!(input_box.content, "hello Xworld");
     }
@@ -2170,7 +2339,7 @@ mod tests {
             crossterm::event::KeyCode::Right,
             crossterm::event::KeyModifiers::CONTROL,
         );
-        handle_terminal_event(ev, &mut app, &mut input_box, &mut sidebar_data);
+        term_event(ev, &mut app, &mut input_box, &mut sidebar_data);
         input_box.insert_char('X');
         assert_eq!(input_box.content, "helloX world");
     }
@@ -2190,7 +2359,7 @@ mod tests {
             crossterm::event::KeyCode::Backspace,
             crossterm::event::KeyModifiers::ALT,
         );
-        handle_terminal_event(ev, &mut app, &mut input_box, &mut sidebar_data);
+        term_event(ev, &mut app, &mut input_box, &mut sidebar_data);
         assert_eq!(input_box.content, "hello ");
     }
 
@@ -2213,7 +2382,7 @@ mod tests {
             crossterm::event::KeyCode::Char('p'),
             crossterm::event::KeyModifiers::CONTROL,
         );
-        handle_terminal_event(ev, &mut app, &mut input_box, &mut sidebar_data);
+        term_event(ev, &mut app, &mut input_box, &mut sidebar_data);
         // cursor should now be on line 0 at col 3 (after 'c')
         input_box.insert_char('X');
         assert_eq!(input_box.content, "abcX\ndef");
@@ -2238,7 +2407,7 @@ mod tests {
             crossterm::event::KeyCode::Up,
             crossterm::event::KeyModifiers::NONE,
         );
-        handle_terminal_event(ev, &mut app, &mut input_box, &mut sidebar_data);
+        term_event(ev, &mut app, &mut input_box, &mut sidebar_data);
         // cursor should now be on line 0 at col 3 (after 'c')
         input_box.insert_char('X');
         assert_eq!(input_box.content, "abcX\ndef");
@@ -2258,7 +2427,7 @@ mod tests {
             crossterm::event::KeyCode::Char('d'),
             crossterm::event::KeyModifiers::CONTROL,
         );
-        let exited = handle_terminal_event(ev, &mut app, &mut input_box, &mut sidebar_data);
+        let exited = term_event(ev, &mut app, &mut input_box, &mut sidebar_data);
         assert!(
             !exited,
             "Ctrl+D no longer exits; use Ctrl+Q or double Ctrl+C"
@@ -2279,7 +2448,7 @@ mod tests {
             crossterm::event::KeyCode::Char('q'),
             crossterm::event::KeyModifiers::CONTROL,
         );
-        let exited = handle_terminal_event(ev, &mut app, &mut input_box, &mut sidebar_data);
+        let exited = term_event(ev, &mut app, &mut input_box, &mut sidebar_data);
         assert!(exited, "Ctrl+Q should exit unconditionally");
     }
 
@@ -2298,7 +2467,7 @@ mod tests {
             crossterm::event::KeyCode::Char('q'),
             crossterm::event::KeyModifiers::CONTROL,
         );
-        let exited = handle_terminal_event(ev, &mut app, &mut input_box, &mut sidebar_data);
+        let exited = term_event(ev, &mut app, &mut input_box, &mut sidebar_data);
         assert!(exited, "Ctrl+Q should exit even when input is non-empty");
     }
 
@@ -2316,7 +2485,7 @@ mod tests {
             crossterm::event::KeyCode::Char('c'),
             crossterm::event::KeyModifiers::CONTROL,
         );
-        let exited = handle_terminal_event(ev, &mut app, &mut input_box, &mut sidebar_data);
+        let exited = term_event(ev, &mut app, &mut input_box, &mut sidebar_data);
         assert!(!exited, "single Ctrl+C should not exit");
         assert!(app.last_ctrl_c.is_some(), "last_ctrl_c should be recorded");
     }
@@ -2331,7 +2500,7 @@ mod tests {
             crossterm::event::KeyCode::Char('c'),
             crossterm::event::KeyModifiers::CONTROL,
         );
-        handle_terminal_event(ev, &mut app, &mut input_box, &mut sidebar_data);
+        term_event(ev, &mut app, &mut input_box, &mut sidebar_data);
         assert_eq!(
             app.ctrl_c_hint.as_deref(),
             Some("Press Ctrl+C again to exit"),
@@ -2351,12 +2520,11 @@ mod tests {
         );
 
         // First press — should not exit.
-        let first =
-            handle_terminal_event(ctrl_c.clone(), &mut app, &mut input_box, &mut sidebar_data);
+        let first = term_event(ctrl_c.clone(), &mut app, &mut input_box, &mut sidebar_data);
         assert!(!first, "first Ctrl+C should not exit");
 
         // Second press immediately after — should exit.
-        let second = handle_terminal_event(ctrl_c, &mut app, &mut input_box, &mut sidebar_data);
+        let second = term_event(ctrl_c, &mut app, &mut input_box, &mut sidebar_data);
         assert!(second, "second Ctrl+C within 2 s should exit");
     }
 
@@ -2394,7 +2562,7 @@ mod tests {
             crossterm::event::KeyCode::Esc,
             crossterm::event::KeyModifiers::NONE,
         ));
-        handle_terminal_event(esc, &mut app, &mut input_box, &mut sidebar_data);
+        term_event(esc, &mut app, &mut input_box, &mut sidebar_data);
         assert!(!app.diff_modal.visible);
         assert_eq!(app.focus, FocusTarget::Input);
     }
@@ -2411,7 +2579,7 @@ mod tests {
             crossterm::event::KeyCode::Char('a'),
             crossterm::event::KeyModifiers::NONE,
         ));
-        handle_terminal_event(a_key, &mut app, &mut input_box, &mut sidebar_data);
+        term_event(a_key, &mut app, &mut input_box, &mut sidebar_data);
         assert!(!app.diff_modal.visible);
         let has_approved = app
             .transcript
@@ -2432,7 +2600,7 @@ mod tests {
             crossterm::event::KeyCode::Char('r'),
             crossterm::event::KeyModifiers::NONE,
         ));
-        handle_terminal_event(r_key, &mut app, &mut input_box, &mut sidebar_data);
+        term_event(r_key, &mut app, &mut input_box, &mut sidebar_data);
         assert!(!app.diff_modal.visible);
         let has_rejected = app
             .transcript
@@ -2459,7 +2627,7 @@ mod tests {
             crossterm::event::KeyCode::Down,
             crossterm::event::KeyModifiers::NONE,
         ));
-        handle_terminal_event(down, &mut app, &mut input_box, &mut sidebar_data);
+        term_event(down, &mut app, &mut input_box, &mut sidebar_data);
         assert_eq!(app.diff_modal.scroll_offset, 1);
 
         // Up arrow scrolls back
@@ -2467,7 +2635,7 @@ mod tests {
             crossterm::event::KeyCode::Up,
             crossterm::event::KeyModifiers::NONE,
         ));
-        handle_terminal_event(up, &mut app, &mut input_box, &mut sidebar_data);
+        term_event(up, &mut app, &mut input_box, &mut sidebar_data);
         assert_eq!(app.diff_modal.scroll_offset, 0);
     }
 
@@ -2528,7 +2696,7 @@ mod tests {
             crossterm::event::KeyCode::Esc,
             crossterm::event::KeyModifiers::NONE,
         ));
-        handle_terminal_event(esc, &mut app, &mut input_box, &mut sidebar_data);
+        term_event(esc, &mut app, &mut input_box, &mut sidebar_data);
         assert!(!app.approval_modal.visible);
         assert_eq!(app.focus, FocusTarget::Input);
     }
@@ -2550,7 +2718,7 @@ mod tests {
             crossterm::event::KeyCode::Char('o'),
             crossterm::event::KeyModifiers::NONE,
         ));
-        handle_terminal_event(key_o, &mut app, &mut input_box, &mut sidebar_data);
+        term_event(key_o, &mut app, &mut input_box, &mut sidebar_data);
         assert!(!app.approval_modal.visible);
         assert_eq!(app.focus, FocusTarget::Input);
         // Should have a system message about approval.
@@ -2577,7 +2745,7 @@ mod tests {
             crossterm::event::KeyCode::Char('s'),
             crossterm::event::KeyModifiers::NONE,
         ));
-        handle_terminal_event(key_s, &mut app, &mut input_box, &mut sidebar_data);
+        term_event(key_s, &mut app, &mut input_box, &mut sidebar_data);
         assert!(!app.approval_modal.visible);
         let has_session_msg = app.transcript.iter().any(|e| {
             matches!(e, TranscriptEntry::SystemMessage(msg) if msg.contains("Approved for session"))
@@ -2602,7 +2770,7 @@ mod tests {
             crossterm::event::KeyCode::Char('d'),
             crossterm::event::KeyModifiers::NONE,
         ));
-        handle_terminal_event(key_d, &mut app, &mut input_box, &mut sidebar_data);
+        term_event(key_d, &mut app, &mut input_box, &mut sidebar_data);
         assert!(!app.approval_modal.visible);
         let has_denied_msg = app
             .transcript
@@ -2719,7 +2887,7 @@ mod tests {
                 crossterm::event::KeyCode::Char(c),
                 crossterm::event::KeyModifiers::NONE,
             );
-            handle_terminal_event(ev, &mut app, &mut input_box, &mut sidebar_data);
+            term_event(ev, &mut app, &mut input_box, &mut sidebar_data);
         }
 
         assert!(
@@ -2753,7 +2921,7 @@ mod tests {
                 crossterm::event::KeyCode::Char(c),
                 crossterm::event::KeyModifiers::NONE,
             );
-            handle_terminal_event(ev, &mut app, &mut input_box, &mut sidebar_data);
+            term_event(ev, &mut app, &mut input_box, &mut sidebar_data);
         }
 
         assert!(
@@ -2775,7 +2943,7 @@ mod tests {
                 crossterm::event::KeyCode::Char(c),
                 crossterm::event::KeyModifiers::NONE,
             );
-            handle_terminal_event(ev, &mut app, &mut input_box, &mut sidebar_data);
+            term_event(ev, &mut app, &mut input_box, &mut sidebar_data);
         }
         assert!(input_box.autocomplete.visible);
         let entries_before = input_box.autocomplete.entries.clone();
@@ -2785,7 +2953,7 @@ mod tests {
             crossterm::event::KeyCode::Backspace,
             crossterm::event::KeyModifiers::NONE,
         );
-        handle_terminal_event(bs, &mut app, &mut input_box, &mut sidebar_data);
+        term_event(bs, &mut app, &mut input_box, &mut sidebar_data);
 
         assert_eq!(input_box.content, "/co");
         assert!(
@@ -2810,7 +2978,7 @@ mod tests {
             crossterm::event::KeyCode::Char('/'),
             crossterm::event::KeyModifiers::NONE,
         );
-        handle_terminal_event(slash, &mut app, &mut input_box, &mut sidebar_data);
+        term_event(slash, &mut app, &mut input_box, &mut sidebar_data);
         assert!(input_box.autocomplete.visible);
 
         // Backspace removes the "/" → empty input, no slash prefix.
@@ -2818,7 +2986,7 @@ mod tests {
             crossterm::event::KeyCode::Backspace,
             crossterm::event::KeyModifiers::NONE,
         );
-        handle_terminal_event(bs, &mut app, &mut input_box, &mut sidebar_data);
+        term_event(bs, &mut app, &mut input_box, &mut sidebar_data);
 
         assert!(input_box.content.is_empty());
         assert!(
@@ -2880,7 +3048,7 @@ mod tests {
             crossterm::event::KeyCode::Char('/'),
             crossterm::event::KeyModifiers::NONE,
         );
-        handle_terminal_event(slash, &mut app, &mut input_box, &mut sidebar_data);
+        term_event(slash, &mut app, &mut input_box, &mut sidebar_data);
         assert!(input_box.autocomplete.visible);
         assert_eq!(input_box.autocomplete.selected, 0);
 
@@ -2889,7 +3057,7 @@ mod tests {
             crossterm::event::KeyCode::Down,
             crossterm::event::KeyModifiers::NONE,
         );
-        handle_terminal_event(down, &mut app, &mut input_box, &mut sidebar_data);
+        term_event(down, &mut app, &mut input_box, &mut sidebar_data);
         assert_eq!(input_box.autocomplete.selected, 1);
 
         // Up arrow should go back.
@@ -2897,7 +3065,7 @@ mod tests {
             crossterm::event::KeyCode::Up,
             crossterm::event::KeyModifiers::NONE,
         );
-        handle_terminal_event(up, &mut app, &mut input_box, &mut sidebar_data);
+        term_event(up, &mut app, &mut input_box, &mut sidebar_data);
         assert_eq!(input_box.autocomplete.selected, 0);
 
         // Input content should be unchanged (arrows navigated autocomplete, not cursor).
@@ -3059,7 +3227,7 @@ mod tests {
             crossterm::event::KeyCode::Enter,
             crossterm::event::KeyModifiers::NONE,
         ));
-        handle_terminal_event(enter, &mut app, &mut input_box, &mut sidebar_data);
+        term_event(enter, &mut app, &mut input_box, &mut sidebar_data);
 
         assert!(!app.palette.visible);
         // execute_command produces system messages (echo + status), not the old "Executed: name".
@@ -3269,7 +3437,7 @@ mod tests {
             crossterm::event::KeyCode::Esc,
             crossterm::event::KeyModifiers::NONE,
         ));
-        let exited = handle_terminal_event(esc, &mut app, &mut input_box, &mut sidebar_data);
+        let exited = term_event(esc, &mut app, &mut input_box, &mut sidebar_data);
         assert!(!exited);
         assert!(!app.keybind_overlay.visible);
         assert_eq!(app.focus, FocusTarget::Input);
@@ -3290,7 +3458,7 @@ mod tests {
             crossterm::event::KeyCode::Up,
             crossterm::event::KeyModifiers::NONE,
         ));
-        handle_terminal_event(up, &mut app, &mut input_box, &mut sidebar_data);
+        term_event(up, &mut app, &mut input_box, &mut sidebar_data);
         assert!(app.keybind_overlay.scroll_offset < before);
     }
 
@@ -3307,7 +3475,7 @@ mod tests {
             crossterm::event::KeyCode::Down,
             crossterm::event::KeyModifiers::NONE,
         ));
-        handle_terminal_event(down, &mut app, &mut input_box, &mut sidebar_data);
+        term_event(down, &mut app, &mut input_box, &mut sidebar_data);
         assert!(app.keybind_overlay.scroll_offset > before);
     }
 
@@ -3325,7 +3493,7 @@ mod tests {
             crossterm::event::KeyCode::Char('k'),
             crossterm::event::KeyModifiers::NONE,
         ));
-        handle_terminal_event(k, &mut app, &mut input_box, &mut sidebar_data);
+        term_event(k, &mut app, &mut input_box, &mut sidebar_data);
         assert!(app.keybind_overlay.scroll_offset < before);
     }
 
@@ -3342,7 +3510,7 @@ mod tests {
             crossterm::event::KeyCode::Char('j'),
             crossterm::event::KeyModifiers::NONE,
         ));
-        handle_terminal_event(j, &mut app, &mut input_box, &mut sidebar_data);
+        term_event(j, &mut app, &mut input_box, &mut sidebar_data);
         assert!(app.keybind_overlay.scroll_offset > before);
     }
 
@@ -3360,7 +3528,7 @@ mod tests {
             crossterm::event::KeyCode::PageUp,
             crossterm::event::KeyModifiers::NONE,
         ));
-        handle_terminal_event(pgup, &mut app, &mut input_box, &mut sidebar_data);
+        term_event(pgup, &mut app, &mut input_box, &mut sidebar_data);
         assert!(app.keybind_overlay.scroll_offset < before);
     }
 
@@ -3377,7 +3545,7 @@ mod tests {
             crossterm::event::KeyCode::PageDown,
             crossterm::event::KeyModifiers::NONE,
         ));
-        handle_terminal_event(pgdn, &mut app, &mut input_box, &mut sidebar_data);
+        term_event(pgdn, &mut app, &mut input_box, &mut sidebar_data);
         assert!(app.keybind_overlay.scroll_offset > before);
     }
 
@@ -3395,7 +3563,7 @@ mod tests {
             crossterm::event::KeyCode::Char('x'),
             crossterm::event::KeyModifiers::NONE,
         ));
-        let exited = handle_terminal_event(x, &mut app, &mut input_box, &mut sidebar_data);
+        let exited = term_event(x, &mut app, &mut input_box, &mut sidebar_data);
         assert!(!exited);
         assert!(
             app.keybind_overlay.visible,
@@ -3510,7 +3678,7 @@ mod tests {
             crossterm::event::KeyCode::Esc,
             crossterm::event::KeyModifiers::NONE,
         ));
-        let exited = handle_terminal_event(esc, &mut app, &mut input_box, &mut sidebar_data);
+        let exited = term_event(esc, &mut app, &mut input_box, &mut sidebar_data);
         assert!(!exited);
         assert!(!app.search_overlay.visible);
         assert_eq!(app.focus, FocusTarget::Input);
@@ -3530,7 +3698,7 @@ mod tests {
             crossterm::event::KeyCode::Char('h'),
             crossterm::event::KeyModifiers::NONE,
         ));
-        handle_terminal_event(h, &mut app, &mut input_box, &mut sidebar_data);
+        term_event(h, &mut app, &mut input_box, &mut sidebar_data);
 
         assert_eq!(app.search_overlay.query, "h");
         assert_eq!(app.search_overlay.match_count(), 1);
@@ -3552,7 +3720,7 @@ mod tests {
                 crossterm::event::KeyCode::Char(c),
                 crossterm::event::KeyModifiers::NONE,
             ));
-            handle_terminal_event(ev, &mut app, &mut input_box, &mut sidebar_data);
+            term_event(ev, &mut app, &mut input_box, &mut sidebar_data);
         }
         assert_eq!(app.search_overlay.query, "he");
 
@@ -3561,7 +3729,7 @@ mod tests {
             crossterm::event::KeyCode::Backspace,
             crossterm::event::KeyModifiers::NONE,
         ));
-        handle_terminal_event(bs, &mut app, &mut input_box, &mut sidebar_data);
+        term_event(bs, &mut app, &mut input_box, &mut sidebar_data);
         assert_eq!(app.search_overlay.query, "h");
         assert!(app.dirty);
     }
@@ -3581,7 +3749,7 @@ mod tests {
                 crossterm::event::KeyCode::Char(c),
                 crossterm::event::KeyModifiers::NONE,
             ));
-            handle_terminal_event(ev, &mut app, &mut input_box, &mut sidebar_data);
+            term_event(ev, &mut app, &mut input_box, &mut sidebar_data);
         }
         assert_eq!(app.search_overlay.match_count(), 2);
         assert_eq!(app.search_overlay.current_match, 0);
@@ -3590,7 +3758,7 @@ mod tests {
             crossterm::event::KeyCode::Enter,
             crossterm::event::KeyModifiers::NONE,
         ));
-        handle_terminal_event(enter, &mut app, &mut input_box, &mut sidebar_data);
+        term_event(enter, &mut app, &mut input_box, &mut sidebar_data);
         assert_eq!(app.search_overlay.current_match, 1);
     }
 
@@ -3609,14 +3777,14 @@ mod tests {
                 crossterm::event::KeyCode::Char(c),
                 crossterm::event::KeyModifiers::NONE,
             ));
-            handle_terminal_event(ev, &mut app, &mut input_box, &mut sidebar_data);
+            term_event(ev, &mut app, &mut input_box, &mut sidebar_data);
         }
 
         let down = Event::Key(crossterm::event::KeyEvent::new(
             crossterm::event::KeyCode::Down,
             crossterm::event::KeyModifiers::NONE,
         ));
-        handle_terminal_event(down, &mut app, &mut input_box, &mut sidebar_data);
+        term_event(down, &mut app, &mut input_box, &mut sidebar_data);
         assert_eq!(app.search_overlay.current_match, 1);
     }
 
@@ -3635,7 +3803,7 @@ mod tests {
                 crossterm::event::KeyCode::Char(c),
                 crossterm::event::KeyModifiers::NONE,
             ));
-            handle_terminal_event(ev, &mut app, &mut input_box, &mut sidebar_data);
+            term_event(ev, &mut app, &mut input_box, &mut sidebar_data);
         }
         // Advance to match 1
         app.search_overlay.next_match();
@@ -3644,7 +3812,7 @@ mod tests {
             crossterm::event::KeyCode::Up,
             crossterm::event::KeyModifiers::NONE,
         ));
-        handle_terminal_event(up, &mut app, &mut input_box, &mut sidebar_data);
+        term_event(up, &mut app, &mut input_box, &mut sidebar_data);
         assert_eq!(app.search_overlay.current_match, 0);
     }
 
@@ -3662,7 +3830,7 @@ mod tests {
             crossterm::event::KeyCode::F(1),
             crossterm::event::KeyModifiers::NONE,
         ));
-        let exited = handle_terminal_event(f1, &mut app, &mut input_box, &mut sidebar_data);
+        let exited = term_event(f1, &mut app, &mut input_box, &mut sidebar_data);
         assert!(!exited);
         assert!(
             app.search_overlay.visible,

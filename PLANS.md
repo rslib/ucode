@@ -1791,6 +1791,92 @@ benefit. External plugins (Task 8.6) can still hook into the system for custom s
 
 ---
 
+# Phase 10 — Agent loop + live model switching
+
+### Task 10.1 ucode-agent crate with AppConfig (ucode-agent) [DONE]
+
+* New `ucode-agent` crate with `AppConfig` struct for TOML-based provider configuration
+* `AdapterKind` enum: `Openai`, `Anthropic`, `Ollama`, `Gemini`, `Copilot`
+* `ProviderConfig`: adapter, base_url, api_key_env, headers
+* `discover_env_vars()`: scan known env vars (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, etc.) and auto-register
+* `discover_from_keyring()`: scan keyring for stored credentials (github-copilot, anthropic, openai)
+* `default_provider()`: preference order anthropic > openai > github-copilot > gemini > first
+* `load_default()`: load `~/.config/ucode/ucode.toml` then discover env vars
+
+**Acceptance**
+
+* TOML config loads; env var discovery adds providers; keyring discovery adds providers.
+
+### Task 10.2 Core agent loop with tool execution (ucode-agent) [DONE]
+
+* `AgentEvent` enum: `AssistantToken`, `AssistantMessage`, `ToolCallStart`, `ToolCallResult`, `SystemMessage`, `TurnComplete`, `Error`
+* `AgentLoopConfig`: provider_name, provider_config, model, credential_store
+* `run_agent_loop(message_rx, event_tx, config, session_store, session, tool_registry)`
+* `process_turn()`: stream provider, collect tool calls, execute via `ToolRegistry`, push results
+* `followup_turn()`: second LLM call after tool results
+* Session persistence + auto-title after each turn
+
+**Acceptance**
+
+* Agent processes messages, executes tools, emits events, saves session.
+
+### Task 10.3 Wire agent loop into TUI (ucode-tui + ucode-agent) [DONE]
+
+* `AgentConfig` struct with loop_config, session_store, session, tool_registry, all_providers
+* `spawn_agent_loop()`: creates channels, spawns agent loop + bridge task
+* `bridge_agent_event()`: maps `AgentEvent` variants to `TuiEvent` variants
+* `PendingAgentSetup`: deferred agent spawn ingredients for mid-session `/connect`
+* On `VerifyResult { success: true }` with no existing agent: spawn via `try_spawn_agent_after_connect()`
+* TUI mode: disable stderr logging (corrupts alternate screen), enable rolling file log
+
+**Acceptance**
+
+* Agent spawns at startup or after `/connect`. Events appear in transcript.
+
+### Task 10.4 Wire agent loop into CLI (ucode-cli) [DONE]
+
+* `ucode run --prompt "..."` sends `AgentMessage::UserMessage` to agent loop
+* Streams `AgentEvent`s to stdout until loop completes
+* Drop sender after single message to signal completion
+
+**Acceptance**
+
+* `ucode run --prompt "hello"` streams output and exits cleanly.
+
+### Task 10.5 /models modal with mid-session model switching (ucode-tui + ucode-agent + ucode-providers) [DONE]
+
+> Implementation plan: `docs/plans/2026-03-07-models-modal.md`
+
+* `AgentMessage` enum (`UserMessage | SetModel`) replaces raw `String` channel
+* `Provider::list_models()` trait method; `OpenAiCompatProvider` implements via `/models` API
+* `ModelInfo { id, name }` in `ucode-providers`
+* `ModelsModalState`: filter, navigation, loading state machine, provider-grouped entries
+* `ModelsModal` widget: centered popup (60x70%), filter line, provider-grouped scrollable list, footer
+* Selection `>`, current model `*`, loading spinner, empty states
+* Keyboard: Esc close, Enter send `SetModel`, Up/Down navigate, Backspace/Char filter
+* `TuiEvent::ModelsListed` / `ModelsListFailed` for async results
+* `spawn_models_fetch()`: async tasks query all connected providers
+* `app.active_model` tracks current model across spawn, `/connect`, and modal selection
+* 12 tests (8 state + 4 render)
+
+**Acceptance**
+
+* `/models` lists models from all providers. Filter/navigate/select works.
+* Enter sends `SetModel` to agent loop; model switches without restart.
+* Current model marked with `*`.
+
+### Task 10.6 Slash command dispatch fix (ucode-tui) [DONE]
+
+* `execute_command()` returns `Option<Action>` instead of `bool`
+* `SendMessage` and palette `Enter` dispatch the returned action via `dispatch_action()`
+* `/connect` now opens its modal instead of logging "Executed: connect"
+
+**Acceptance**
+
+* Slash commands with actions dispatch correctly from input and palette.
+
+---
+
 # Cross-cutting: config, permissions, observability
 
 ### Config file
@@ -1892,5 +1978,8 @@ Precedence order: built-in defaults < user global config < project-local config 
 28. Remote plugin install/update supports trust verification and rollback
 29. Logging supports level-gated diagnostics with stderr + file sinks and per-session plus rolling retention
 30. Combined context management (dedup/supersede/purge + sandbox execution + FTS5 knowledge base + LLM pruning tools + session continuity) keeps sessions productive beyond default context limits
+31. Agent loop drives LLM conversation with tool execution, session persistence, and auto-titling
+32. `/models` modal lists models from all connected providers with filter/navigate/select and mid-session switching
+33. Agent loop spawns at startup or deferred after `/connect` with no restart required
 
 ---

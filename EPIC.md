@@ -1519,6 +1519,120 @@ Design doc: `docs/plans/2026-03-06-wasm-runtime-design.md`
 
 ---
 
+## EPIC 10 — Agent loop + live model switching
+
+### ISSUE 1001 — ucode-agent crate with AppConfig and env-var discovery (ucode-agent) [DONE]
+
+**Goal:** Create the `ucode-agent` crate with TOML-based provider configuration and automatic env-var discovery.
+**Scope/Notes:**
+
+* `AppConfig` with `[providers.<name>]` TOML sections mapping to `ProviderConfig`
+* `AdapterKind` enum: `Openai`, `Anthropic`, `Ollama`, `Gemini`, `Copilot`
+* `discover_env_vars()`: scan `ENV_PROVIDER_MAP` for set env vars and auto-register providers
+* `discover_from_keyring()`: scan `KEYRING_PROVIDER_MAP` for stored credentials (github-copilot, anthropic, openai)
+* `default_provider()`: preference order anthropic > openai > github-copilot > gemini > first
+* `load_default()`: load from `~/.config/ucode/ucode.toml`, then discover env vars
+  **Acceptance tests:**
+* TOML config loads providers correctly.
+* Missing env vars are skipped; present env vars auto-register providers.
+* Keyring-stored credentials discovered when `discover_from_keyring()` called.
+  **Owner:** Agent/Core
+
+### ISSUE 1002 — Core agent loop with tool execution (ucode-agent) [DONE]
+
+**Goal:** Implement the main agent loop that receives user messages, calls the LLM provider, executes tool calls, and emits events.
+**Scope/Notes:**
+
+* `AgentEvent` enum: `AssistantToken`, `AssistantMessage`, `ToolCallStart`, `ToolCallResult`, `SystemMessage`, `TurnComplete`, `Error`
+* `AgentLoopConfig`: provider_name, provider_config, model, credential_store
+* `run_agent_loop()`: async loop receiving messages, calling `process_turn()` and `followup_turn()`
+* `process_turn()`: stream provider response, collect tool calls, execute via `ToolRegistry`, push results
+* `followup_turn()`: second LLM call after tool results for final assistant response
+* Session persistence via `SessionStore` after each turn
+* Auto-title generation via `session.auto_title_if_needed()`
+  **Acceptance tests:**
+* Agent loop processes user message and emits assistant tokens.
+* Tool calls are executed and results fed back to the LLM.
+* Session is saved after each turn.
+  **Owner:** Agent/Core
+
+### ISSUE 1003 — Wire agent loop into TUI with event bridge (ucode-tui + ucode-agent) [DONE]
+
+**Goal:** Connect the agent loop to the TUI via an event bridge that translates `AgentEvent`s to `TuiEvent`s.
+**Scope/Notes:**
+
+* `AgentConfig` struct: loop_config, session_store, session, tool_registry, all_providers
+* `spawn_agent_loop()`: creates message channel, spawns agent loop + bridge task, returns sender
+* `bridge_agent_event()`: maps each `AgentEvent` variant to the corresponding `TuiEvent`
+* `PendingAgentSetup`: holds credential_store, session_store, session, tool_registry for deferred agent spawn after `/connect`
+* Mid-session `/connect` flow: on `VerifyResult { success: true }`, spawn agent loop via `try_spawn_agent_after_connect()`
+* TUI logging: stderr disabled in TUI mode (corrupts alternate screen), rolling file log enabled instead
+  **Acceptance tests:**
+* Agent loop spawns at startup when providers are configured.
+* Agent loop spawns after `/connect` when no providers were available at startup.
+* Agent events appear in TUI transcript.
+  **Owner:** TUI/Agent
+
+### ISSUE 1004 — Wire agent loop into CLI Run command (ucode-cli) [DONE]
+
+**Goal:** Connect the agent loop to the CLI `run` subcommand for non-interactive single-prompt execution.
+**Scope/Notes:**
+
+* `ucode run --prompt "..."` sends prompt to agent loop and streams events to stdout
+* Wraps prompt in `AgentMessage::UserMessage` before sending
+* Drops sender after single message to signal loop completion
+* Collects and prints `AgentEvent`s until loop finishes
+  **Acceptance tests:**
+* `ucode run --prompt "hello"` produces streamed output and exits.
+  **Owner:** CLI/Agent
+
+### ISSUE 1005 — /models modal with mid-session model switching (ucode-tui + ucode-agent + ucode-providers) [DONE]
+
+> Implementation plan: `docs/plans/2026-03-07-models-modal.md`
+
+**Goal:** Interactive `/models` command that lists available models from all connected providers in a modal overlay, allowing users to browse, filter, and select a model mid-session.
+**Scope/Notes:**
+
+* `AgentMessage` enum with `UserMessage(String)` and `SetModel(String)` variants replaces raw `String` channel
+* `Provider::list_models()` trait method with default empty impl; `OpenAiCompatProvider` implements via `/models` API
+* `ModelInfo { id, name }` struct in `ucode-providers`
+* `ModelsModalState`: filter string, navigation (up/down), loading state machine, provider-grouped entries
+* `ModelEntry { provider, model_id, display_name }` with `label()` formatting
+* `ModelsModal` widget: centered popup (60x70%), filter line, separator, scrollable list grouped by provider, footer with keybinds
+* Section headers (provider names) interspersed; only model rows selectable
+* Selection marked with `>`, current model marked with `*`, both when applicable
+* Loading spinner while fetching; "No matches" / "No models available" states
+* Keyboard: Esc close, Enter send `SetModel`, Up/Down navigate, Backspace/Char filter
+* `TuiEvent::ModelsListed` and `TuiEvent::ModelsListFailed` for async results
+* `spawn_models_fetch()`: spawns async tasks to query all connected providers
+* `app.active_model` tracks current model; updated on agent spawn, `/connect`, and modal selection
+* `app.models_fetch_pending` flag consumed by event loop to spawn fetch tasks (needs `event_tx`)
+* 12 tests (8 state + 4 render smoke tests)
+  **Acceptance tests:**
+* `/models` opens modal listing models from all connected providers.
+* Filter narrows the list; Up/Down navigates; Enter switches model.
+* Current model marked with `*` prefix.
+* Model switch sends `AgentMessage::SetModel` to agent loop without restart.
+* Agent loop updates model for subsequent turns.
+  **Owner:** TUI/Agent/Providers
+
+**Completed:** 338 workspace tests, 0 clippy warnings. Created `overlays/models_modal.rs`. Modified `agent_loop.rs` (AgentMessage enum), `provider.rs` (list_models + ModelInfo), `openai.rs` (list_models impl), `app.rs` (channel type + state fields), `event_loop.rs` (keyboard routing + render + fetch wiring), `lib.rs` (spawn_agent_loop refactor + PendingAgentSetup), `command_registry.rs` (/models command), `keybinds.rs` (Action::OpenModels).
+
+### ISSUE 1006 — Slash command dispatch fix (ucode-tui) [DONE]
+
+**Goal:** Fix slash commands and palette commands to actually dispatch their associated actions.
+**Scope/Notes:**
+
+* `execute_command()` returns `Option<Action>` instead of `bool`
+* `SendMessage` handler and palette `Enter` handler dispatch the returned action via `dispatch_action()`
+* `/connect` (and any future command with an action) now opens its modal instead of just logging "Executed: connect"
+  **Acceptance tests:**
+* `/connect` typed in input opens the connect modal.
+* Palette selection of a command with an action dispatches that action.
+  **Owner:** TUI
+
+---
+
 # Suggested initial milestone ordering (so agents don't block each other)
 
 **Milestone M1 (MVP CLI):** 0001, 0101–0105, 0108–0111, 0201–0202, 0301–0302 (one provider), 0401, 0403–0407b, 0408–0409, 0107
@@ -1526,5 +1640,6 @@ Design doc: `docs/plans/2026-03-06-wasm-runtime-design.md`
 **Milestone M3 (Compatibility + MCP):** 0601–0603, 0501–0506, 0305
 **Milestone M4 (Plugins contracts + auth upgrades + subagents):** 0801–0803, 0203–0205, 0705, 0106, 0410–0413
 **Milestone M5 (Polish + security + WASM runtime):** 0901–0905, 0804–0808
+**Milestone M6 (Agent loop + live model switching):** 1001–1006
 
 ---

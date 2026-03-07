@@ -10,6 +10,7 @@ pub mod purge;
 pub mod sandbox;
 pub mod strategy;
 pub mod supersede;
+pub mod tools;
 
 pub use config::{
     ContextConfig, EmbeddingEndpointConfig, EmbeddingMode, KnowledgeBaseConfig, PruningConfig,
@@ -27,6 +28,7 @@ pub use purge::PurgeErrorsStrategy;
 pub use sandbox::SandboxInterceptor;
 pub use strategy::{ContextPipeline, ContextStrategy, StrategyContext, StrategyResult};
 pub use supersede::SupersedeStrategy;
+pub use tools::{is_pruning_enabled, pruning_system_prompt, register_context_tools};
 
 /// Construct a `ContextPipeline` from `config`, adding only enabled strategies in order:
 /// dedup -> supersede -> purge -> sandbox.

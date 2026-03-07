@@ -64,6 +64,32 @@ pub fn create_provider(
                 credential_store,
             )))
         }
+        AdapterKind::Copilot => {
+            let mut copilot_headers = config.headers.clone();
+            // Add required Copilot headers if not already set by user config
+            copilot_headers
+                .entry("Copilot-Integration-Id".into())
+                .or_insert_with(|| "vscode-chat".into());
+            copilot_headers
+                .entry("editor-version".into())
+                .or_insert_with(|| "vscode/1.96.0".into());
+            copilot_headers
+                .entry("editor-plugin-version".into())
+                .or_insert_with(|| "copilot-chat/0.24.0".into());
+
+            let copilot_config = ProviderConfig {
+                adapter: AdapterKind::Openai,
+                base_url: Some(config.base_url().to_owned()),
+                api_key_env: config.api_key_env.clone(),
+                headers: copilot_headers,
+            };
+            Ok(Box::new(crate::openai::OpenAiCompatProvider::from_config(
+                name,
+                &copilot_config,
+                api_key,
+                credential_store,
+            )))
+        }
     }
 }
 
@@ -280,5 +306,17 @@ mod tests {
         };
         let result = create_provider("anthropic", &config, Some(store));
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn create_copilot_provider() {
+        let config = ProviderConfig {
+            adapter: AdapterKind::Copilot,
+            base_url: None,
+            api_key_env: None,
+            headers: HashMap::new(),
+        };
+        let provider = create_provider("copilot", &config, None).unwrap();
+        assert_eq!(provider.name(), "copilot");
     }
 }

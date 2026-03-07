@@ -9,6 +9,7 @@ pub enum AdapterKind {
     Anthropic,
     Ollama,
     Gemini,
+    Copilot,
 }
 
 impl AdapterKind {
@@ -18,6 +19,7 @@ impl AdapterKind {
             Self::Anthropic => "https://api.anthropic.com/v1",
             Self::Ollama => "http://localhost:11434",
             Self::Gemini => "https://generativelanguage.googleapis.com",
+            Self::Copilot => "https://api.githubcopilot.com",
         }
     }
 }
@@ -181,6 +183,20 @@ mod tests {
     }
 
     #[test]
+    fn copilot_config() {
+        let table = parse(
+            r#"
+            [providers.copilot]
+            type = "copilot"
+            "#,
+        );
+        let cfg = &table.providers["copilot"];
+        assert_eq!(cfg.adapter, AdapterKind::Copilot);
+        assert_eq!(cfg.base_url(), "https://api.githubcopilot.com");
+        assert!(cfg.api_key_env.is_none());
+    }
+
+    #[test]
     fn default_base_urls_all_adapters() {
         assert_eq!(
             AdapterKind::Openai.default_base_url(),
@@ -197,6 +213,10 @@ mod tests {
         assert_eq!(
             AdapterKind::Gemini.default_base_url(),
             "https://generativelanguage.googleapis.com"
+        );
+        assert_eq!(
+            AdapterKind::Copilot.default_base_url(),
+            "https://api.githubcopilot.com"
         );
     }
 

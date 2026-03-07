@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use std::time::Instant;
 
 use tokio::sync::mpsc::UnboundedSender;
@@ -165,7 +166,6 @@ fn detect_multiplexer() -> Option<String> {
 // AppState
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone)]
 pub struct AppState {
     pub theme: UcodeTheme,
     pub density: Density,
@@ -190,7 +190,7 @@ pub struct AppState {
     /// Optional channel to notify external systems when the user sends a message.
     /// The real CLI uses this to forward prompts to the LLM.
     #[allow(clippy::type_complexity)]
-    pub message_tx: Option<UnboundedSender<String>>,
+    pub message_tx: Option<UnboundedSender<ucode_agent::AgentMessage>>,
     pub command_registry: CommandRegistry,
     pub palette: PaletteState,
     pub connect_modal: ConnectModalState,
@@ -210,6 +210,18 @@ pub struct AppState {
     /// Whether mouse capture is enabled. When false, mouse events pass through
     /// to the terminal multiplexer.
     pub mouse_enabled: bool,
+
+    // -- Provider tracking (set when agent spawns) ---------------------------
+    /// All known provider configs (populated at startup and after `/connect`).
+    pub providers: std::collections::HashMap<String, ucode_providers::ProviderConfig>,
+    /// Credential store (shared with the agent loop).
+    pub credential_store: Option<Arc<dyn ucode_auth::CredentialStore>>,
+    /// Set by `Action::OpenModels`; consumed by the main event loop to spawn
+    /// the async model-listing task (which needs `event_tx`).
+    pub models_fetch_pending: bool,
+    /// The model currently used by the agent loop.
+    pub active_model: Option<String>,
+    pub models_modal: crate::overlays::models_modal::ModelsModalState,
 }
 
 impl AppState {
@@ -255,6 +267,11 @@ impl AppState {
             toasts: ToastState::new(),
             color_support: crate::terminal::detect_color_support(),
             mouse_enabled: true,
+            providers: std::collections::HashMap::new(),
+            credential_store: None,
+            models_fetch_pending: false,
+            active_model: None,
+            models_modal: crate::overlays::models_modal::ModelsModalState::new(),
         }
     }
 
@@ -336,7 +353,7 @@ impl AppState {
 
     pub fn push_user_message(&mut self, msg: String) {
         if let Some(tx) = &self.message_tx {
-            let _ = tx.send(msg.clone());
+            let _ = tx.send(ucode_agent::AgentMessage::UserMessage(msg.clone()));
         }
         self.transcript.push(TranscriptEntry::UserMessage(msg));
         self.mark_dirty();

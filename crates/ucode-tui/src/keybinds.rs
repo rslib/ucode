@@ -59,6 +59,7 @@ pub enum Action {
     ToggleTheme,
     ToggleDensity,
     OpenConnect,
+    OpenModels,
 }
 
 // ---------------------------------------------------------------------------

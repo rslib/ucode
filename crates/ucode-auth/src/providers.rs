@@ -121,7 +121,7 @@ pub fn provider_auth_info(provider: &str) -> Option<ProviderAuthInfo> {
 pub fn github_copilot_device_config(enterprise_domain: Option<&str>) -> DeviceCodeConfig {
     let domain = enterprise_domain.unwrap_or("github.com");
     DeviceCodeConfig {
-        client_id: "Ov23li8tweQw6odWQebz".into(),
+        client_id: "Ov23ligRrf17Z8tfE3oY".into(),
         device_code_url: format!("https://{domain}/login/device/code"),
         token_url: format!("https://{domain}/login/oauth/access_token"),
         scope: "read:user".into(),
@@ -244,7 +244,7 @@ mod tests {
     #[test]
     fn copilot_device_config_default() {
         let cfg = github_copilot_device_config(None);
-        assert_eq!(cfg.client_id, "Ov23li8tweQw6odWQebz");
+        assert_eq!(cfg.client_id, "Ov23ligRrf17Z8tfE3oY");
         assert!(cfg.device_code_url.contains("github.com"));
         assert!(cfg.token_url.contains("github.com"));
         assert_eq!(cfg.scope, "read:user");

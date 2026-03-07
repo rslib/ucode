@@ -31,6 +31,14 @@ const ENV_PROVIDER_MAP: &[(&str, &str, AdapterKind)] = &[
     ("GOOGLE_API_KEY", "gemini", AdapterKind::Gemini),
 ];
 
+/// Known providers that store credentials in the keyring (not env vars).
+/// Maps (keyring_provider_id, config_name, adapter_kind).
+const KEYRING_PROVIDER_MAP: &[(&str, &str, AdapterKind)] = &[
+    ("github-copilot", "github-copilot", AdapterKind::Copilot),
+    ("anthropic", "anthropic", AdapterKind::Anthropic),
+    ("openai", "openai", AdapterKind::Openai),
+];
+
 // ---------------------------------------------------------------------------
 // AppConfig
 // ---------------------------------------------------------------------------
@@ -81,7 +89,29 @@ impl AppConfig {
         }
     }
 
+    /// Adds providers discovered from the credential store (keyring).
+    /// Skips any provider name already present (TOML/env takes precedence).
+    pub fn discover_from_keyring(&mut self, store: &dyn ucode_auth::CredentialStore) {
+        for (keyring_id, name, kind) in KEYRING_PROVIDER_MAP {
+            if self.providers.contains_key(*name) {
+                continue;
+            }
+            if store.load(keyring_id).is_ok() {
+                self.providers.insert(
+                    name.to_string(),
+                    ProviderConfig {
+                        adapter: kind.clone(),
+                        base_url: None,
+                        api_key_env: None,
+                        headers: HashMap::new(),
+                    },
+                );
+            }
+        }
+    }
+
     /// Loads from `default_config_home()/ucode.toml`, then discovers env vars.
+    /// Call `discover_from_keyring()` separately if a credential store is available.
     pub fn load_default() -> Result<Self, ConfigError> {
         let path = default_config_home().join("ucode.toml");
         let mut cfg = Self::from_file(&path)?;
@@ -93,9 +123,9 @@ impl AppConfig {
         !self.providers.is_empty()
     }
 
-    /// Returns the preferred provider name: anthropic > openai > gemini > first available.
+    /// Returns the preferred provider name: anthropic > openai > github-copilot > gemini > first available.
     pub fn default_provider(&self) -> Option<&str> {
-        for preferred in ["anthropic", "openai", "gemini"] {
+        for preferred in ["anthropic", "openai", "github-copilot", "gemini"] {
             if self.providers.contains_key(preferred) {
                 return Some(preferred);
             }

@@ -16,6 +16,8 @@ pulldown-cmark = { version = "0.13.1", default-features = false }
 ucode-auth = { workspace = true }
 ucode-agent = { workspace = true }
 ucode-tools = { workspace = true }
+ucode-providers = { workspace = true }
+tracing = { workspace = true }
 reqwest.workspace = true
 
 [dev-dependencies]

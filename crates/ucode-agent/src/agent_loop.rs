@@ -42,6 +42,19 @@ pub enum AgentEvent {
 }
 
 // ---------------------------------------------------------------------------
+// AgentMessage
+// ---------------------------------------------------------------------------
+
+/// Messages sent from the TUI to the agent loop.
+#[derive(Debug, Clone)]
+pub enum AgentMessage {
+    /// A user-typed message to send to the LLM.
+    UserMessage(String),
+    /// Switch the model used for subsequent turns.
+    SetModel(String),
+}
+
+// ---------------------------------------------------------------------------
 // AgentLoopConfig
 // ---------------------------------------------------------------------------
 
@@ -60,7 +73,7 @@ pub struct AgentLoopConfig {
 /// Drive the agent: receive user messages, call the provider, execute tools,
 /// and emit `AgentEvent`s until `message_rx` is closed.
 pub async fn run_agent_loop(
-    mut message_rx: mpsc::UnboundedReceiver<String>,
+    mut message_rx: mpsc::UnboundedReceiver<AgentMessage>,
     event_tx: mpsc::UnboundedSender<AgentEvent>,
     config: AgentLoopConfig,
     session_store: Arc<SessionStore>,
@@ -86,33 +99,48 @@ pub async fn run_agent_loop(
 
     session.set_active_model(Some(config.model.clone()));
 
-    while let Some(user_text) = message_rx.recv().await {
-        debug!(
-            "agent loop: received user message ({} chars)",
-            user_text.len()
-        );
+    let mut model = config.model.clone();
 
-        session.push_message(Message::user(&user_text));
+    while let Some(agent_msg) = message_rx.recv().await {
+        match agent_msg {
+            AgentMessage::SetModel(new_model) => {
+                model = new_model;
+                session.set_active_model(Some(model.clone()));
+                let _ = event_tx.send(AgentEvent::SystemMessage(format!(
+                    "provider={} model={}",
+                    config.provider_name, model
+                )));
+                continue;
+            }
+            AgentMessage::UserMessage(user_text) => {
+                debug!(
+                    "agent loop: received user message ({} chars)",
+                    user_text.len()
+                );
 
-        let tool_results = process_turn(
-            provider.as_ref(),
-            &config.model,
-            &event_tx,
-            &mut session,
-            &tool_registry,
-        )
-        .await;
+                session.push_message(Message::user(&user_text));
 
-        // If there were tool calls, do a follow-up call with the updated transcript.
-        if !tool_results.is_empty() {
-            followup_turn(provider.as_ref(), &config.model, &event_tx, &mut session).await;
-        }
+                let tool_results = process_turn(
+                    provider.as_ref(),
+                    &model,
+                    &event_tx,
+                    &mut session,
+                    &tool_registry,
+                )
+                .await;
 
-        session.auto_title_if_needed();
+                // If there were tool calls, do a follow-up call with the updated transcript.
+                if !tool_results.is_empty() {
+                    followup_turn(provider.as_ref(), &model, &event_tx, &mut session).await;
+                }
 
-        if let Err(e) = session_store.save(&session) {
-            warn!("failed to save session: {e}");
-            let _ = event_tx.send(AgentEvent::Error(format!("session save failed: {e}")));
+                session.auto_title_if_needed();
+
+                if let Err(e) = session_store.save(&session) {
+                    warn!("failed to save session: {e}");
+                    let _ = event_tx.send(AgentEvent::Error(format!("session save failed: {e}")));
+                }
+            }
         }
     }
 

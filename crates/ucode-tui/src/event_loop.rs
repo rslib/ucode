@@ -105,6 +105,13 @@ pub enum TuiEvent {
         user_code: String,
         verification_uri: String,
     },
+    ModelsListed {
+        provider: String,
+        models: Vec<ucode_providers::ModelInfo>,
+    },
+    ModelsListFailed {
+        error: String,
+    },
     Quit,
 }
 
@@ -160,6 +167,7 @@ pub async fn run_event_loop(
     sidebar_data: &mut SidebarData,
     event_tx: UnboundedSender<TuiEvent>,
     mut event_rx: UnboundedReceiver<TuiEvent>,
+    mut pending_setup: Option<crate::PendingAgentSetup>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // --- Terminal setup ---
     enable_raw_mode()?;
@@ -254,6 +262,17 @@ pub async fn run_event_loop(
             maybe_tui_event = event_rx.recv() => {
                 match maybe_tui_event {
                     Some(tui_event) => {
+                        // Check if this is a successful VerifyResult and we can
+                        // spawn the agent loop now (mid-session connect).
+                        if let TuiEvent::VerifyResult { ref provider, success: true, .. } = tui_event
+                            && app.message_tx.is_none()
+                            && let Some(setup) = pending_setup.take()
+                        {
+                            let provider_id = provider.clone();
+                            try_spawn_agent_after_connect(
+                                &provider_id, setup, &event_tx, app,
+                            );
+                        }
                         if handle_tui_event(tui_event, app, &event_tx) {
                             break;
                         }
@@ -261,6 +280,12 @@ pub async fn run_event_loop(
                     None => break,
                 }
             }
+        }
+
+        // Drain pending async actions that need `event_tx`.
+        if app.models_fetch_pending {
+            app.models_fetch_pending = false;
+            spawn_models_fetch(app, &event_tx);
         }
     }
 
@@ -324,6 +349,9 @@ fn maybe_spawn_auth_task(
                 display_name: display_name.clone(),
                 url: Some(config.auth_url.clone()),
             };
+
+            // Best-effort: open the auth URL in the user's browser.
+            try_open_url(&config.auth_url);
 
             // `browser_oauth_authorize` uses `rand::thread_rng()` internally,
             // which is `!Send`. Run it on a dedicated blocking thread with its
@@ -590,6 +618,53 @@ fn handle_terminal_event(
                         }
                         app.copy_mode.exit();
                         app.focus = FocusTarget::Input;
+                        app.mark_dirty();
+                    }
+                    _ => {}
+                }
+                return false;
+            }
+
+            // When the models modal is open, route keys to it.
+            if app.models_modal.visible {
+                match key.code {
+                    crossterm::event::KeyCode::Esc => {
+                        app.models_modal.close();
+                        app.focus = FocusTarget::Input;
+                        app.mark_dirty();
+                    }
+                    crossterm::event::KeyCode::Enter => {
+                        if let Some(entry) = app.models_modal.selected_entry().cloned() {
+                            // Send SetModel to agent loop.
+                            if let Some(tx) = &app.message_tx {
+                                let _ = tx.send(ucode_agent::AgentMessage::SetModel(
+                                    entry.model_id.clone(),
+                                ));
+                            }
+                            app.active_model = Some(entry.model_id.clone());
+                            app.models_modal.close();
+                            app.focus = FocusTarget::Input;
+                            app.push_system_message(format!(
+                                "Switched to model: {}",
+                                entry.label()
+                            ));
+                        }
+                        app.mark_dirty();
+                    }
+                    crossterm::event::KeyCode::Up => {
+                        app.models_modal.move_up();
+                        app.mark_dirty();
+                    }
+                    crossterm::event::KeyCode::Down => {
+                        app.models_modal.move_down();
+                        app.mark_dirty();
+                    }
+                    crossterm::event::KeyCode::Backspace => {
+                        app.models_modal.delete_char();
+                        app.mark_dirty();
+                    }
+                    crossterm::event::KeyCode::Char(c) => {
+                        app.models_modal.insert_char(c);
                         app.mark_dirty();
                     }
                     _ => {}
@@ -1260,6 +1335,18 @@ fn dispatch_action(action: Action, app: &mut AppState, input_box: &mut InputBoxS
             app.mark_dirty();
         }
 
+        Action::OpenModels => {
+            if app.providers.is_empty() {
+                app.push_system_message("No providers connected. Use /connect first.".to_owned());
+            } else {
+                app.models_modal
+                    .open(app.active_model.clone(), app.providers.len());
+                app.focus = FocusTarget::Overlay;
+                app.models_fetch_pending = true;
+            }
+            app.mark_dirty();
+        }
+
         Action::AcceptAutocomplete => {
             if let Some(entry) = input_box.autocomplete.selected_entry().cloned() {
                 input_box.content.clear();
@@ -1570,6 +1657,9 @@ fn handle_tui_event(
             user_code,
             verification_uri,
         } => {
+            // Best-effort: open the verification URL in the user's browser.
+            try_open_url(&verification_uri);
+
             if let ConnectPhase::DeviceCode {
                 provider_id,
                 display_name,
@@ -1585,6 +1675,15 @@ fn handle_tui_event(
                 };
                 app.mark_dirty();
             }
+        }
+        TuiEvent::ModelsListed { provider, models } => {
+            app.models_modal.add_models(&provider, &models);
+            app.mark_dirty();
+        }
+        TuiEvent::ModelsListFailed { error } => {
+            app.models_modal.add_error(&error);
+            app.push_system_message(format!("Failed to list models: {error}"));
+            app.mark_dirty();
         }
         TuiEvent::Quit => return true,
     }
@@ -1672,6 +1771,18 @@ pub fn render_frame(
         f.render_widget(ApprovalModal::new(&app.approval_modal, &app.theme), area);
     }
 
+    // Connect modal overlay.
+    if app.connect_modal.visible {
+        use crate::overlays::connect_modal::ConnectModal;
+        f.render_widget(ConnectModal::new(&app.connect_modal, &app.theme), area);
+    }
+
+    // Models modal overlay.
+    if app.models_modal.visible {
+        use crate::overlays::models_modal::ModelsModal;
+        f.render_widget(ModelsModal::new(&app.models_modal, &app.theme), area);
+    }
+
     // Keybind reference overlay.
     if app.keybind_overlay.visible {
         use crate::overlays::keybind_overlay::KeybindOverlay;
@@ -1707,6 +1818,115 @@ pub fn render_frame(
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Spawn async tasks to list models from all connected providers.
+/// Each provider sends its results back via `TuiEvent::ModelsListed` or
+/// `TuiEvent::ModelsListFailed`.
+fn spawn_models_fetch(app: &AppState, event_tx: &UnboundedSender<TuiEvent>) {
+    let providers: Vec<(String, ucode_providers::ProviderConfig)> = app
+        .providers
+        .iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    let cred = app.credential_store.clone();
+    let tx = event_tx.clone();
+    tokio::spawn(async move {
+        for (name, config) in providers {
+            match ucode_providers::create_provider(&name, &config, cred.clone()) {
+                Ok(provider) => match provider.list_models().await {
+                    Ok(models) => {
+                        let _ = tx.send(TuiEvent::ModelsListed {
+                            provider: name,
+                            models,
+                        });
+                    }
+                    Err(e) => {
+                        let _ = tx.send(TuiEvent::ModelsListFailed {
+                            error: format!("{name}: {e}"),
+                        });
+                    }
+                },
+                Err(e) => {
+                    let _ = tx.send(TuiEvent::ModelsListFailed {
+                        error: format!("{name}: failed to create provider: {e}"),
+                    });
+                }
+            }
+        }
+    });
+}
+
+/// Attempt to spawn the agent loop after a successful `/connect`.
+/// Maps the provider_id to an `AdapterKind` and `ProviderConfig`, then spawns.
+fn try_spawn_agent_after_connect(
+    provider_id: &str,
+    setup: crate::PendingAgentSetup,
+    event_tx: &UnboundedSender<TuiEvent>,
+    app: &mut AppState,
+) {
+    use ucode_providers::config::{AdapterKind, ProviderConfig};
+
+    let (adapter, default_model) = match provider_id {
+        "github-copilot" => (AdapterKind::Copilot, "gpt-4o"),
+        "anthropic" => (AdapterKind::Anthropic, "claude-sonnet-4-20250514"),
+        "openai" => (AdapterKind::Openai, "gpt-4o"),
+        _ => {
+            tracing::warn!("unknown provider for agent spawn: {provider_id}");
+            return;
+        }
+    };
+
+    let provider_config = ProviderConfig {
+        adapter,
+        base_url: None,
+        api_key_env: None,
+        headers: std::collections::HashMap::new(),
+    };
+
+    // Store provider info for /models.
+    app.providers
+        .insert(provider_id.to_owned(), provider_config.clone());
+    app.credential_store = Some(setup.credential_store.clone());
+
+    let loop_config = ucode_agent::AgentLoopConfig {
+        provider_name: provider_id.to_owned(),
+        provider_config,
+        model: default_model.to_owned(),
+        credential_store: Some(setup.credential_store),
+    };
+
+    let ac = crate::AgentConfig {
+        loop_config,
+        session_store: setup.session_store,
+        session: setup.session,
+        tool_registry: setup.tool_registry,
+        // Mid-session connect: the providers map already has entries from
+        // startup; the new provider was inserted above.
+        all_providers: std::collections::HashMap::new(),
+    };
+
+    let (msg_tx, _agent_handle, _bridge_handle) = crate::spawn_agent_loop(ac, event_tx);
+    app.message_tx = Some(msg_tx);
+    app.active_model = Some(default_model.to_owned());
+
+    tracing::info!("agent loop spawned after /connect for {provider_id}");
+}
+
+/// Best-effort attempt to open a URL in the user's default browser.
+/// Silently ignores any failure (missing opener, headless environment, etc.).
+fn try_open_url(url: &str) {
+    #[cfg(target_os = "macos")]
+    let cmd = "open";
+    #[cfg(not(target_os = "macos"))]
+    let cmd = "xdg-open";
+
+    let _ = std::process::Command::new(cmd)
+        .arg(url)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+}
 
 /// Build a `StatusBarState` from the current app and sidebar state.
 ///

@@ -90,9 +90,17 @@ impl CommandRegistry {
             action: Some(Action::OpenConnect),
         });
 
+        reg.commands.push(CommandDef {
+            name: "/models".to_owned(),
+            description: "List available models from the current provider".to_owned(),
+            category: CommandCategory::Tools,
+            source: CommandSource::Builtin,
+            args_hint: None,
+            action: Some(Action::OpenModels),
+        });
+
         let tools: &[(&str, &str)] = &[
             ("/skills", "Browse and activate skills"),
-            ("/models", "Switch model or model group"),
             ("/tools", "View available tools"),
             ("/checkpoint", "Create workspace checkpoint"),
             ("/rollback", "Restore prior checkpoint"),

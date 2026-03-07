@@ -481,7 +481,7 @@ for that provider.
 |---|---|---|
 | OpenAI | API key, env (`OPENAI_API_KEY`) | Standard API key |
 | Anthropic | API key, env (`ANTHROPIC_API_KEY`), browser OAuth (subscription) | Claude Pro/Max subscription login |
-| GitHub Copilot | Device code (RFC 8628) | Client ID: `Ov23li8tweQw6odWQebz`, scope: `read:user` |
+| GitHub Copilot | Device code (RFC 8628) | Client ID: `Ov23ligRrf17Z8tfE3oY`, scope: `read:user` |
 | GitHub Copilot Enterprise | Device code + enterprise URL | Custom domain support |
 | Google Gemini | API key, env (`GEMINI_API_KEY`), browser OAuth | Google AI subscription |
 | Google Vertex AI | Env (`GOOGLE_APPLICATION_CREDENTIALS`), gcloud ADC | Service account or gcloud auth |
@@ -505,7 +505,7 @@ for that provider.
 pub fn github_copilot_auth_config(enterprise_url: Option<&str>) -> DeviceCodeConfig {
     let domain = enterprise_url.unwrap_or("github.com");
     DeviceCodeConfig {
-        client_id: "Ov23li8tweQw6odWQebz".into(),
+        client_id: "Ov23ligRrf17Z8tfE3oY".into(),
         device_code_url: format!("https://{domain}/login/device/code"),
         token_url: format!("https://{domain}/login/oauth/access_token"),
         scope: "read:user".into(),

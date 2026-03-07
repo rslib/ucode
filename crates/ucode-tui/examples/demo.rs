@@ -346,7 +346,7 @@ async fn run_sequence_echo(user_msg: &str, tui_tx: &mpsc::UnboundedSender<TuiEve
 
 /// Simulated LLM that runs scripted sequences showcasing all TUI features.
 async fn fake_llm(
-    mut user_rx: mpsc::UnboundedReceiver<String>,
+    mut user_rx: mpsc::UnboundedReceiver<ucode_agent::AgentMessage>,
     tui_tx: mpsc::UnboundedSender<TuiEvent>,
 ) {
     // Startup system message — transcript[0].
@@ -364,7 +364,16 @@ async fn fake_llm(
 
     let mut message_count: u32 = 0;
 
-    while let Some(user_msg) = user_rx.recv().await {
+    while let Some(agent_msg) = user_rx.recv().await {
+        let user_msg = match agent_msg {
+            ucode_agent::AgentMessage::UserMessage(text) => text,
+            ucode_agent::AgentMessage::SetModel(model) => {
+                let _ = tui_tx.send(TuiEvent::SystemMessage(format!(
+                    "Model switched to: {model}"
+                )));
+                continue;
+            }
+        };
         message_count += 1;
 
         match message_count {
@@ -387,7 +396,7 @@ async fn fake_llm(
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (tui_tx, tui_rx) = ucode_tui::create_event_channel();
-    let (user_tx, user_rx) = mpsc::unbounded_channel::<String>();
+    let (user_tx, user_rx) = mpsc::unbounded_channel::<ucode_agent::AgentMessage>();
 
     // Spawn the scripted LLM responder.
     tokio::spawn(fake_llm(user_rx, tui_tx.clone()));
@@ -426,6 +435,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         &mut sidebar_data,
         tui_tx,
         tui_rx,
+        None,
     )
     .await
 }

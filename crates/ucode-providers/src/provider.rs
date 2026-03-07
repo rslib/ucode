@@ -67,6 +67,15 @@ pub struct Capabilities {
     pub token_counting: bool,
 }
 
+/// A model available from a provider.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelInfo {
+    /// Model identifier (e.g., "gpt-4o", "claude-sonnet-4-20250514").
+    pub id: String,
+    /// Human-readable name, if different from id.
+    pub name: Option<String>,
+}
+
 /// The core provider interface.
 ///
 /// Providers translate chat requests into canonical `Event` streams.
@@ -85,5 +94,11 @@ pub trait Provider: Send + Sync {
     /// Returns `None` if the provider doesn't support native counting.
     fn count_tokens(&self, _messages: &[Message]) -> Option<usize> {
         None
+    }
+
+    /// Optional: list available models from this provider.
+    /// Returns an empty vec if the provider doesn't support model listing.
+    fn list_models(&self) -> ProviderFuture<Result<Vec<ModelInfo>, CoreError>> {
+        Box::pin(async { Ok(vec![]) })
     }
 }

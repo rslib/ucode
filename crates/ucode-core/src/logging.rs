@@ -192,7 +192,6 @@ pub fn init_logging(config: &LogConfig) -> Result<LogGuard, CoreError> {
         message: format!("cannot create log dir {}: {e}", config.log_dir.display()),
     })?;
 
-    let level_filter: tracing_subscriber::filter::LevelFilter = config.level.into();
     let mut guards: Vec<WorkerGuard> = Vec::new();
 
     // All layers are type-erased against `Registry` so they can be collected
@@ -203,8 +202,17 @@ pub fn init_logging(config: &LogConfig) -> Result<LogGuard, CoreError> {
     type BoxedLayer = Box<dyn Layer<tracing_subscriber::Registry> + Send + Sync + 'static>;
     let mut layers: Vec<BoxedLayer> = Vec::new();
 
-    // Global level gate — must be first so downstream layers see filtered spans.
-    layers.push(level_filter.boxed());
+    // Global level gate with per-crate filtering.
+    // Suppress noisy third-party HTTP crates to WARN unless the user
+    // explicitly overrides via RUST_LOG.
+    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+        let spec = format!(
+            "{},hyper=warn,hyper_util=warn,reqwest=warn,rustls=warn,h2=warn",
+            config.level,
+        );
+        tracing_subscriber::EnvFilter::new(spec)
+    });
+    layers.push(env_filter.boxed());
 
     // --- stderr layer ---
     if config.stderr {

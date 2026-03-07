@@ -390,6 +390,83 @@ impl Provider for OpenAiCompatProvider {
             ))
         })
     }
+
+    fn list_models(&self) -> ProviderFuture<Result<Vec<crate::provider::ModelInfo>, CoreError>> {
+        let client = self.client.clone();
+        let credential_store = self.credential_store.clone();
+        let api_key_env = self.api_key_env.clone();
+        let fallback_api_key = self.api_key.clone();
+        let url = format!("{}/models", self.base_url);
+        let provider_name = self.provider_name.clone();
+        let custom_headers = self.headers.clone();
+
+        Box::pin(async move {
+            let refresh_cfg = if provider_name == "openai" {
+                Some(ucode_auth::openai_refresh_config())
+            } else {
+                None
+            };
+
+            let auth_material = crate::auth::resolve_provider_auth(
+                &provider_name,
+                api_key_env.as_deref(),
+                credential_store.as_ref().map(|s| s.as_ref()),
+                fallback_api_key.as_deref(),
+                refresh_cfg.as_ref(),
+            )
+            .await?;
+
+            let mut request = client.get(&url);
+
+            if let Some(ref material) = auth_material {
+                let token = crate::auth::bearer_token(material);
+                request = request.header("Authorization", format!("Bearer {token}"));
+            }
+
+            for (k, v) in &custom_headers {
+                request = request.header(k.as_str(), v.as_str());
+            }
+
+            let resp = request.send().await.map_err(|e| CoreError::Provider {
+                provider: provider_name.clone(),
+                message: format!("list_models request failed: {e}"),
+            })?;
+
+            if !resp.status().is_success() {
+                let status = resp.status();
+                let body_text = resp.text().await.unwrap_or_default();
+                return Err(CoreError::Provider {
+                    provider: provider_name,
+                    message: format!("list_models HTTP {status}: {body_text}"),
+                });
+            }
+
+            #[derive(Deserialize)]
+            struct ModelsResponse {
+                data: Vec<ModelEntry>,
+            }
+            #[derive(Deserialize)]
+            struct ModelEntry {
+                id: String,
+                #[serde(default)]
+                name: Option<String>,
+            }
+
+            let body: ModelsResponse = resp.json().await.map_err(|e| CoreError::Provider {
+                provider: provider_name,
+                message: format!("list_models parse failed: {e}"),
+            })?;
+
+            Ok(body
+                .data
+                .into_iter()
+                .map(|m| crate::provider::ModelInfo {
+                    id: m.id,
+                    name: m.name,
+                })
+                .collect())
+        })
+    }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

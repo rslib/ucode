@@ -28,52 +28,86 @@ pub struct AgentConfig {
     pub session_store: std::sync::Arc<ucode_core::SessionStore>,
     pub session: ucode_core::Session,
     pub tool_registry: std::sync::Arc<ucode_tools::ToolRegistry>,
+    /// All known provider configs (for `/models` to query all providers).
+    pub all_providers: std::collections::HashMap<String, ucode_providers::ProviderConfig>,
+}
+
+/// Ingredients for spawning an agent loop later (after `/connect`).
+/// Contains everything except the provider config, which is determined
+/// after authentication completes.
+pub struct PendingAgentSetup {
+    pub credential_store: std::sync::Arc<dyn ucode_auth::CredentialStore>,
+    pub session_store: std::sync::Arc<ucode_core::SessionStore>,
+    pub session: ucode_core::Session,
+    pub tool_registry: std::sync::Arc<ucode_tools::ToolRegistry>,
+}
+
+/// Spawn the agent loop and wire it to the TUI via the event bridge.
+/// Returns the message sender for the app and the join handles.
+fn spawn_agent_loop(
+    ac: AgentConfig,
+    event_tx: &TuiEventSender,
+) -> (
+    tokio::sync::mpsc::UnboundedSender<ucode_agent::AgentMessage>,
+    tokio::task::JoinHandle<()>,
+    tokio::task::JoinHandle<()>,
+) {
+    let (msg_tx, msg_rx) = tokio::sync::mpsc::unbounded_channel::<ucode_agent::AgentMessage>();
+
+    let (agent_event_tx, mut agent_event_rx) =
+        tokio::sync::mpsc::unbounded_channel::<ucode_agent::AgentEvent>();
+
+    // Spawn bridge task: forward AgentEvents to TuiEvents.
+    let bridge_tx = event_tx.clone();
+    let bridge_handle = tokio::spawn(async move {
+        while let Some(ev) = agent_event_rx.recv().await {
+            event_loop::bridge_agent_event(ev, &bridge_tx);
+        }
+    });
+
+    // Spawn the agent loop.
+    let agent_handle = tokio::spawn(ucode_agent::run_agent_loop(
+        msg_rx,
+        agent_event_tx,
+        ac.loop_config,
+        ac.session_store,
+        ac.session,
+        ac.tool_registry,
+    ));
+
+    (msg_tx, agent_handle, bridge_handle)
 }
 
 /// Run the fullscreen TUI. This is the main entry point.
 ///
 /// Takes both ends of the TUI event channel so that auth tasks spawned inside
 /// the loop can send results back via the sender. If `agent_config` is provided,
-/// the agent loop is spawned and wired to the TUI via the event bridge.
+/// the agent loop is spawned immediately. Otherwise, `pending_setup` can be
+/// provided to allow spawning the agent loop after `/connect` succeeds.
 /// Blocks until the user exits or the sender is dropped.
 pub async fn run(
     event_tx: TuiEventSender,
     event_rx: tokio::sync::mpsc::UnboundedReceiver<event_loop::TuiEvent>,
     agent_config: Option<AgentConfig>,
+    pending_setup: Option<PendingAgentSetup>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut app = app::AppState::new();
 
-    // If agent config is provided, set up the message channel and spawn the loop.
-    let _agent_handle = if let Some(ac) = agent_config {
-        let (msg_tx, msg_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    // If agent config is provided, spawn the agent loop immediately.
+    let mut _agent_handles: Option<(tokio::task::JoinHandle<()>, tokio::task::JoinHandle<()>)> =
+        None;
+
+    if let Some(mut ac) = agent_config {
+        // Store all provider configs so /models can query all of them.
+        app.providers = std::mem::take(&mut ac.all_providers);
+        app.credential_store = ac.loop_config.credential_store.clone();
+
+        let ac_model = ac.loop_config.model.clone();
+        let (msg_tx, ah, bh) = spawn_agent_loop(ac, &event_tx);
         app.message_tx = Some(msg_tx);
-
-        let (agent_event_tx, mut agent_event_rx) =
-            tokio::sync::mpsc::unbounded_channel::<ucode_agent::AgentEvent>();
-
-        // Spawn bridge task: forward AgentEvents to TuiEvents.
-        let bridge_tx = event_tx.clone();
-        let bridge_handle = tokio::spawn(async move {
-            while let Some(ev) = agent_event_rx.recv().await {
-                event_loop::bridge_agent_event(ev, &bridge_tx);
-            }
-        });
-
-        // Spawn the agent loop.
-        let agent_handle = tokio::spawn(ucode_agent::run_agent_loop(
-            msg_rx,
-            agent_event_tx,
-            ac.loop_config,
-            ac.session_store,
-            ac.session,
-            ac.tool_registry,
-        ));
-
-        Some((agent_handle, bridge_handle))
-    } else {
-        app.message_tx = None;
-        None
-    };
+        app.active_model = Some(ac_model);
+        _agent_handles = Some((ah, bh));
+    }
 
     let mut input_box = components::input::InputBoxState::new();
     let mut sidebar_data = components::sidebar::SidebarData::new();
@@ -83,6 +117,7 @@ pub async fn run(
         &mut sidebar_data,
         event_tx,
         event_rx,
+        pending_setup,
     )
     .await
 }

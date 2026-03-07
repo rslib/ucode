@@ -157,7 +157,7 @@ fn action_category(action: Action) -> &'static str {
         | Action::ClearTranscript
         | Action::Exit => "Mode",
 
-        Action::OpenConnect => "Overlays",
+        Action::OpenConnect | Action::OpenModels => "Overlays",
     }
 }
 
@@ -204,6 +204,7 @@ pub fn action_description(action: Action) -> &'static str {
         Action::ToggleTheme => "Toggle theme",
         Action::ToggleDensity => "Toggle density",
         Action::OpenConnect => "Open connect modal",
+        Action::OpenModels => "List available models",
     }
 }
 

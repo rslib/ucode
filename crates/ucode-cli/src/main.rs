@@ -204,7 +204,17 @@ fn parse_bool_env(s: &str) -> Option<bool> {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    let config = resolve_log_config(&cli);
+    let is_tui_mode = cli.command.is_none() && !cli.json_output;
+
+    let mut config = resolve_log_config(&cli);
+
+    // In TUI mode, logs must go to file only — stderr corrupts the alternate
+    // screen.  Unless the user explicitly asked for stderr (--log-stderr),
+    // disable it and enable a session log file instead.
+    if is_tui_mode && cli.log_stderr.is_none() {
+        config = config.with_stderr(false).with_rolling(true);
+    }
+
     let _log_guard = init_logging(&config)?;
     tracing::debug!("logging initialised");
 
@@ -215,18 +225,32 @@ async fn main() -> Result<()> {
 
     match cli.command {
         None => {
-            let app_config = ucode_agent::AppConfig::load_default()
+            let mut app_config = ucode_agent::AppConfig::load_default()
                 .map_err(|e| anyhow::anyhow!("config error: {e}"))?;
+            app_config.discover_from_keyring(&store);
 
             let (event_tx, event_rx) = ucode_tui::create_event_channel();
 
             if !app_config.has_providers() {
-                eprintln!(
-                    "No providers configured. Set ANTHROPIC_API_KEY, OPENAI_API_KEY, \
-                     or create ~/.config/ucode/ucode.toml"
-                );
-                eprintln!("Run `ucode auth status` to check credentials.");
-                ucode_tui::run(event_tx, event_rx, None)
+                // No providers yet — launch TUI with a PendingAgentSetup so
+                // the user can `/connect` and spawn an agent mid-session.
+                let cred_store: std::sync::Arc<dyn ucode_auth::CredentialStore> =
+                    std::sync::Arc::new(store);
+                let session = session_store.create(std::env::current_dir().unwrap_or_default())?;
+                let session_store_arc = std::sync::Arc::new(session_store);
+
+                let mut tool_registry = ucode_tools::ToolRegistry::new();
+                ucode_tools::register_builtins(&mut tool_registry);
+                let tool_registry = std::sync::Arc::new(tool_registry);
+
+                let pending = ucode_tui::PendingAgentSetup {
+                    credential_store: cred_store,
+                    session_store: session_store_arc,
+                    session,
+                    tool_registry,
+                };
+
+                ucode_tui::run(event_tx, event_rx, None, Some(pending))
                     .await
                     .map_err(|e| anyhow::anyhow!("{e}"))?;
             } else {
@@ -257,9 +281,10 @@ async fn main() -> Result<()> {
                     session_store: session_store_arc,
                     session,
                     tool_registry,
+                    all_providers: app_config.providers,
                 };
 
-                ucode_tui::run(event_tx, event_rx, Some(agent_config))
+                ucode_tui::run(event_tx, event_rx, Some(agent_config), None)
                     .await
                     .map_err(|e| anyhow::anyhow!("{e}"))?;
             }
@@ -333,7 +358,7 @@ async fn main() -> Result<()> {
             let (msg_tx, msg_rx) = tokio::sync::mpsc::unbounded_channel();
             let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
 
-            let _ = msg_tx.send(prompt);
+            let _ = msg_tx.send(ucode_agent::AgentMessage::UserMessage(prompt));
             drop(msg_tx);
 
             let agent_handle = tokio::spawn(ucode_agent::run_agent_loop(

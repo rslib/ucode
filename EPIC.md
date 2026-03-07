@@ -335,7 +335,7 @@ Supported providers and auth methods:
 |---|---|
 | OpenAI | API key, env (`OPENAI_API_KEY`) |
 | Anthropic | API key, env (`ANTHROPIC_API_KEY`), browser OAuth (subscription) |
-| GitHub Copilot | Device code (client_id: `Ov23li8tweQw6odWQebz`, scope: `read:user`) |
+| GitHub Copilot | Device code (client_id: `Ov23ligRrf17Z8tfE3oY`, scope: `read:user`) |
 | GitHub Copilot Enterprise | Device code + enterprise URL |
 | Google Gemini | API key, env (`GEMINI_API_KEY`), browser OAuth |
 | Google Vertex AI | Env (`GOOGLE_APPLICATION_CREDENTIALS`), gcloud ADC |
@@ -1444,7 +1444,7 @@ Design doc: `docs/plans/2026-03-06-wasm-runtime-design.md`
 
 ## EPIC 9 — End-to-end integration + release quality
 
-### ISSUE 0901 — Integrated “happy path” scenario test
+### ISSUE 0901 — Integrated “happy path” scenario test [DONE]
 
 **Goal:** Confirm full workflow works together.
 **Scenario:**
@@ -1458,7 +1458,7 @@ Design doc: `docs/plans/2026-03-06-wasm-runtime-design.md`
 * Scripted integration test (can be semi-manual initially) documented in `docs/e2e.md`.
   **Owner:** Platform
 
-### ISSUE 0902 — Config file + docs
+### ISSUE 0902 — Config file + docs [DONE]
 
 **Goal:** Document config keys and default behaviors.
 **Scope/Notes:**

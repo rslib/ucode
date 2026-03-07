@@ -81,8 +81,16 @@ impl CommandRegistry {
     pub fn with_builtins() -> Self {
         let mut reg = Self::new();
 
+        reg.commands.push(CommandDef {
+            name: "/connect".to_owned(),
+            description: "Connect provider or auth method".to_owned(),
+            category: CommandCategory::Tools,
+            source: CommandSource::Builtin,
+            args_hint: None,
+            action: Some(Action::OpenConnect),
+        });
+
         let tools: &[(&str, &str)] = &[
-            ("/connect", "Connect provider or auth method"),
             ("/skills", "Browse and activate skills"),
             ("/models", "Switch model or model group"),
             ("/tools", "View available tools"),

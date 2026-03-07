@@ -8,6 +8,7 @@ use crate::components::toast::{ToastLevel, ToastState};
 use crate::keybinds::{KeybindPreset, KeybindResolver};
 use crate::layout::{InputState, SidebarState, TerminalSize};
 use crate::overlays::approval_modal::ApprovalModalState;
+use crate::overlays::connect_modal::ConnectModalState;
 use crate::overlays::copy_mode::CopyModeState;
 use crate::overlays::diff_modal::DiffModalState;
 use crate::overlays::keybind_overlay::KeybindOverlayState;
@@ -192,6 +193,7 @@ pub struct AppState {
     pub message_tx: Option<UnboundedSender<String>>,
     pub command_registry: CommandRegistry,
     pub palette: PaletteState,
+    pub connect_modal: ConnectModalState,
     pub diff_modal: DiffModalState,
     pub approval_modal: ApprovalModalState,
     pub keybind_overlay: KeybindOverlayState,
@@ -241,6 +243,7 @@ impl AppState {
             message_tx: None,
             command_registry,
             palette,
+            connect_modal: ConnectModalState::new(),
             diff_modal: DiffModalState::new(),
             approval_modal: ApprovalModalState::new(),
             keybind_overlay: KeybindOverlayState::new(),
@@ -976,7 +979,7 @@ mod tests {
         let mut app = AppState::new();
         let result = app.execute_command("connect", &[]);
         assert!(result, "known command should return true");
-        // Should have two system messages: the echo and the "not yet implemented" note.
+        // Should have two system messages: the echo and the "Executed: connect" note.
         let sys_msgs: Vec<_> = app
             .transcript
             .iter()

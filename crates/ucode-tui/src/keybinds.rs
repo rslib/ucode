@@ -58,6 +58,7 @@ pub enum Action {
     CopySelection,
     ToggleTheme,
     ToggleDensity,
+    OpenConnect,
 }
 
 // ---------------------------------------------------------------------------

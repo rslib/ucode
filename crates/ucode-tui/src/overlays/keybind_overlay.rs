@@ -156,6 +156,8 @@ fn action_category(action: Action) -> &'static str {
         | Action::EnterNormalMode
         | Action::ClearTranscript
         | Action::Exit => "Mode",
+
+        Action::OpenConnect => "Overlays",
     }
 }
 
@@ -201,6 +203,7 @@ pub fn action_description(action: Action) -> &'static str {
         Action::CopySelection => "Copy selection",
         Action::ToggleTheme => "Toggle theme",
         Action::ToggleDensity => "Toggle density",
+        Action::OpenConnect => "Open connect modal",
     }
 }
 

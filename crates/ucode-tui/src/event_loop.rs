@@ -958,6 +958,12 @@ fn dispatch_action(action: Action, app: &mut AppState, input_box: &mut InputBoxS
             app.mark_dirty();
         }
 
+        Action::OpenConnect => {
+            app.connect_modal.open(&std::collections::HashMap::new());
+            app.focus = FocusTarget::Overlay;
+            app.mark_dirty();
+        }
+
         Action::AcceptAutocomplete => {
             if let Some(entry) = input_box.autocomplete.selected_entry().cloned() {
                 input_box.content.clear();

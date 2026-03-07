@@ -979,7 +979,7 @@ Search:
 * Tool call displayed; run_cmd prompts approval; deny blocks execution.
   **Owner:** TUI
 
-### ISSUE 0705 — /connect UI (providers + auth method picker) (ucode-tui + auth)
+### ISSUE 0705 — /connect UI (providers + auth method picker) (ucode-tui + auth) [DONE]
 
 **Goal:** In-TUI provider connect flow for API keys + login + subscription login.
 **Acceptance tests:**

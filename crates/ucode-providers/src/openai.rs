@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use ucode_core::{CoreError, Event, EventStream, ToolCall as CoreToolCall};
 
 use crate::provider::{Capabilities, ChatRequest, Provider, ProviderFuture, ToolDef};
+use crate::sse::stream_lines;
 
 // ── SSE response types ────────────────────────────────────────────────────────
 
@@ -318,46 +319,11 @@ impl Provider for OpenaiProvider {
 
             let byte_stream = resp.bytes_stream();
 
-            let event_stream = futures_util::stream::unfold(
-                (byte_stream, ToolCallAccumulator::default(), String::new()),
-                |(mut byte_stream, mut accumulator, mut buffer)| async move {
-                    use futures_util::StreamExt;
-
-                    loop {
-                        while let Some(newline_pos) = buffer.find('\n') {
-                            let line = buffer[..newline_pos].to_string();
-                            buffer = buffer[newline_pos + 1..].to_string();
-
-                            let events = parse_sse_line(&line, &mut accumulator);
-                            if !events.is_empty() {
-                                return Some((events, (byte_stream, accumulator, buffer)));
-                            }
-                        }
-
-                        match byte_stream.next().await {
-                            Some(Ok(bytes)) => {
-                                buffer.push_str(&String::from_utf8_lossy(&bytes));
-                            }
-                            Some(Err(_)) | None => {
-                                if !buffer.trim().is_empty() {
-                                    let events = parse_sse_line(&buffer, &mut accumulator);
-                                    buffer.clear();
-                                    if !events.is_empty() {
-                                        return Some((events, (byte_stream, accumulator, buffer)));
-                                    }
-                                }
-                                return None;
-                            }
-                        }
-                    }
-                },
-            );
-
-            let flat_stream = futures_util::stream::StreamExt::flat_map(event_stream, |events| {
-                futures_util::stream::iter(events)
-            });
-
-            Ok(Box::pin(flat_stream) as EventStream)
+            Ok(stream_lines(
+                byte_stream,
+                ToolCallAccumulator::default(),
+                parse_sse_line,
+            ))
         })
     }
 }

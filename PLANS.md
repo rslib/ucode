@@ -567,6 +567,23 @@ Background token refresh for OAuth credentials. Runs as a tokio task during acti
 * Break token mid-session and the conversation continues via fallback model.
 * Missing env var for a provider skips it cleanly with log message.
 
+## 2.7 OAuth request-side wiring (ucode-providers + ucode-auth) [P0] [DONE]
+
+Wire OAuth credentials through provider adapters so subscription login tokens
+produce correctly authenticated HTTP requests.
+
+* `resolve_provider_auth()` upgraded to return `AuthMaterial` + async with auto-refresh
+* Anthropic adapter: OAuth-aware headers (Bearer + anthropic-beta), temperature stripping,
+  tool name PascalCase normalization, metadata.user_id injection from `~/.claude.json`
+* OpenAI adapter: JWT account ID extraction, auto-refresh
+* All adapters handle `AuthMaterial` variants correctly
+
+**Acceptance**
+
+* Anthropic OAuth credential produces correct headers and normalized tool names.
+* OpenAI JWT decoder extracts account ID.
+* Expiring tokens auto-refresh before requests.
+
 ---
 
 # Phase 3 — Provider adapters (streaming + tool translation)

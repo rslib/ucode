@@ -6,6 +6,7 @@ pub mod credential;
 pub mod error;
 pub mod file_store;
 pub mod flows;
+pub mod jwt;
 pub mod providers;
 pub mod refresh;
 pub mod resolve;
@@ -26,6 +27,7 @@ pub use flows::{
     device_code::{DeviceCodeConfig, DeviceCodePending, poll_for_token, request_device_code},
     wellknown::wellknown_authorize,
 };
+pub use jwt::{decode_jwt_payload, extract_openai_account_id};
 pub use providers::{
     AuthMethod, ProviderAuthInfo, anthropic_console_oauth_config, anthropic_max_oauth_config,
     anthropic_refresh_config, github_copilot_device_config, openai_refresh_config,

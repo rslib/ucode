@@ -3,6 +3,7 @@
 
 pub mod anthropic;
 pub mod auth;
+pub mod claude_metadata;
 pub mod config;
 pub mod factory;
 pub mod gemini;
@@ -11,6 +12,7 @@ pub mod ollama;
 pub mod openai;
 pub mod provider;
 pub mod sse;
+pub mod tool_normalize;
 
 pub use anthropic::{AnthropicCompatProvider, parse_anthropic_sse_line};
 pub use config::{AdapterKind, ProviderConfig, ProvidersTable};

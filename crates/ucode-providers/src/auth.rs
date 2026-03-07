@@ -2,25 +2,29 @@
 
 use std::sync::Arc;
 
-use ucode_auth::{AuthMaterial, CredentialStore};
+use ucode_auth::{AuthMaterial, CredentialStore, RefreshConfig, resolve_auth_with_refresh};
 use ucode_core::{AuthErrorKind, CoreError};
 
-/// Resolve a bearer token for a provider request.
+/// Resolve auth material for a provider request.
 ///
 /// Precedence:
-/// 1. If `credential_store` is `Some`, call `resolve_auth()` and extract the token
-/// 2. If `credential_store` is `None`, return `fallback_api_key`
+/// 1. If `credential_store` is `Some`, resolve via the store (with optional token refresh)
+/// 2. If `credential_store` is `None`, wrap `fallback_api_key` as `AuthMaterial::ApiKey`
 /// 3. If both are `None`, return `None` (provider may work without auth, e.g. Ollama)
-pub fn resolve_provider_auth(
+///
+/// If `refresh_config` is provided and the resolved material is an OAuth token expiring
+/// within 5 minutes, an automatic refresh is attempted before returning.
+pub async fn resolve_provider_auth(
     provider: &str,
     api_key_env: Option<&str>,
     credential_store: Option<&dyn CredentialStore>,
     fallback_api_key: Option<&str>,
-) -> Result<Option<String>, CoreError> {
+    refresh_config: Option<&RefreshConfig>,
+) -> Result<Option<AuthMaterial>, CoreError> {
     // Try credential store first
     if let Some(store) = credential_store {
-        match ucode_auth::resolve_auth(provider, api_key_env, store) {
-            Ok(material) => return Ok(Some(auth_material_to_bearer(&material))),
+        match resolve_auth_with_refresh(provider, api_key_env, store, refresh_config).await {
+            Ok(material) => return Ok(Some(material)),
             Err(ucode_auth::AuthError::MissingCredential { .. })
             | Err(ucode_auth::AuthError::NotFound { .. }) => {
                 // Fall through to fallback_api_key
@@ -42,14 +46,16 @@ pub fn resolve_provider_auth(
 
     // Fallback to stored api_key
     if let Some(key) = fallback_api_key {
-        return Ok(Some(key.to_owned()));
+        return Ok(Some(AuthMaterial::ApiKey {
+            key: key.to_owned(),
+        }));
     }
 
     Ok(None)
 }
 
 /// Extract a bearer token string from auth material.
-fn auth_material_to_bearer(material: &AuthMaterial) -> String {
+pub fn bearer_token(material: &AuthMaterial) -> String {
     match material {
         AuthMaterial::ApiKey { key } => key.clone(),
         AuthMaterial::OAuth { access_token, .. } => access_token.clone(),
@@ -72,8 +78,8 @@ mod tests {
     use super::*;
     use ucode_auth::InMemoryStore;
 
-    #[test]
-    fn resolve_from_store_api_key() {
+    #[tokio::test]
+    async fn resolve_from_store_api_key() {
         let store = InMemoryStore::new();
         store
             .store(
@@ -83,12 +89,14 @@ mod tests {
                 },
             )
             .unwrap();
-        let result = resolve_provider_auth("openai", None, Some(&store), None).unwrap();
-        assert_eq!(result, Some("sk-test".into()));
+        let result = resolve_provider_auth("openai", None, Some(&store), None, None)
+            .await
+            .unwrap();
+        assert!(matches!(result, Some(AuthMaterial::ApiKey { key }) if key == "sk-test"));
     }
 
-    #[test]
-    fn resolve_from_store_oauth() {
+    #[tokio::test]
+    async fn resolve_from_store_oauth() {
         let store = InMemoryStore::new();
         store
             .store(
@@ -100,32 +108,41 @@ mod tests {
                 },
             )
             .unwrap();
-        let result = resolve_provider_auth("copilot", None, Some(&store), None).unwrap();
-        assert_eq!(result, Some("gho_abc".into()));
+        let result = resolve_provider_auth("copilot", None, Some(&store), None, None)
+            .await
+            .unwrap();
+        assert!(
+            matches!(result, Some(AuthMaterial::OAuth { access_token, .. }) if access_token == "gho_abc")
+        );
     }
 
-    #[test]
-    fn resolve_fallback_api_key_when_store_empty() {
+    #[tokio::test]
+    async fn resolve_fallback_api_key_when_store_empty() {
         let store = InMemoryStore::new();
-        let result =
-            resolve_provider_auth("openai", None, Some(&store), Some("sk-fallback")).unwrap();
-        assert_eq!(result, Some("sk-fallback".into()));
+        let result = resolve_provider_auth("openai", None, Some(&store), Some("sk-fallback"), None)
+            .await
+            .unwrap();
+        assert!(matches!(result, Some(AuthMaterial::ApiKey { key }) if key == "sk-fallback"));
     }
 
-    #[test]
-    fn resolve_fallback_api_key_no_store() {
-        let result = resolve_provider_auth("openai", None, None, Some("sk-direct")).unwrap();
-        assert_eq!(result, Some("sk-direct".into()));
+    #[tokio::test]
+    async fn resolve_fallback_api_key_no_store() {
+        let result = resolve_provider_auth("openai", None, None, Some("sk-direct"), None)
+            .await
+            .unwrap();
+        assert!(matches!(result, Some(AuthMaterial::ApiKey { key }) if key == "sk-direct"));
     }
 
-    #[test]
-    fn resolve_none_when_no_store_no_key() {
-        let result = resolve_provider_auth("ollama", None, None, None).unwrap();
+    #[tokio::test]
+    async fn resolve_none_when_no_store_no_key() {
+        let result = resolve_provider_auth("ollama", None, None, None, None)
+            .await
+            .unwrap();
         assert_eq!(result, None);
     }
 
-    #[test]
-    fn resolve_env_var_via_store() {
+    #[tokio::test]
+    async fn resolve_env_var_via_store() {
         let store = InMemoryStore::new();
         store
             .store(
@@ -140,9 +157,11 @@ mod tests {
             Some("UCODE_TEST_NONEXISTENT_ENV_VAR_XYZ"),
             Some(&store),
             None,
+            None,
         )
+        .await
         .unwrap();
-        assert_eq!(result, Some("from-store".into()));
+        assert!(matches!(result, Some(AuthMaterial::ApiKey { key }) if key == "from-store"));
     }
 
     #[test]
@@ -151,7 +170,7 @@ mod tests {
             token: "sess-123".into(),
             expires_at: None,
         };
-        assert_eq!(auth_material_to_bearer(&mat), "sess-123");
+        assert_eq!(bearer_token(&mat), "sess-123");
     }
 
     #[test]
@@ -160,6 +179,6 @@ mod tests {
             env_key: "CUSTOM_KEY".into(),
             token: "wk-tok".into(),
         };
-        assert_eq!(auth_material_to_bearer(&mat), "wk-tok");
+        assert_eq!(bearer_token(&mat), "wk-tok");
     }
 }

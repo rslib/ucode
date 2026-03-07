@@ -333,17 +333,26 @@ impl Provider for OpenAiCompatProvider {
         };
 
         Box::pin(async move {
-            let api_key = crate::auth::resolve_provider_auth(
+            let refresh_cfg = if provider_name == "openai" {
+                Some(ucode_auth::openai_refresh_config())
+            } else {
+                None
+            };
+
+            let auth_material = crate::auth::resolve_provider_auth(
                 &provider_name,
                 api_key_env.as_deref(),
                 credential_store.as_ref().map(|s| s.as_ref()),
                 fallback_api_key.as_deref(),
-            )?;
+                refresh_cfg.as_ref(),
+            )
+            .await?;
 
             let mut request = client.post(&url).header("Content-Type", "application/json");
 
-            if let Some(ref key) = api_key {
-                request = request.header("Authorization", format!("Bearer {key}"));
+            if let Some(ref material) = auth_material {
+                let token = crate::auth::bearer_token(material);
+                request = request.header("Authorization", format!("Bearer {token}"));
             }
 
             for (k, v) in &custom_headers {

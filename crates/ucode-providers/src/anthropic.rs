@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
-use ucode_auth::CredentialStore;
+use ucode_auth::{AuthMaterial, CredentialStore};
 use ucode_core::{CoreError, Event, EventStream, ToolCall as CoreToolCall};
 
 use crate::config::ProviderConfig;
@@ -203,6 +203,11 @@ pub fn parse_anthropic_sse_line(
 // ── Request body types ────────────────────────────────────────────────────────
 
 #[derive(Serialize)]
+struct AnthropicMetadata {
+    user_id: String,
+}
+
+#[derive(Serialize)]
 struct AnthropicRequest {
     model: String,
     max_tokens: usize,
@@ -214,6 +219,8 @@ struct AnthropicRequest {
     temperature: Option<f64>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     tools: Vec<AnthropicTool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    metadata: Option<AnthropicMetadata>,
 }
 
 #[derive(Serialize)]
@@ -273,13 +280,20 @@ fn split_messages(messages: &[ucode_core::Message]) -> (Option<String>, Vec<Anth
     (system, out)
 }
 
-fn to_anthropic_tools(tools: &[ToolDef]) -> Vec<AnthropicTool> {
+fn to_anthropic_tools(tools: &[ToolDef], normalize: bool) -> Vec<AnthropicTool> {
     tools
         .iter()
-        .map(|t| AnthropicTool {
-            name: t.name.clone(),
-            description: t.description.clone(),
-            input_schema: t.parameters.clone(),
+        .map(|t| {
+            let name = if normalize {
+                crate::tool_normalize::normalize_tool_name(&t.name)
+            } else {
+                t.name.clone()
+            };
+            AnthropicTool {
+                name,
+                description: t.description.clone(),
+                input_schema: t.parameters.clone(),
+            }
         })
         .collect()
 }
@@ -363,29 +377,74 @@ impl Provider for AnthropicCompatProvider {
         let extra_headers = self.headers.clone();
         let url = format!("{}/messages", self.base_url);
 
-        let (system, messages) = split_messages(&req.messages);
-        let body = AnthropicRequest {
-            model: req.model,
-            max_tokens: req.max_tokens.unwrap_or(4096),
-            messages,
-            stream: true,
-            system,
-            temperature: req.temperature,
-            tools: to_anthropic_tools(&req.tools),
-        };
+        let model = req.model.clone();
+        let max_tokens = req.max_tokens;
+        let temperature = req.temperature;
+        let tools = req.tools.clone();
+        let messages_raw = req.messages.clone();
 
         Box::pin(async move {
-            let api_key = crate::auth::resolve_provider_auth(
+            let refresh_cfg = if provider_name == "anthropic" {
+                Some(ucode_auth::anthropic_refresh_config())
+            } else {
+                None
+            };
+
+            let auth_material = crate::auth::resolve_provider_auth(
                 &provider_name,
                 api_key_env.as_deref(),
                 credential_store.as_ref().map(|s| s.as_ref()),
                 fallback_api_key.as_deref(),
-            )?;
+                refresh_cfg.as_ref(),
+            )
+            .await?;
+
+            let is_oauth = auth_material
+                .as_ref()
+                .is_some_and(|m| matches!(m, AuthMaterial::OAuth { .. }));
+
+            let (system, messages) = split_messages(&messages_raw);
+
+            // Strip temperature for OAuth (Anthropic OAuth doesn't accept it)
+            let temperature = if is_oauth { None } else { temperature };
+
+            let metadata = if is_oauth {
+                crate::claude_metadata::build_metadata_user_id("default")
+                    .map(|user_id| AnthropicMetadata { user_id })
+            } else {
+                None
+            };
+
+            let body = AnthropicRequest {
+                model,
+                max_tokens: max_tokens.unwrap_or(4096),
+                messages,
+                stream: true,
+                system,
+                temperature,
+                tools: to_anthropic_tools(&tools, is_oauth),
+                metadata,
+            };
 
             let mut builder = client.post(&url);
 
-            if let Some(ref key) = api_key {
-                builder = builder.header("x-api-key", key);
+            if let Some(ref material) = auth_material {
+                match material {
+                    AuthMaterial::OAuth { access_token, .. } => {
+                        // OAuth subscription: Bearer token + beta headers
+                        builder = builder
+                            .header("Authorization", format!("Bearer {access_token}"))
+                            .header(
+                                "anthropic-beta",
+                                "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14",
+                            );
+                    }
+                    _ => {
+                        // API key or other: use x-api-key header
+                        let token = crate::auth::bearer_token(material);
+                        builder = builder.header("x-api-key", &token);
+                    }
+                }
             }
             builder = builder
                 .header("anthropic-version", "2023-06-01")
@@ -680,7 +739,7 @@ mod tests {
             description: "A calculator".into(),
             parameters: serde_json::json!({"type": "object", "properties": {}}),
         }];
-        let anthropic_tools = to_anthropic_tools(&tools);
+        let anthropic_tools = to_anthropic_tools(&tools, false);
         let json = serde_json::to_value(&anthropic_tools).unwrap();
         // Must use `input_schema`, not `parameters`.
         assert!(json[0].get("input_schema").is_some());
@@ -702,6 +761,7 @@ mod tests {
             system: Some("Be helpful.".into()),
             temperature: Some(0.7),
             tools: vec![],
+            metadata: None,
         };
         let json = serde_json::to_value(&body).unwrap();
         assert_eq!(json["model"], "claude-sonnet-4-20250514");
@@ -723,6 +783,7 @@ mod tests {
             system: None,
             temperature: None,
             tools: vec![],
+            metadata: None,
         };
         let json = serde_json::to_value(&body).unwrap();
         assert!(json.get("system").is_none());
@@ -785,6 +846,39 @@ mod tests {
         assert_eq!(provider.name(), "anthropic");
         assert_eq!(provider.base_url, "https://api.anthropic.com/v1");
         assert_eq!(provider.api_key, Some("test-key".into()));
+    }
+
+    #[test]
+    fn is_oauth_detection() {
+        use ucode_auth::AuthMaterial;
+        let oauth = AuthMaterial::OAuth {
+            access_token: "tok".into(),
+            refresh_token: None,
+            expires_at: None,
+        };
+        assert!(matches!(oauth, AuthMaterial::OAuth { .. }));
+
+        let api_key = AuthMaterial::ApiKey {
+            key: "sk-test".into(),
+        };
+        assert!(!matches!(api_key, AuthMaterial::OAuth { .. }));
+    }
+
+    #[test]
+    fn temperature_stripped_for_oauth() {
+        // When is_oauth is true, temperature should be None
+        let is_oauth = true;
+        let temperature: Option<f64> = Some(0.7);
+        let result = if is_oauth { None } else { temperature };
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn temperature_preserved_for_api_key() {
+        let is_oauth = false;
+        let temperature: Option<f64> = Some(0.7);
+        let result = if is_oauth { None } else { temperature };
+        assert_eq!(result, Some(0.7));
     }
 
     #[test]

@@ -292,20 +292,23 @@ impl Provider for OllamaProvider {
         };
 
         Box::pin(async move {
-            let api_key = crate::auth::resolve_provider_auth(
+            let auth_material = crate::auth::resolve_provider_auth(
                 &provider_name,
                 api_key_env.as_deref(),
                 credential_store.as_ref().map(|s| s.as_ref()),
                 fallback_api_key.as_deref(),
-            )?;
+                None, // refresh_config — wired per-provider in later tasks
+            )
+            .await?;
 
             let mut request = client
                 .post(&url)
                 .header("Content-Type", "application/json")
                 .json(&body);
 
-            if let Some(ref key) = api_key {
-                request = request.header("Authorization", format!("Bearer {key}"));
+            if let Some(ref material) = auth_material {
+                let token = crate::auth::bearer_token(material);
+                request = request.header("Authorization", format!("Bearer {token}"));
             }
 
             for (key, value) in &extra_headers {

@@ -318,22 +318,26 @@ impl Provider for GeminiProvider {
         };
 
         Box::pin(async move {
-            let api_key = crate::auth::resolve_provider_auth(
+            let auth_material = crate::auth::resolve_provider_auth(
                 &provider_name,
                 api_key_env.as_deref(),
                 credential_store.as_ref().map(|s| s.as_ref()),
                 fallback_api_key.as_deref(),
-            )?;
+                None, // refresh_config — wired per-provider in later tasks
+            )
+            .await?;
 
             let mut url = base_url;
-            if let Some(ref key) = api_key {
+            if let Some(ref material) = auth_material {
+                let key = crate::auth::bearer_token(material);
                 url.push_str(&format!("&key={key}"));
             }
 
             let mut request = client.post(&url).header("Content-Type", "application/json");
 
-            if let Some(ref key) = api_key {
-                request = request.header("x-goog-api-key", key);
+            if let Some(ref material) = auth_material {
+                let key = crate::auth::bearer_token(material);
+                request = request.header("x-goog-api-key", &key);
             }
 
             for (k, v) in &custom_headers {

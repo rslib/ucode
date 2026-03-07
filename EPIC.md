@@ -395,6 +395,22 @@ CLI commands:
 * Missing env var for a provider skips it cleanly with log message.
   **Owner:** Core/Auth
 
+### ISSUE 0208 — OAuth request-side wiring (ucode-providers + ucode-auth) [DONE]
+
+**Goal:** Wire OAuth credentials through provider adapters with correct headers, tool normalization, metadata injection, and automatic token refresh.
+**Scope/Notes:**
+
+* `resolve_provider_auth()` returns `AuthMaterial` (not flat string) + async with auto-refresh
+* Anthropic OAuth: Bearer auth + beta headers, temperature stripping, tool PascalCase normalization, metadata.user_id injection from `~/.claude.json`
+* OpenAI OAuth: JWT account ID extraction (prep for Codex), auto-refresh
+* All adapters handle `AuthMaterial` variants correctly
+  **Acceptance tests:**
+* Anthropic OAuth credential produces Bearer + beta headers (not x-api-key)
+* Tool names normalized to PascalCase for OAuth requests
+* JWT decoder extracts account ID from OpenAI tokens
+* Token refresh triggered automatically for expiring OAuth tokens
+  **Owner:** Auth/Providers
+
 ---
 
 ## EPIC 3 — Provider adapters (streaming + tool calls)

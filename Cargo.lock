@@ -5040,8 +5040,10 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
+ "ucode-agent",
  "ucode-auth",
  "ucode-core",
+ "ucode-tools",
  "unicode-width 0.2.0",
 ]
 

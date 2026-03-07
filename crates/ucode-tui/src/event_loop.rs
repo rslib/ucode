@@ -1807,6 +1807,51 @@ fn is_leap(year: u32) -> bool {
 }
 
 // ---------------------------------------------------------------------------
+// Agent event bridge
+// ---------------------------------------------------------------------------
+
+/// Convert an [`ucode_agent::AgentEvent`] to a [`TuiEvent`] and send it
+/// through the TUI channel.
+pub fn bridge_agent_event(
+    event: ucode_agent::AgentEvent,
+    tx: &tokio::sync::mpsc::UnboundedSender<TuiEvent>,
+) {
+    use ucode_agent::AgentEvent;
+    let tui_event = match event {
+        AgentEvent::Token(tok) => TuiEvent::StreamToken(tok),
+        AgentEvent::StreamDone => TuiEvent::StreamDone,
+        AgentEvent::ToolCallStarted { name } => TuiEvent::ToolCallStarted { name },
+        AgentEvent::ToolCallCompleted {
+            name,
+            success,
+            duration_ms,
+            output,
+        } => {
+            let status = if success {
+                crate::app::ToolCallStatus::Success
+            } else {
+                crate::app::ToolCallStatus::Failed
+            };
+            TuiEvent::ToolCallCompleted {
+                index: 0,
+                status,
+                duration_ms: Some(duration_ms),
+                summary: Some(name),
+                thinking: None,
+                output,
+            }
+        }
+        AgentEvent::SystemMessage(msg) => TuiEvent::SystemMessage(msg),
+        AgentEvent::Error(msg) => TuiEvent::Toast {
+            level: crate::components::toast::ToastLevel::Error,
+            title: "Agent Error".into(),
+            body: Some(msg),
+        },
+    };
+    let _ = tx.send(tui_event);
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 

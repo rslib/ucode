@@ -11,9 +11,11 @@ futures-util = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
 unicode-width = { workspace = true }
-ucode-core = { version = "0.1.0", path = "../ucode-core" }
+ucode-core = { workspace = true }
 pulldown-cmark = { version = "0.13.1", default-features = false }
-ucode-auth = { version = "0.1.0", path = "../ucode-auth" }
+ucode-auth = { workspace = true }
+ucode-agent = { workspace = true }
+ucode-tools = { workspace = true }
 reqwest.workspace = true
 
 [dev-dependencies]

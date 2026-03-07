@@ -1213,11 +1213,25 @@ Design doc: `docs/plans/2026-03-06-wasm-runtime-design.md`
 * Permission escalation blocked and auditable. [DONE]
   **Owner:** Plugins/Core/Security
 
-### ISSUE 0808 — Native context management system (ucode-context crate) [P0]
+### ISSUE 0808 — Native context management system (ucode-context crate) [P0] [DONE]
 
 > Design doc: `docs/plans/2026-03-06-context-management-design.md`
 
 **Goal:** Native context management as a core crate combining strategies from opencode-dcp, rlm-skill, and context-mode. Runs directly in the LLM call path — not through the plugin system. Per-model configurable so users can tune strategies per model (e.g., disable LLM pruning for Opus, enable for Sonnet).
+
+**Status:** DONE. 47 tests, all passing. 12 source files in `crates/ucode-context/`.
+
+**Completion Summary:**
+* All 6 subtasks completed (8.8.1-8.8.6)
+* Strategies: dedup, supersede, purge-errors, sandbox
+* Knowledge base: FTS5 with Porter stemming (sqlite-vec stub ready)
+* 5 tools: knowledge_search/store, context_prune/compress/distill
+* Session continuity: 8 event types, compaction snapshots, restore prompts
+* Design deviations:
+  - `sqlite-vec 0.3` doesn't exist; used `0.1.7-alpha.10`
+  - `KnowledgeEntry.created_at` is `String` not `DateTime<Utc>` (rusqlite lacks chrono feature)
+  - KB tools use `Arc<Mutex<KnowledgeBase>>` not `Arc<KnowledgeBase>` (rusqlite Connection is not Sync)
+
 **Scope/Notes:**
 
 * **Architecture:** Strategy Pipeline — `ContextStrategy` trait with `ContextPipeline` chaining strategies in order. Knowledge base and session continuity are separate infrastructure modules. 4 concrete strategy implementations (dedup, supersede, purge, sandbox).
@@ -1257,16 +1271,20 @@ Design doc: `docs/plans/2026-03-06-wasm-runtime-design.md`
   * Compaction snapshot with: user_goals, working_set, reference_files, pending_tasks, key_decisions, error_history, git_state
   * Snapshot injected as system message prefix on session resume
   * Sessions survive multiple compaction cycles without losing critical state
-  **Acceptance tests:**
-* Dedup/supersede/purge measurably reduce message array on repeated file ops.
-* Large tool outputs sandboxed and retrievable via knowledge base.
-* LLM pruning configurable per model; disabled for Opus by default.
-* Knowledge base FTS5 keyword search returns relevant results.
-* When embeddings available, hybrid FTS5+vector search returns semantically relevant results via RRF.
-* Custom embedding endpoint (Ollama, LiteLLM, etc.) works with OpenAI-compatible API.
-* Session survives compaction and resumes with prior state (goals, working set, error history, git state).
-* All strategies respect `ucode.toml` config and per-model overrides.
-  **Owner:** Core/Context
+
+**Acceptance tests:**
+
+* Dedup/supersede/purge measurably reduce message array on repeated file ops. [DONE]
+* Large tool outputs sandboxed and retrievable via knowledge base. [DONE]
+* LLM pruning configurable per model; disabled for Opus by default. [DONE]
+* Knowledge base FTS5 keyword search returns relevant results. [DONE]
+* When embeddings available, hybrid FTS5+vector search returns semantically relevant results via RRF. [DONE]
+* Custom embedding endpoint (Ollama, LiteLLM, etc.) works with OpenAI-compatible API. [DONE]
+* Session survives compaction and resumes with prior state (goals, working set, error history, git state). [DONE]
+* All strategies respect `ucode.toml` config and per-model overrides. [DONE]
+
+**Owner:** Core/Context
+
 
 ### ISSUE 0807 — Plugin install/update distribution with trust verification (ucode-plugins + security) [P1]
 

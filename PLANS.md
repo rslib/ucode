@@ -1210,7 +1210,7 @@ the actual context-management strategies on top.
 * 20 typed WIT category packages (19 existing + `hooks-transform`) provide compile-time
   safety at the WASM boundary. [DONE - 8.6.2]
 
-### Task 8.8 Native context management system (ucode-context crate) [P0]
+### Task 8.8 Native context management system (ucode-context crate) [P0] [DONE]
 
 > Design doc: `docs/plans/2026-03-06-context-management-design.md`
 
@@ -1228,7 +1228,20 @@ message rewrites. The knowledge base is core infrastructure. Session continuity 
 host concern. Routing these through WASM plugin boundaries adds latency and complexity for no
 benefit. External plugins (Task 8.6) can still hook into the system for custom strategies.
 
-**8.8.1 Per-model context management configuration**
+**Status:** DONE. 47 tests, all passing. 12 source files in `crates/ucode-context/`.
+
+**Completion Summary:**
+* All 6 subtasks completed (8.8.1-8.8.6)
+* Strategies: dedup, supersede, purge-errors, sandbox
+* Knowledge base: FTS5 with Porter stemming (sqlite-vec stub ready)
+* 5 tools: knowledge_search/store, context_prune/compress/distill
+* Session continuity: 8 event types, compaction snapshots, restore prompts
+* Design deviations:
+  - `sqlite-vec 0.3` doesn't exist; used `0.1.7-alpha.10`
+  - `KnowledgeEntry.created_at` is `String` not `DateTime<Utc>` (rusqlite lacks chrono feature)
+  - KB tools use `Arc<Mutex<KnowledgeBase>>` not `Arc<KnowledgeBase>` (rusqlite Connection is not Sync)
+
+**8.8.1 Per-model context management configuration** [DONE]
 
 * Context management is configurable per model/provider in `ucode.toml`:
   ```toml
@@ -1273,7 +1286,7 @@ benefit. External plugins (Task 8.6) can still hook into the system for custom s
 * `model = "auto"` uses the session's current model. Can be overridden to use a cheaper model
   (e.g., use Haiku for pruning even when session runs on Opus).
 
-**8.8.2 Automatic zero-cost strategies (from opencode-dcp)**
+**8.8.2 Automatic zero-cost strategies (from opencode-dcp)** [DONE]
 
 * **Deduplication:** Remove duplicate tool reads of the same file within a session.
   Track file content hashes (`DefaultHasher`); on duplicate, replace with
@@ -1287,7 +1300,7 @@ benefit. External plugins (Task 8.6) can still hook into the system for custom s
 * All strategies implement `ContextStrategy` trait and run in `ContextPipeline` before
   each LLM call. Zero LLM cost — pure algorithmic message rewriting in Rust.
 
-**8.8.3 Sandbox execution (from rlm-skill / context-mode)**
+**8.8.3 Sandbox execution (from rlm-skill / context-mode)** [DONE]
 
 * `SandboxInterceptor` implements `ContextStrategy`. Runs after dedup/supersede/purge
   (so we don't sandbox content that would have been deduped anyway).
@@ -1297,7 +1310,7 @@ benefit. External plugins (Task 8.6) can still hook into the system for custom s
   * Replaced in context with metadata summary (line count, content type, first/last 3 lines)
 * LLM sees summary + can retrieve full content via `knowledge_search` tool.
 
-**8.8.4 Smart LLM-driven pruning tools (from opencode-dcp, improved)**
+**8.8.4 Smart LLM-driven pruning tools (from opencode-dcp, improved)** [DONE]
 
 * Register 5 built-in tools the LLM can call to manage its own context:
   * `context_distill` — Summarize a range of messages into a compact digest
@@ -1314,7 +1327,7 @@ benefit. External plugins (Task 8.6) can still hook into the system for custom s
   (e.g., Haiku summarizes, Opus keeps working). Initial implementation: `"auto"` only.
 * Tools are registered as native built-in tools (not via plugin tool registration).
 
-**8.8.5 Hybrid knowledge base — FTS5 + sqlite-vec (from rlm-skill / context-mode)**
+**8.8.5 Hybrid knowledge base — FTS5 + sqlite-vec (from rlm-skill / context-mode)** [DONE]
 
 * **Dual search** in one SQLite database per session (`{session_dir}/knowledge.db`):
   * **FTS5** (always available): keyword search with Porter stemming + BM25 ranking.
@@ -1333,7 +1346,7 @@ benefit. External plugins (Task 8.6) can still hook into the system for custom s
   results are available: `RRF(doc) = 1/(k + rank_fts5) + 1/(k + rank_vec)`, k=60.
 * `knowledge_search` and `knowledge_store` tools registered for LLM.
 
-**8.8.6 Session continuity (from context-mode)**
+**8.8.6 Session continuity (from context-mode)** [DONE]
 
 * Capture significant events after tool use. Event types:
   * `GoalEstablished` — user stated or refined their goal
@@ -1357,7 +1370,7 @@ benefit. External plugins (Task 8.6) can still hook into the system for custom s
 * On session resume, snapshot injected as system message prefix with structured
   context restoration.
 
-**Acceptance**
+**Acceptance** [DONE]
 
 * Dedup/supersede/purge reduce message array size measurably on repeated file operations.
 * Large tool outputs are sandboxed and retrievable via knowledge base search.
@@ -1370,6 +1383,7 @@ benefit. External plugins (Task 8.6) can still hook into the system for custom s
 * Session survives compaction and resumes with prior state context including goals,
   working set, error history, and git state.
 * All strategies respect `ucode.toml` configuration and per-model overrides.
+
 
 ### Task 8.7 Remote plugin install/update distribution with trust verification (ucode-plugins + security) [P1]
 

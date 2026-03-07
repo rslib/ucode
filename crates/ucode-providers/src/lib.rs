@@ -12,5 +12,8 @@ pub use anthropic::{AnthropicProvider, parse_anthropic_sse_line};
 pub use config::{AdapterKind, ProviderConfig, ProvidersTable};
 pub use mock::MockProvider;
 pub use ollama::OllamaProvider;
-pub use openai::{OpenaiProvider, parse_sse_line};
+pub use openai::{OpenAiCompatProvider, parse_sse_line};
+
+/// Backward-compat alias.
+pub type OpenaiProvider = OpenAiCompatProvider;
 pub use provider::{Capabilities, ChatRequest, Provider, ProviderFuture, ToolDef};

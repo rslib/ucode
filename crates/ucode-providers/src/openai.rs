@@ -1,7 +1,10 @@
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 
 use ucode_core::{CoreError, Event, EventStream, ToolCall as CoreToolCall};
 
+use crate::config::ProviderConfig;
 use crate::provider::{Capabilities, ChatRequest, Provider, ProviderFuture, ToolDef};
 use crate::sse::stream_lines;
 
@@ -229,32 +232,53 @@ fn to_openai_tools(tools: &[ToolDef]) -> Vec<OpenAiTool> {
 // ── Provider ──────────────────────────────────────────────────────────────────
 
 /// OpenAI-compatible chat provider.
-pub struct OpenaiProvider {
+///
+/// Works with OpenAI, Groq, Together, Fireworks, DeepSeek, Mistral,
+/// OpenRouter, vLLM, LiteLLM, Azure OpenAI, and any endpoint that
+/// implements the `/v1/chat/completions` streaming SSE protocol.
+pub struct OpenAiCompatProvider {
     client: reqwest::Client,
-    api_key: String,
+    /// Provider instance name (from TOML key, e.g., "groq", "openai").
+    provider_name: String,
+    api_key: Option<String>,
     base_url: String,
+    /// Extra headers sent with every request.
+    headers: HashMap<String, String>,
 }
 
-impl OpenaiProvider {
-    /// Create a new OpenAI provider with the given API key.
-    pub fn new(api_key: String) -> Self {
+impl OpenAiCompatProvider {
+    /// Create from a provider config and resolved API key.
+    pub fn from_config(name: &str, config: &ProviderConfig, api_key: Option<String>) -> Self {
         Self {
             client: reqwest::Client::new(),
+            provider_name: name.to_owned(),
             api_key,
-            base_url: "https://api.openai.com/v1".into(),
+            base_url: config.base_url().to_owned(),
+            headers: config.headers.clone(),
         }
     }
 
-    /// Override the base URL (for proxies, Azure, etc.).
+    /// Create with just an API key (backward compat, defaults to OpenAI endpoint).
+    pub fn new(api_key: String) -> Self {
+        Self {
+            client: reqwest::Client::new(),
+            provider_name: "openai".into(),
+            api_key: Some(api_key),
+            base_url: "https://api.openai.com/v1".into(),
+            headers: HashMap::new(),
+        }
+    }
+
+    /// Override the base URL.
     pub fn with_base_url(mut self, url: String) -> Self {
         self.base_url = url;
         self
     }
 }
 
-impl Provider for OpenaiProvider {
+impl Provider for OpenAiCompatProvider {
     fn name(&self) -> &str {
-        "openai"
+        &self.provider_name
     }
 
     fn capabilities(&self) -> Capabilities {
@@ -272,6 +296,8 @@ impl Provider for OpenaiProvider {
         let client = self.client.clone();
         let api_key = self.api_key.clone();
         let url = format!("{}/chat/completions", self.base_url);
+        let provider_name = self.provider_name.clone();
+        let custom_headers = self.headers.clone();
 
         let body = OpenAiRequest {
             model: req.model,
@@ -290,15 +316,22 @@ impl Provider for OpenaiProvider {
         };
 
         Box::pin(async move {
-            let resp = client
-                .post(&url)
-                .header("Authorization", format!("Bearer {api_key}"))
-                .header("Content-Type", "application/json")
+            let mut request = client.post(&url).header("Content-Type", "application/json");
+
+            if let Some(ref key) = api_key {
+                request = request.header("Authorization", format!("Bearer {key}"));
+            }
+
+            for (k, v) in &custom_headers {
+                request = request.header(k.as_str(), v.as_str());
+            }
+
+            let resp = request
                 .json(&body)
                 .send()
                 .await
                 .map_err(|e| CoreError::Provider {
-                    provider: "openai".into(),
+                    provider: provider_name.clone(),
                     message: format!("HTTP request failed: {e}"),
                 })?;
 
@@ -307,23 +340,94 @@ impl Provider for OpenaiProvider {
                 let body_text = resp.text().await.unwrap_or_default();
                 if status.as_u16() == 401 || status.as_u16() == 403 {
                     return Err(CoreError::Auth {
-                        provider: "openai".into(),
+                        provider: provider_name,
                         auth_kind: ucode_core::AuthErrorKind::Invalid,
                     });
                 }
                 return Err(CoreError::Provider {
-                    provider: "openai".into(),
+                    provider: provider_name,
                     message: format!("HTTP {status}: {body_text}"),
                 });
             }
 
-            let byte_stream = resp.bytes_stream();
-
             Ok(stream_lines(
-                byte_stream,
+                resp.bytes_stream(),
                 ToolCallAccumulator::default(),
                 parse_sse_line,
             ))
         })
+    }
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{AdapterKind, ProviderConfig};
+    use std::collections::HashMap;
+
+    #[test]
+    fn from_config_uses_provider_name() {
+        let config = ProviderConfig {
+            adapter: AdapterKind::Openai,
+            base_url: Some("https://api.groq.com/openai/v1".into()),
+            api_key_env: None,
+            headers: HashMap::new(),
+        };
+        let provider = OpenAiCompatProvider::from_config("groq", &config, Some("key".into()));
+        assert_eq!(provider.name(), "groq");
+        assert_eq!(provider.base_url, "https://api.groq.com/openai/v1");
+    }
+
+    #[test]
+    fn from_config_with_custom_headers() {
+        let mut headers = HashMap::new();
+        headers.insert("api-version".into(), "2024-10-21".into());
+        let config = ProviderConfig {
+            adapter: AdapterKind::Openai,
+            base_url: Some("https://azure.example.com".into()),
+            api_key_env: None,
+            headers,
+        };
+        let provider = OpenAiCompatProvider::from_config("azure", &config, Some("key".into()));
+        assert_eq!(provider.headers.get("api-version").unwrap(), "2024-10-21");
+    }
+
+    #[test]
+    fn new_defaults_to_openai() {
+        let provider = OpenAiCompatProvider::new("test-key".into());
+        assert_eq!(provider.name(), "openai");
+        assert_eq!(provider.base_url, "https://api.openai.com/v1");
+        assert_eq!(provider.api_key, Some("test-key".into()));
+    }
+
+    #[test]
+    fn no_api_key_allowed() {
+        let config = ProviderConfig {
+            adapter: AdapterKind::Openai,
+            base_url: None,
+            api_key_env: None,
+            headers: HashMap::new(),
+        };
+        let provider = OpenAiCompatProvider::from_config("local-vllm", &config, None);
+        assert!(provider.api_key.is_none());
+    }
+
+    #[test]
+    fn with_base_url_overrides() {
+        let provider =
+            OpenAiCompatProvider::new("key".into()).with_base_url("http://localhost:8080".into());
+        assert_eq!(provider.base_url, "http://localhost:8080");
+    }
+
+    #[test]
+    fn capabilities_unchanged() {
+        let caps = OpenAiCompatProvider::new("key".into()).capabilities();
+        assert!(caps.tool_calls);
+        assert!(caps.json_mode);
+        assert_eq!(caps.max_context, 128_000);
+        assert_eq!(caps.max_output, 16_384);
+        assert!(caps.streaming);
     }
 }

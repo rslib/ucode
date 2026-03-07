@@ -274,3 +274,138 @@ pub(crate) fn material_kind(mat: &AuthMaterial) -> &'static str {
         AuthMaterial::AwsCredentials { .. } => "aws_credentials",
     }
 }
+
+// ── AuthMaterial expiry helpers ───────────────────────────────────────────────
+
+impl AuthMaterial {
+    /// Returns the expiry timestamp string if this material type has one.
+    pub fn expires_at(&self) -> Option<&str> {
+        match self {
+            Self::OAuth { expires_at, .. } => expires_at.as_deref(),
+            Self::SessionToken { expires_at, .. } => expires_at.as_deref(),
+            _ => None,
+        }
+    }
+
+    /// Returns true if the token has expired (past the expiry time).
+    /// Returns false if there is no expiry or the timestamp can't be parsed.
+    pub fn is_expired(&self) -> bool {
+        self.expires_at()
+            .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+            .is_some_and(|exp| exp <= chrono::Utc::now())
+    }
+
+    /// Returns true if the token expires within the given duration.
+    /// Returns false if there is no expiry or the timestamp can't be parsed.
+    pub fn expires_within(&self, duration: chrono::Duration) -> bool {
+        self.expires_at()
+            .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+            .is_some_and(|exp| exp <= chrono::Utc::now() + duration)
+    }
+
+    /// Returns the refresh token if this is an OAuth credential.
+    pub fn refresh_token(&self) -> Option<&str> {
+        match self {
+            Self::OAuth { refresh_token, .. } => refresh_token.as_deref(),
+            _ => None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn expires_at_returns_oauth_expiry() {
+        let mat = AuthMaterial::OAuth {
+            access_token: "tok".into(),
+            refresh_token: None,
+            expires_at: Some("2026-01-01T00:00:00Z".into()),
+        };
+        assert_eq!(mat.expires_at(), Some("2026-01-01T00:00:00Z"));
+    }
+
+    #[test]
+    fn expires_at_returns_session_expiry() {
+        let mat = AuthMaterial::SessionToken {
+            token: "tok".into(),
+            expires_at: Some("2026-06-01T00:00:00Z".into()),
+        };
+        assert_eq!(mat.expires_at(), Some("2026-06-01T00:00:00Z"));
+    }
+
+    #[test]
+    fn expires_at_returns_none_for_api_key() {
+        let mat = AuthMaterial::ApiKey { key: "k".into() };
+        assert_eq!(mat.expires_at(), None);
+    }
+
+    #[test]
+    fn is_expired_past_date() {
+        let mat = AuthMaterial::OAuth {
+            access_token: "tok".into(),
+            refresh_token: None,
+            expires_at: Some("2020-01-01T00:00:00Z".into()),
+        };
+        assert!(mat.is_expired());
+    }
+
+    #[test]
+    fn is_expired_future_date() {
+        let mat = AuthMaterial::OAuth {
+            access_token: "tok".into(),
+            refresh_token: None,
+            expires_at: Some("2099-01-01T00:00:00Z".into()),
+        };
+        assert!(!mat.is_expired());
+    }
+
+    #[test]
+    fn is_expired_no_expiry() {
+        let mat = AuthMaterial::OAuth {
+            access_token: "tok".into(),
+            refresh_token: None,
+            expires_at: None,
+        };
+        assert!(!mat.is_expired());
+    }
+
+    #[test]
+    fn expires_within_soon() {
+        let soon = (chrono::Utc::now() + chrono::Duration::seconds(60)).to_rfc3339();
+        let mat = AuthMaterial::OAuth {
+            access_token: "tok".into(),
+            refresh_token: None,
+            expires_at: Some(soon),
+        };
+        assert!(mat.expires_within(chrono::Duration::minutes(5)));
+    }
+
+    #[test]
+    fn expires_within_not_soon() {
+        let later = (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
+        let mat = AuthMaterial::OAuth {
+            access_token: "tok".into(),
+            refresh_token: None,
+            expires_at: Some(later),
+        };
+        assert!(!mat.expires_within(chrono::Duration::minutes(5)));
+    }
+
+    #[test]
+    fn refresh_token_present() {
+        let mat = AuthMaterial::OAuth {
+            access_token: "tok".into(),
+            refresh_token: Some("ref".into()),
+            expires_at: None,
+        };
+        assert_eq!(mat.refresh_token(), Some("ref"));
+    }
+
+    #[test]
+    fn refresh_token_absent_on_api_key() {
+        let mat = AuthMaterial::ApiKey { key: "k".into() };
+        assert_eq!(mat.refresh_token(), None);
+    }
+}

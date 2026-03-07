@@ -30,4 +30,7 @@ pub enum AuthError {
 
     #[error("HTTP request failed: {message}")]
     Http { message: String },
+
+    #[error("auth token expired for provider '{provider}': {detail}")]
+    AuthExpired { provider: String, detail: String },
 }

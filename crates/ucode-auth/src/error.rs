@@ -18,4 +18,16 @@ pub enum AuthError {
 
     #[error("missing credential for provider '{provider}': {detail}")]
     MissingCredential { provider: String, detail: String },
+
+    #[error("auth flow error: {message}")]
+    AuthFlow { message: String },
+
+    #[error("device code flow timed out")]
+    DeviceCodeTimeout,
+
+    #[error("authorization denied by user")]
+    AuthDenied,
+
+    #[error("HTTP request failed: {message}")]
+    Http { message: String },
 }

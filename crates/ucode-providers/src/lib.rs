@@ -2,6 +2,7 @@
 //! (OpenAI-compat, Anthropic-compat, Ollama native, Gemini).
 
 pub mod anthropic;
+pub mod auth;
 pub mod config;
 pub mod factory;
 pub mod gemini;

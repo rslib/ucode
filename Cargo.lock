@@ -4970,6 +4970,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "toml 1.0.6+spec-1.1.0",
+ "ucode-auth",
  "ucode-core",
 ]
 

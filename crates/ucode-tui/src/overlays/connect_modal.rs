@@ -326,6 +326,22 @@ impl ConnectModalState {
         }
     }
 
+    /// Extract the API key input and provider info.
+    /// Returns `(provider_id, api_key)` if in `ApiKeyEntry` phase and input is non-empty.
+    pub fn take_api_key(&self) -> Option<(String, String)> {
+        if let ConnectPhase::ApiKeyEntry {
+            provider_id, input, ..
+        } = &self.phase
+        {
+            if input.is_empty() {
+                return None;
+            }
+            Some((provider_id.clone(), input.clone()))
+        } else {
+            None
+        }
+    }
+
     /// Extract the display name from phases that have one.
     pub fn phase_display_name(&self) -> Option<String> {
         match &self.phase {
@@ -1234,6 +1250,27 @@ mod tests {
             }
             _ => panic!("expected ApiKeyEntry"),
         }
+    }
+
+    #[test]
+    fn test_take_api_key() {
+        let mut state = ConnectModalState::new();
+        state.open(&HashMap::new());
+        let groq = state
+            .providers
+            .iter()
+            .find(|p| p.id == "groq")
+            .unwrap()
+            .clone();
+        state.select_provider(&groq);
+        assert!(state.take_api_key().is_none()); // empty input
+        state.api_key_insert_char('s');
+        state.api_key_insert_char('k');
+        let result = state.take_api_key();
+        assert!(result.is_some());
+        let (pid, key) = result.unwrap();
+        assert_eq!(pid, "groq");
+        assert_eq!(key, "sk");
     }
 
     // -- widget render smoke tests ------------------------------------------

@@ -87,6 +87,23 @@ pub enum TuiEvent {
     AuthExpired {
         provider: String,
     },
+    AuthCompleted {
+        provider: String,
+    },
+    AuthFailed {
+        provider: String,
+        error: String,
+    },
+    VerifyResult {
+        provider: String,
+        success: bool,
+        message: Option<String>,
+    },
+    DeviceCodeReady {
+        provider: String,
+        user_code: String,
+        verification_uri: String,
+    },
     Quit,
 }
 
@@ -487,7 +504,34 @@ fn handle_terminal_event(
                             app.mark_dirty();
                         }
                         crossterm::event::KeyCode::Enter => {
-                            // Task 6 will handle submission.
+                            if let Some((provider_id, api_key)) = app.connect_modal.take_api_key() {
+                                use ucode_auth::CredentialStore as _;
+                                let store = ucode_auth::KeyringStore::new();
+                                let material = ucode_auth::AuthMaterial::ApiKey { key: api_key };
+                                match store.store(&provider_id, &material) {
+                                    Ok(()) => {
+                                        let display = app
+                                            .connect_modal
+                                            .phase_display_name()
+                                            .unwrap_or(provider_id.clone());
+                                        app.connect_modal.close();
+                                        app.focus = FocusTarget::Input;
+                                        app.toast(
+                                            crate::components::toast::ToastLevel::Info,
+                                            format!("{display} connected"),
+                                        );
+                                    }
+                                    Err(e) => {
+                                        app.connect_modal.close();
+                                        app.focus = FocusTarget::Input;
+                                        app.toast(
+                                            crate::components::toast::ToastLevel::Error,
+                                            format!("Failed to store key: {e}"),
+                                        );
+                                    }
+                                }
+                                app.mark_dirty();
+                            }
                         }
                         crossterm::event::KeyCode::Backspace => {
                             app.connect_modal.api_key_delete_char();
@@ -1219,6 +1263,64 @@ fn handle_tui_event(event: TuiEvent, app: &mut AppState) -> bool {
         }
         TuiEvent::AuthExpired { provider } => {
             app.toast(ToastLevel::Warning, format!("Auth expired: {provider}"));
+        }
+        TuiEvent::AuthCompleted { provider } => {
+            let display = provider.clone();
+            app.connect_modal.phase = ConnectPhase::Verifying {
+                provider_id: provider,
+                display_name: display,
+            };
+            app.mark_dirty();
+        }
+        TuiEvent::AuthFailed { provider, error } => {
+            app.connect_modal.close();
+            app.focus = FocusTarget::Input;
+            app.toast(
+                crate::components::toast::ToastLevel::Error,
+                format!("{provider} auth failed: {error}"),
+            );
+        }
+        TuiEvent::VerifyResult {
+            provider,
+            success,
+            message,
+        } => {
+            app.connect_modal.close();
+            app.focus = FocusTarget::Input;
+            if success {
+                app.toast(
+                    crate::components::toast::ToastLevel::Info,
+                    format!("{provider} connected"),
+                );
+            } else {
+                let msg = message.unwrap_or_default();
+                app.toast_with_body(
+                    crate::components::toast::ToastLevel::Warning,
+                    format!("{provider} connected"),
+                    format!("Verification failed: {msg}"),
+                );
+            }
+        }
+        TuiEvent::DeviceCodeReady {
+            provider,
+            user_code,
+            verification_uri,
+        } => {
+            if let ConnectPhase::DeviceCode {
+                provider_id,
+                display_name,
+                ..
+            } = &app.connect_modal.phase
+                && *provider_id == provider
+            {
+                app.connect_modal.phase = ConnectPhase::DeviceCode {
+                    provider_id: provider_id.clone(),
+                    display_name: display_name.clone(),
+                    user_code,
+                    verification_uri,
+                };
+                app.mark_dirty();
+            }
         }
         TuiEvent::Quit => return true,
     }

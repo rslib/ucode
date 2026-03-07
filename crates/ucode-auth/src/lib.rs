@@ -5,6 +5,7 @@ pub mod credential;
 pub mod error;
 pub mod file_store;
 pub mod flows;
+pub mod providers;
 pub mod resolve;
 
 pub use chain_store::ChainStore;
@@ -18,5 +19,8 @@ pub use flows::{
     browser_oauth::{BrowserOAuthConfig, browser_oauth_authorize},
     device_code::{DeviceCodeConfig, DeviceCodePending, poll_for_token, request_device_code},
     wellknown::wellknown_authorize,
+};
+pub use providers::{
+    AuthMethod, ProviderAuthInfo, github_copilot_device_config, provider_auth_info,
 };
 pub use resolve::resolve_auth;

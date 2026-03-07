@@ -254,7 +254,7 @@ pub async fn run_event_loop(
             maybe_tui_event = event_rx.recv() => {
                 match maybe_tui_event {
                     Some(tui_event) => {
-                        if handle_tui_event(tui_event, app) {
+                        if handle_tui_event(tui_event, app, &event_tx) {
                             break;
                         }
                     }
@@ -667,12 +667,21 @@ fn handle_terminal_event(
                                             .connect_modal
                                             .phase_display_name()
                                             .unwrap_or(provider_id.clone());
-                                        app.connect_modal.close();
-                                        app.focus = FocusTarget::Input;
-                                        app.toast(
-                                            crate::components::toast::ToastLevel::Info,
-                                            format!("{display} connected"),
-                                        );
+                                        app.connect_modal.phase = ConnectPhase::Verifying {
+                                            provider_id: provider_id.clone(),
+                                            display_name: display,
+                                        };
+                                        app.mark_dirty();
+
+                                        let tx = event_tx.clone();
+                                        tokio::spawn(async move {
+                                            let result = verify_provider(&provider_id).await;
+                                            let _ = tx.send(TuiEvent::VerifyResult {
+                                                provider: provider_id,
+                                                success: result.is_ok(),
+                                                message: result.err(),
+                                            });
+                                        });
                                     }
                                     Err(e) => {
                                         app.connect_modal.close();
@@ -681,9 +690,9 @@ fn handle_terminal_event(
                                             crate::components::toast::ToastLevel::Error,
                                             format!("Failed to store key: {e}"),
                                         );
+                                        app.mark_dirty();
                                     }
                                 }
-                                app.mark_dirty();
                             }
                         }
                         crossterm::event::KeyCode::Backspace => {
@@ -1346,11 +1355,94 @@ fn dispatch_action(action: Action, app: &mut AppState, input_box: &mut InputBoxS
 }
 
 // ---------------------------------------------------------------------------
+// Verification ping
+// ---------------------------------------------------------------------------
+
+/// Verify that a stored credential actually works by making a lightweight API
+/// call. Returns `Ok(())` on success or `Err(message)` on failure.
+async fn verify_provider(provider: &str) -> Result<(), String> {
+    let store = ucode_auth::KeyringStore::new();
+    let material =
+        ucode_auth::CredentialStore::load(&store, provider).map_err(|e| e.to_string())?;
+
+    let client = reqwest::Client::new();
+
+    match (provider, &material) {
+        ("openai", ucode_auth::AuthMaterial::ApiKey { key }) => {
+            let resp = client
+                .get("https://api.openai.com/v1/models")
+                .header("Authorization", format!("Bearer {key}"))
+                .timeout(std::time::Duration::from_secs(10))
+                .send()
+                .await
+                .map_err(|e| e.to_string())?;
+            if resp.status().is_success() {
+                Ok(())
+            } else {
+                Err(format!("HTTP {}", resp.status()))
+            }
+        }
+        ("openai", ucode_auth::AuthMaterial::OAuth { access_token, .. }) => {
+            let resp = client
+                .get("https://api.openai.com/v1/models")
+                .header("Authorization", format!("Bearer {access_token}"))
+                .timeout(std::time::Duration::from_secs(10))
+                .send()
+                .await
+                .map_err(|e| e.to_string())?;
+            if resp.status().is_success() {
+                Ok(())
+            } else {
+                Err(format!("HTTP {}", resp.status()))
+            }
+        }
+        ("anthropic", ucode_auth::AuthMaterial::ApiKey { key }) => {
+            let resp = client
+                .get("https://api.anthropic.com/v1/models")
+                .header("x-api-key", key)
+                .header("anthropic-version", "2023-06-01")
+                .timeout(std::time::Duration::from_secs(10))
+                .send()
+                .await
+                .map_err(|e| e.to_string())?;
+            if resp.status().is_success() {
+                Ok(())
+            } else {
+                Err(format!("HTTP {}", resp.status()))
+            }
+        }
+        ("anthropic", ucode_auth::AuthMaterial::OAuth { access_token, .. }) => {
+            let resp = client
+                .get("https://api.anthropic.com/v1/models")
+                .header("Authorization", format!("Bearer {access_token}"))
+                .header("anthropic-version", "2023-06-01")
+                .timeout(std::time::Duration::from_secs(10))
+                .send()
+                .await
+                .map_err(|e| e.to_string())?;
+            if resp.status().is_success() {
+                Ok(())
+            } else {
+                Err(format!("HTTP {}", resp.status()))
+            }
+        }
+        _ => {
+            // Unknown provider — skip verification and report success.
+            Ok(())
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // TuiEvent handler
 // ---------------------------------------------------------------------------
 
 /// Handle an event from the external channel. Returns `true` to exit the loop.
-fn handle_tui_event(event: TuiEvent, app: &mut AppState) -> bool {
+fn handle_tui_event(
+    event: TuiEvent,
+    app: &mut AppState,
+    event_tx: &UnboundedSender<TuiEvent>,
+) -> bool {
     match event {
         TuiEvent::StreamToken(token) => app.push_token(&token),
         TuiEvent::StreamDone => app.finalize_streaming(),
@@ -1423,10 +1515,21 @@ fn handle_tui_event(event: TuiEvent, app: &mut AppState) -> bool {
         TuiEvent::AuthCompleted { provider } => {
             let display = provider.clone();
             app.connect_modal.phase = ConnectPhase::Verifying {
-                provider_id: provider,
+                provider_id: provider.clone(),
                 display_name: display,
             };
             app.mark_dirty();
+
+            let provider_clone = provider.clone();
+            let tx = event_tx.clone();
+            tokio::spawn(async move {
+                let result = verify_provider(&provider_clone).await;
+                let _ = tx.send(TuiEvent::VerifyResult {
+                    provider: provider_clone,
+                    success: result.is_ok(),
+                    message: result.err(),
+                });
+            });
         }
         TuiEvent::AuthFailed { provider, error } => {
             app.connect_modal.close();
@@ -1725,6 +1828,13 @@ mod tests {
         handle_terminal_event(event, app, input_box, sidebar_data, &tx, &mut auth_task)
     }
 
+    /// Thin wrapper used by tests: creates a throwaway channel so tests don't
+    /// need to thread `event_tx` through every `handle_tui_event` call site.
+    fn tui_event(event: TuiEvent, app: &mut AppState) -> bool {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<TuiEvent>();
+        handle_tui_event(event, app, &tx)
+    }
+
     // -----------------------------------------------------------------------
     // TuiEvent variants
     // -----------------------------------------------------------------------
@@ -1787,7 +1897,7 @@ mod tests {
     #[test]
     fn tui_event_approval_required() {
         let mut app = AppState::new();
-        let exited = handle_tui_event(
+        let exited = tui_event(
             TuiEvent::ApprovalRequired {
                 tool_name: "run_cmd".to_owned(),
                 command: "cargo test".to_owned(),
@@ -1860,7 +1970,7 @@ mod tests {
         let mut app = AppState::new();
         app.start_streaming();
 
-        let exited = handle_tui_event(TuiEvent::StreamToken("hello".to_owned()), &mut app);
+        let exited = tui_event(TuiEvent::StreamToken("hello".to_owned()), &mut app);
         assert!(!exited);
 
         match app.transcript.last() {
@@ -1881,7 +1991,7 @@ mod tests {
         app.start_streaming();
         app.push_token("world");
 
-        let exited = handle_tui_event(TuiEvent::StreamDone, &mut app);
+        let exited = tui_event(TuiEvent::StreamDone, &mut app);
         assert!(!exited);
         assert!(!app.streaming);
 
@@ -1998,7 +2108,7 @@ mod tests {
     #[test]
     fn handle_tui_event_quit() {
         let mut app = AppState::new();
-        let exited = handle_tui_event(TuiEvent::Quit, &mut app);
+        let exited = tui_event(TuiEvent::Quit, &mut app);
         assert!(exited);
     }
 
@@ -2010,7 +2120,7 @@ mod tests {
     fn handle_tui_event_tool_call_lifecycle() {
         let mut app = AppState::new();
 
-        handle_tui_event(
+        tui_event(
             TuiEvent::ToolCallStarted {
                 name: "read_file".to_owned(),
             },
@@ -2018,7 +2128,7 @@ mod tests {
         );
         assert_eq!(app.transcript.len(), 1);
 
-        handle_tui_event(
+        tui_event(
             TuiEvent::ToolCallCompleted {
                 index: 0,
                 status: ToolCallStatus::Success,
@@ -2535,7 +2645,7 @@ mod tests {
     #[test]
     fn tui_event_patch_proposed() {
         let mut app = AppState::new();
-        let exited = handle_tui_event(
+        let exited = tui_event(
             TuiEvent::PatchProposed {
                 file_path: "src/lib.rs".to_owned(),
                 raw_diff: "+added line\n-removed line".to_owned(),
@@ -3274,7 +3384,7 @@ mod tests {
     #[test]
     fn tui_event_toast_variant() {
         let mut app = AppState::new();
-        let exited = handle_tui_event(
+        let exited = tui_event(
             TuiEvent::Toast {
                 level: ToastLevel::Error,
                 title: "Something failed".to_owned(),
@@ -3295,7 +3405,7 @@ mod tests {
     #[test]
     fn tui_event_checkpoint_created() {
         let mut app = AppState::new();
-        let exited = handle_tui_event(
+        let exited = tui_event(
             TuiEvent::CheckpointCreated {
                 name: "v1.0".to_owned(),
             },
@@ -3312,7 +3422,7 @@ mod tests {
     #[test]
     fn tui_event_budget_warning() {
         let mut app = AppState::new();
-        let exited = handle_tui_event(
+        let exited = tui_event(
             TuiEvent::BudgetWarning {
                 used_pct: 75.0,
                 message: "75% of token budget used".to_owned(),
@@ -3330,7 +3440,7 @@ mod tests {
     #[test]
     fn tui_event_agent_completed() {
         let mut app = AppState::new();
-        let exited = handle_tui_event(
+        let exited = tui_event(
             TuiEvent::AgentCompleted {
                 agent_id: "agent-42".to_owned(),
                 name: "code-reviewer".to_owned(),
@@ -3348,7 +3458,7 @@ mod tests {
     #[test]
     fn tui_event_agent_failed() {
         let mut app = AppState::new();
-        let exited = handle_tui_event(
+        let exited = tui_event(
             TuiEvent::AgentFailed {
                 agent_id: "agent-42".to_owned(),
                 name: "code-reviewer".to_owned(),
@@ -3367,7 +3477,7 @@ mod tests {
     #[test]
     fn tui_event_mcp_server_crashed() {
         let mut app = AppState::new();
-        let exited = handle_tui_event(
+        let exited = tui_event(
             TuiEvent::McpServerCrashed {
                 server_name: "filesystem".to_owned(),
                 error: "segfault".to_owned(),
@@ -3385,7 +3495,7 @@ mod tests {
     #[test]
     fn tui_event_auth_expired() {
         let mut app = AppState::new();
-        let exited = handle_tui_event(
+        let exited = tui_event(
             TuiEvent::AuthExpired {
                 provider: "github".to_owned(),
             },

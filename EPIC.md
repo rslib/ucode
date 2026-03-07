@@ -256,7 +256,7 @@
 
 ---
 
-## EPIC 2 — Auth (API keys + login + subscription login)
+## EPIC 2 — Auth (full provider auth coverage)
 
 ### ISSUE 0201 — Secure credential store (keychain) (ucode-auth) [DONE]
 
@@ -286,55 +286,113 @@ Commands:
 * Each command runs and updates keychain state accordingly.
   **Owner:** Auth/CLI
 
-### ISSUE 0203 — OpenAI login (browser OAuth) (ucode-auth)
+### ISSUE 0203 — Auth foundation refactor (ucode-auth) [P0]
 
-**Goal:** Implement OpenAI browser login flow that yields tokens usable by provider adapter.
+**Goal:** Generalize auth crate to support arbitrary providers and all auth methods (OpenCode-compatible).
 **Scope/Notes:**
 
-* Store access + refresh + expiry
-* Auto-refresh
-* Provide friendly output for copy/paste device fallback if needed later
+* Replace `ProviderId` enum with `String`-based identifiers (arbitrary user-defined provider names)
+* Add `ProviderType` enum (`OpenAi | Anthropic | Ollama | Gemini`) for adapter selection (TOML `type` field)
+* TOML config boundary: config holds `type`, `base_url`, `api_key_env`, `headers`, `auth_methods` only — never secrets
+* All runtime auth state (OAuth tokens, session tokens, API keys) stored in credential store only
+* Expand `AuthMaterial`: add `WellKnown { env_key, token }` and `AwsCredentials { access_key_id, secret_access_key, session_token, region }`
+* `FileStore`: JSON file at `~/.local/share/ucode/auth.json` with `0o600` permissions (keyring fallback)
+* `ChainStore`: tries keyring first, falls back to file store
+* Auth precedence resolver: env var (`api_key_env`) > stored credential > prompt (interactive only)
+* `resolve_auth(provider_id, provider_config) -> Result<AuthMaterial, AuthError>`
   **Acceptance tests:**
-* `ucode auth login openai` completes and `ucode auth status` shows “logged in”
-* Token refresh path exercised via forced expiry in tests/mocks
+* String-based provider IDs work for arbitrary provider names.
+* `ProviderType` enum selects correct adapter from TOML `type` field.
+* File store persists credentials with `0o600` permissions when keyring unavailable.
+* Auth precedence: env var > stored credential > prompt.
   **Owner:** Auth
 
-### ISSUE 0204 — OpenAI login (device-code) (ucode-auth)
+### ISSUE 0204 — Auth flow framework (ucode-auth) [P0]
 
-**Goal:** Implement device-code login for headless use.
+**Goal:** Implement generic auth flow functions for all supported login methods.
 **Scope/Notes:**
 
-* `--device` prints user code + verification URL
-* Poll token endpoint until success/timeout
+* Device code flow (RFC 8628): POST device_code_url, display user_code + verification_uri, poll token_url, handle `authorization_pending`/`slow_down`, 3s safety margin
+* Browser OAuth flow (PKCE): generate code_verifier/challenge, open browser, localhost callback server, exchange code for tokens
+* Well-known auth flow: GET `{url}/.well-known/opencode`, run auth command, capture token
+* API key prompt: interactive prompt, store via `CredentialStore`
+* Env var chain: read from named env vars
+* All flows return `AuthMaterial` and store via `CredentialStore`
   **Acceptance tests:**
-* `ucode auth login openai --device` works end-to-end (mocked integration OK if real not possible)
+* Device code flow displays user_code, polls correctly, handles slow_down.
+* Browser OAuth opens browser, receives callback, exchanges code for tokens.
+* Well-known auth fetches endpoint, runs command, stores token.
   **Owner:** Auth
 
-### ISSUE 0205 — Anthropic subscription login (OpenCode-like) (ucode-auth)
+### ISSUE 0205 — Provider-specific auth handlers (ucode-auth) [P0]
 
-**Goal:** Implement “subscription login” flow: browser sign-in → user pastes code/token.
+**Goal:** Concrete auth configurations for each supported provider.
 **Scope/Notes:**
 
-* UX:
+Supported providers and auth methods:
 
-  * opens browser URL
-  * prompts user to paste returned code/token
-* Store as `SessionToken` with TTL if available; otherwise treat as short-lived and re-login when invalid.
+| Provider | Auth methods |
+|---|---|
+| OpenAI | API key, env (`OPENAI_API_KEY`) |
+| Anthropic | API key, env (`ANTHROPIC_API_KEY`), browser OAuth (subscription) |
+| GitHub Copilot | Device code (client_id: `Ov23li8tweQw6odWQebz`, scope: `read:user`) |
+| GitHub Copilot Enterprise | Device code + enterprise URL |
+| Google Gemini | API key, env (`GEMINI_API_KEY`), browser OAuth |
+| Google Vertex AI | Env (`GOOGLE_APPLICATION_CREDENTIALS`), gcloud ADC |
+| AWS Bedrock | Env (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`) |
+| Azure OpenAI | API key, env (`AZURE_OPENAI_API_KEY`) + resource URL |
+| Groq | API key, env (`GROQ_API_KEY`) |
+| DeepSeek | API key, env (`DEEPSEEK_API_KEY`) |
+| OpenRouter | API key, env (`OPENROUTER_API_KEY`) |
+| Together | API key, env (`TOGETHER_API_KEY`) |
+| Fireworks | API key, env (`FIREWORKS_API_KEY`) |
+| Mistral | API key, env (`MISTRAL_API_KEY`) |
+| Ollama | None (local) or optional API key for remote |
+| Custom/self-hosted | Well-known auth, API key, custom headers |
+
+CLI commands:
+* `ucode auth login <provider> [--device] [--url <enterprise-url>]`
+* `ucode auth login <url>` — well-known auth for arbitrary URL
+* `ucode auth set-key <provider>` — direct API key entry
+* `ucode auth logout <provider>` — remove stored credentials
+* `ucode auth status` / `ucode auth list`
   **Acceptance tests:**
-* Flow stores a token and Anthropic adapter can attempt a request with it.
-* On invalid token, system produces a clean auth error and can fallback.
+* `ucode auth login github-copilot` completes device code flow.
+* `ucode auth login anthropic --subscription` completes browser OAuth.
+* `ucode auth login https://custom.example.com` completes well-known auth.
+* Each provider's env var is checked before prompting.
   **Owner:** Auth
 
-### ISSUE 0206 — Auth-aware fallback integration (ucode-core + providers)
+### ISSUE 0206 — Token refresh + expiry management (ucode-auth) [P0]
+
+**Goal:** Automatic token refresh for OAuth credentials before expiry.
+**Scope/Notes:**
+
+* Check token expiry before each provider request
+* If token expires within 5 minutes: attempt refresh using refresh_token
+* If refresh fails: emit `AuthExpired` error, trigger fallback
+* If no refresh_token: emit `AuthExpired`, prompt re-login
+* Refresh result stored back to credential store
+* `auth_changed` / `auth_failed` hook events emitted
+  **Acceptance tests:**
+* OAuth token auto-refreshes before expiry without user intervention.
+* Failed refresh triggers clean auth error and fallback.
+* Refreshed credentials persist to store.
+  **Owner:** Auth
+
+### ISSUE 0207 — Auth-aware fallback integration (ucode-core + providers) [P0]
 
 **Goal:** Ensure auth failures trigger routing fallback with clear logs.
 **Scope/Notes:**
 
+* Provider adapters call `resolve_auth()` before each request
 * Map provider 401/403 to `AuthInvalid`
 * Missing creds to `AuthMissing`
-* Emit `Event::Log("fallback: auth invalid on X → switching to Y")`
+* Expired tokens (detected locally) to `AuthExpired`
+* Router immediately falls back and emits `Event::Log` explaining why
   **Acceptance tests:**
 * In a mocked provider test, returning 401 triggers fallback to next provider.
+* Missing env var for a provider skips it cleanly with log message.
   **Owner:** Core/Auth
 
 ---
@@ -385,6 +443,37 @@ Commands:
 
 * `ucode chat --provider ollama` streams output (requires local ollama running or mock)
   **Owner:** Providers
+
+### ISSUE 0306 — Provider adapter refactor — generic multi-protocol support (ucode-providers) [P0]
+
+**Goal:** Replace hardcoded single-endpoint providers with four generic, configurable adapters.
+**Scope/Notes:**
+
+Four adapters:
+
+| Adapter | Protocol | Covers |
+|---|---|---|
+| `OpenAiCompatProvider` | OpenAI `/v1/chat/completions` | OpenAI, Groq, Together, Fireworks, DeepSeek, Mistral, OpenRouter, vLLM, LiteLLM, Azure OpenAI, GitHub Copilot |
+| `AnthropicCompatProvider` | Anthropic `/v1/messages` | Anthropic, any Anthropic-compatible API |
+| `OllamaProvider` | Ollama native `/api/chat` | Ollama (thinking, stats, `num_ctx`, richer sampling) |
+| `GeminiProvider` | Google `generateContent` / `streamGenerateContent` | Google AI Studio, Vertex AI |
+
+Changes:
+* `OpenaiProvider` renamed to `OpenAiCompatProvider`, gains configurable `base_url`, custom headers
+* `AnthropicProvider` renamed to `AnthropicCompatProvider`, gains configurable `base_url`, custom headers
+* `OllamaProvider` rewritten to native `/api/chat` (thinking, stats, `num_ctx`, `min_p`, `top_k`, `seed`)
+* `GeminiProvider` new: `generateContent`/`streamGenerateContent?alt=sse`, `functionDeclarations` tool calling
+* Provider config in TOML with `type`, `base_url`, `api_key_env`, `headers`, `auth_methods`
+* `ProviderType` enum (`openai | anthropic | ollama | gemini`) selects adapter from TOML `type` field
+* Provider adapters call `resolve_auth()` from auth crate before each request
+  **Acceptance tests:**
+* OpenAI-compatible provider works with OpenAI, Groq, and Ollama `/v1` endpoints via `base_url` config.
+* Anthropic-compatible provider works with Anthropic API via configurable `base_url`.
+* Ollama native provider uses `/api/chat` with thinking, stats, and `num_ctx` support.
+* Gemini provider streams via `streamGenerateContent?alt=sse` with tool calling.
+* Custom headers (Azure `api-version`, proxy auth) are sent correctly.
+* Missing `api_key_env` var produces clear error.
+  **Owner:** Providers/Auth
 
 ### ISSUE 0305 — Prompt/context caching integration (ucode-providers + ucode-core) [P2]
 
@@ -705,7 +794,7 @@ This ensures consistent behavior, no runtime dependency on installed binaries, a
 * Crash/restart cycle produces clear diagnostics in logs.
   **Owner:** MCP/Tools/Security
 
-### ISSUE 0505 — MCP transport parity (stdio + SSE + HTTP) (ucode-mcp) [P0]
+### ISSUE 0505 — MCP transport parity (stdio + SSE + HTTP) (ucode-mcp) [P0] [DONE]
 
 > Implementation plan: `docs/plans/2026-03-06-mcp-transport-parity.md`
 

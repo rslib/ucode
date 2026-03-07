@@ -10,6 +10,7 @@ members = [
     "crates/ucode-plugin-sdk",
     "crates/ucode-tui",
     "crates/ucode-cli",
+    "crates/ucode-context",
     "examples/plugins/hello-wasm",
 ]
 resolver = "2"
@@ -88,6 +89,11 @@ ed25519-dalek = { version = "2", features = ["std"] }
 
 # WASM guest SDK (for plugin authors)
 wit-bindgen = "0.53"
+
+# sqlite / vector search
+rusqlite = { version = "0.35", features = ["bundled", "column_decltype"] }
+sqlite-vec = "0.1.7-alpha.10"
+zerocopy = { version = "0.8", features = ["derive"] }
 
 # intra-workspace
 ucode-core = { path = "crates/ucode-core" }

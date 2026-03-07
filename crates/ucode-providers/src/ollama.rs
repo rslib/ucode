@@ -1,7 +1,9 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
+use ucode_auth::CredentialStore;
 use ucode_core::{CoreError, Event, EventStream, ToolCall as CoreToolCall};
 
 use crate::config::ProviderConfig;
@@ -195,17 +197,30 @@ pub fn parse_ollama_line(line: &str, _acc: &mut ()) -> Vec<Event> {
 pub struct OllamaProvider {
     client: reqwest::Client,
     provider_name: String,
+    api_key: Option<String>,
     base_url: String,
     headers: HashMap<String, String>,
+    /// Optional credential store for dynamic auth resolution.
+    credential_store: Option<Arc<dyn CredentialStore>>,
+    /// Environment variable name for API key lookup.
+    api_key_env: Option<String>,
 }
 
 impl OllamaProvider {
-    pub fn from_config(name: &str, config: &ProviderConfig, _api_key: Option<String>) -> Self {
+    pub fn from_config(
+        name: &str,
+        config: &ProviderConfig,
+        api_key: Option<String>,
+        credential_store: Option<Arc<dyn CredentialStore>>,
+    ) -> Self {
         Self {
             client: reqwest::Client::new(),
             provider_name: name.to_owned(),
+            api_key,
             base_url: config.base_url().to_owned(),
             headers: config.headers.clone(),
+            credential_store,
+            api_key_env: config.api_key_env.clone(),
         }
     }
 
@@ -213,8 +228,11 @@ impl OllamaProvider {
         Self {
             client: reqwest::Client::new(),
             provider_name: "ollama".into(),
+            api_key: None,
             base_url: "http://localhost:11434".into(),
             headers: HashMap::new(),
+            credential_store: None,
+            api_key_env: None,
         }
     }
 
@@ -248,6 +266,9 @@ impl Provider for OllamaProvider {
 
     fn stream_chat(&self, req: ChatRequest) -> ProviderFuture<Result<EventStream, CoreError>> {
         let client = self.client.clone();
+        let credential_store = self.credential_store.clone();
+        let api_key_env = self.api_key_env.clone();
+        let fallback_api_key = self.api_key.clone();
         let url = format!("{}/api/chat", self.base_url);
         let provider_name = self.provider_name.clone();
         let extra_headers = self.headers.clone();
@@ -271,10 +292,21 @@ impl Provider for OllamaProvider {
         };
 
         Box::pin(async move {
+            let api_key = crate::auth::resolve_provider_auth(
+                &provider_name,
+                api_key_env.as_deref(),
+                credential_store.as_ref().map(|s| s.as_ref()),
+                fallback_api_key.as_deref(),
+            )?;
+
             let mut request = client
                 .post(&url)
                 .header("Content-Type", "application/json")
                 .json(&body);
+
+            if let Some(ref key) = api_key {
+                request = request.header("Authorization", format!("Bearer {key}"));
+            }
 
             for (key, value) in &extra_headers {
                 request = request.header(key.as_str(), value.as_str());
@@ -331,7 +363,7 @@ mod tests {
             api_key_env: None,
             headers: HashMap::new(),
         };
-        let p = OllamaProvider::from_config("my-ollama", &config, None);
+        let p = OllamaProvider::from_config("my-ollama", &config, None, None);
         assert_eq!(p.name(), "my-ollama");
     }
 

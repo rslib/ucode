@@ -1,7 +1,9 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
+use ucode_auth::CredentialStore;
 use ucode_core::{CoreError, Event, EventStream, ToolCall as CoreToolCall};
 
 use crate::config::ProviderConfig;
@@ -293,16 +295,27 @@ pub struct AnthropicCompatProvider {
     api_key: Option<String>,
     base_url: String,
     headers: HashMap<String, String>,
+    /// Optional credential store for dynamic auth resolution.
+    credential_store: Option<Arc<dyn CredentialStore>>,
+    /// Environment variable name for API key lookup.
+    api_key_env: Option<String>,
 }
 
 impl AnthropicCompatProvider {
-    pub fn from_config(name: &str, config: &ProviderConfig, api_key: Option<String>) -> Self {
+    pub fn from_config(
+        name: &str,
+        config: &ProviderConfig,
+        api_key: Option<String>,
+        credential_store: Option<Arc<dyn CredentialStore>>,
+    ) -> Self {
         Self {
             client: reqwest::Client::new(),
             provider_name: name.to_owned(),
             api_key,
             base_url: config.base_url().to_owned(),
             headers: config.headers.clone(),
+            credential_store,
+            api_key_env: config.api_key_env.clone(),
         }
     }
 
@@ -313,6 +326,8 @@ impl AnthropicCompatProvider {
             api_key: Some(api_key),
             base_url: "https://api.anthropic.com/v1".into(),
             headers: HashMap::new(),
+            credential_store: None,
+            api_key_env: None,
         }
     }
 
@@ -341,7 +356,9 @@ impl Provider for AnthropicCompatProvider {
 
     fn stream_chat(&self, req: ChatRequest) -> ProviderFuture<Result<EventStream, CoreError>> {
         let client = self.client.clone();
-        let api_key = self.api_key.clone();
+        let credential_store = self.credential_store.clone();
+        let api_key_env = self.api_key_env.clone();
+        let fallback_api_key = self.api_key.clone();
         let provider_name = self.provider_name.clone();
         let extra_headers = self.headers.clone();
         let url = format!("{}/messages", self.base_url);
@@ -358,9 +375,16 @@ impl Provider for AnthropicCompatProvider {
         };
 
         Box::pin(async move {
+            let api_key = crate::auth::resolve_provider_auth(
+                &provider_name,
+                api_key_env.as_deref(),
+                credential_store.as_ref().map(|s| s.as_ref()),
+                fallback_api_key.as_deref(),
+            )?;
+
             let mut builder = client.post(&url);
 
-            if let Some(key) = &api_key {
+            if let Some(ref key) = api_key {
                 builder = builder.header("x-api-key", key);
             }
             builder = builder
@@ -737,7 +761,7 @@ mod tests {
             headers: HashMap::new(),
         };
         let provider =
-            AnthropicCompatProvider::from_config("my-anthropic", &config, Some("key".into()));
+            AnthropicCompatProvider::from_config("my-anthropic", &config, Some("key".into()), None);
         assert_eq!(provider.name(), "my-anthropic");
         assert_eq!(provider.base_url, "https://api.anthropic.com/v1");
     }
@@ -750,7 +774,8 @@ mod tests {
             api_key_env: None,
             headers: HashMap::new(),
         };
-        let provider = AnthropicCompatProvider::from_config("proxy", &config, Some("key".into()));
+        let provider =
+            AnthropicCompatProvider::from_config("proxy", &config, Some("key".into()), None);
         assert_eq!(provider.base_url, "https://proxy.example.com/anthropic");
     }
 
@@ -770,7 +795,7 @@ mod tests {
             api_key_env: None,
             headers: HashMap::new(),
         };
-        let provider = AnthropicCompatProvider::from_config("proxy", &config, None);
+        let provider = AnthropicCompatProvider::from_config("proxy", &config, None, None);
         assert!(provider.api_key.is_none());
     }
 

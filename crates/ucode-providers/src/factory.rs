@@ -1,3 +1,7 @@
+use std::sync::Arc;
+
+use ucode_auth::CredentialStore;
+
 use crate::config::{AdapterKind, ProviderConfig};
 use crate::provider::Provider;
 use ucode_core::CoreError;
@@ -8,44 +12,56 @@ pub type ProviderResult = (String, Result<Box<dyn Provider>, CoreError>);
 /// Create a provider instance from config.
 ///
 /// Resolves the API key from the environment variable named by `api_key_env`.
-/// Returns an error if the adapter requires an API key but the configured
-/// env var is not set.
+/// If `credential_store` is provided, missing env vars are not an error for
+/// Anthropic and Gemini — the store will be consulted at request time.
 pub fn create_provider(
     name: &str,
     config: &ProviderConfig,
+    credential_store: Option<Arc<dyn CredentialStore>>,
 ) -> Result<Box<dyn Provider>, CoreError> {
     let api_key = config.resolve_api_key();
 
-    // If api_key_env is configured but the env var is missing, that's an error
-    // for providers that need auth (Anthropic, Gemini). OpenAI and Ollama can
-    // work without keys in some configurations.
     match config.adapter {
         AdapterKind::Openai => Ok(Box::new(crate::openai::OpenAiCompatProvider::from_config(
-            name, config, api_key,
+            name,
+            config,
+            api_key,
+            credential_store,
         ))),
         AdapterKind::Anthropic => {
-            if api_key.is_none() && config.api_key_env.is_some() {
+            if api_key.is_none() && config.api_key_env.is_some() && credential_store.is_none() {
                 return Err(CoreError::Auth {
                     provider: name.to_owned(),
                     auth_kind: ucode_core::AuthErrorKind::Missing,
                 });
             }
             Ok(Box::new(
-                crate::anthropic::AnthropicCompatProvider::from_config(name, config, api_key),
+                crate::anthropic::AnthropicCompatProvider::from_config(
+                    name,
+                    config,
+                    api_key,
+                    credential_store,
+                ),
             ))
         }
         AdapterKind::Ollama => Ok(Box::new(crate::ollama::OllamaProvider::from_config(
-            name, config, api_key,
+            name,
+            config,
+            api_key,
+            credential_store,
         ))),
         AdapterKind::Gemini => {
-            if api_key.is_none() && config.api_key_env.is_some() {
+            if api_key.is_none() && config.api_key_env.is_some() && credential_store.is_none() {
                 return Err(CoreError::Auth {
                     provider: name.to_owned(),
                     auth_kind: ucode_core::AuthErrorKind::Missing,
                 });
             }
             Ok(Box::new(crate::gemini::GeminiProvider::from_config(
-                name, config, api_key,
+                name,
+                config,
+                api_key,
+                credential_store,
             )))
         }
     }
@@ -58,10 +74,16 @@ pub fn create_provider(
 /// from being created.
 pub fn create_all_providers(
     configs: &std::collections::HashMap<String, ProviderConfig>,
+    credential_store: Option<Arc<dyn CredentialStore>>,
 ) -> Vec<ProviderResult> {
     configs
         .iter()
-        .map(|(name, config)| (name.clone(), create_provider(name, config)))
+        .map(|(name, config)| {
+            (
+                name.clone(),
+                create_provider(name, config, credential_store.clone()),
+            )
+        })
         .collect()
 }
 
@@ -78,7 +100,7 @@ mod tests {
             api_key_env: None,
             headers: HashMap::new(),
         };
-        let provider = create_provider("ollama", &config).unwrap();
+        let provider = create_provider("ollama", &config, None).unwrap();
         assert_eq!(provider.name(), "ollama");
     }
 
@@ -90,7 +112,7 @@ mod tests {
             api_key_env: None,
             headers: HashMap::new(),
         };
-        let provider = create_provider("groq", &config).unwrap();
+        let provider = create_provider("groq", &config, None).unwrap();
         assert_eq!(provider.name(), "groq");
     }
 
@@ -103,7 +125,7 @@ mod tests {
             api_key_env: None,
             headers: HashMap::new(),
         };
-        let provider = create_provider("local-vllm", &config).unwrap();
+        let provider = create_provider("local-vllm", &config, None).unwrap();
         assert_eq!(provider.name(), "local-vllm");
     }
 
@@ -115,7 +137,7 @@ mod tests {
             api_key_env: Some("UCODE_TEST_NONEXISTENT_ANTHROPIC_KEY_XYZ".into()),
             headers: HashMap::new(),
         };
-        let result = create_provider("anthropic", &config);
+        let result = create_provider("anthropic", &config, None);
         assert!(result.is_err());
         match result.err().unwrap() {
             CoreError::Auth {
@@ -138,7 +160,7 @@ mod tests {
             api_key_env: None,
             headers: HashMap::new(),
         };
-        let provider = create_provider("anthropic-proxy", &config).unwrap();
+        let provider = create_provider("anthropic-proxy", &config, None).unwrap();
         assert_eq!(provider.name(), "anthropic-proxy");
     }
 
@@ -150,7 +172,7 @@ mod tests {
             api_key_env: Some("UCODE_TEST_NONEXISTENT_GEMINI_KEY_XYZ".into()),
             headers: HashMap::new(),
         };
-        let result = create_provider("gemini", &config);
+        let result = create_provider("gemini", &config, None);
         assert!(result.is_err());
     }
 
@@ -162,7 +184,7 @@ mod tests {
             api_key_env: None,
             headers: HashMap::new(),
         };
-        let provider = create_provider("gemini-proxy", &config).unwrap();
+        let provider = create_provider("gemini-proxy", &config, None).unwrap();
         assert_eq!(provider.name(), "gemini-proxy");
     }
 
@@ -187,7 +209,7 @@ mod tests {
                 headers: HashMap::new(),
             },
         );
-        let results = create_all_providers(&configs);
+        let results = create_all_providers(&configs, None);
         assert_eq!(results.len(), 2);
         for (_, result) in &results {
             assert!(result.is_ok());
@@ -215,12 +237,48 @@ mod tests {
                 headers: HashMap::new(),
             },
         );
-        let results = create_all_providers(&configs);
+        let results = create_all_providers(&configs, None);
         assert_eq!(results.len(), 2);
         // One should succeed, one should fail
         let successes: Vec<_> = results.iter().filter(|(_, r)| r.is_ok()).collect();
         let failures: Vec<_> = results.iter().filter(|(_, r)| r.is_err()).collect();
         assert_eq!(successes.len(), 1);
         assert_eq!(failures.len(), 1);
+    }
+
+    #[test]
+    fn create_provider_with_credential_store() {
+        use ucode_auth::{AuthMaterial, InMemoryStore};
+        let store = Arc::new(InMemoryStore::new());
+        store
+            .store(
+                "openai",
+                &AuthMaterial::ApiKey {
+                    key: "sk-from-store".into(),
+                },
+            )
+            .unwrap();
+        let config = ProviderConfig {
+            adapter: AdapterKind::Openai,
+            base_url: None,
+            api_key_env: None,
+            headers: HashMap::new(),
+        };
+        let provider = create_provider("openai", &config, Some(store)).unwrap();
+        assert_eq!(provider.name(), "openai");
+    }
+
+    #[test]
+    fn create_anthropic_with_store_no_env_var_ok() {
+        use ucode_auth::InMemoryStore;
+        let store = Arc::new(InMemoryStore::new());
+        let config = ProviderConfig {
+            adapter: AdapterKind::Anthropic,
+            base_url: None,
+            api_key_env: Some("UCODE_TEST_NONEXISTENT_KEY_XYZ".into()),
+            headers: HashMap::new(),
+        };
+        let result = create_provider("anthropic", &config, Some(store));
+        assert!(result.is_ok());
     }
 }

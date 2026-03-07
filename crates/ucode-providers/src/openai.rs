@@ -1,7 +1,9 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
+use ucode_auth::CredentialStore;
 use ucode_core::{CoreError, Event, EventStream, ToolCall as CoreToolCall};
 
 use crate::config::ProviderConfig;
@@ -244,17 +246,28 @@ pub struct OpenAiCompatProvider {
     base_url: String,
     /// Extra headers sent with every request.
     headers: HashMap<String, String>,
+    /// Optional credential store for dynamic auth resolution.
+    credential_store: Option<Arc<dyn CredentialStore>>,
+    /// Environment variable name for API key lookup.
+    api_key_env: Option<String>,
 }
 
 impl OpenAiCompatProvider {
     /// Create from a provider config and resolved API key.
-    pub fn from_config(name: &str, config: &ProviderConfig, api_key: Option<String>) -> Self {
+    pub fn from_config(
+        name: &str,
+        config: &ProviderConfig,
+        api_key: Option<String>,
+        credential_store: Option<Arc<dyn CredentialStore>>,
+    ) -> Self {
         Self {
             client: reqwest::Client::new(),
             provider_name: name.to_owned(),
             api_key,
             base_url: config.base_url().to_owned(),
             headers: config.headers.clone(),
+            credential_store,
+            api_key_env: config.api_key_env.clone(),
         }
     }
 
@@ -266,6 +279,8 @@ impl OpenAiCompatProvider {
             api_key: Some(api_key),
             base_url: "https://api.openai.com/v1".into(),
             headers: HashMap::new(),
+            credential_store: None,
+            api_key_env: None,
         }
     }
 
@@ -294,7 +309,9 @@ impl Provider for OpenAiCompatProvider {
 
     fn stream_chat(&self, req: ChatRequest) -> ProviderFuture<Result<EventStream, CoreError>> {
         let client = self.client.clone();
-        let api_key = self.api_key.clone();
+        let credential_store = self.credential_store.clone();
+        let api_key_env = self.api_key_env.clone();
+        let fallback_api_key = self.api_key.clone();
         let url = format!("{}/chat/completions", self.base_url);
         let provider_name = self.provider_name.clone();
         let custom_headers = self.headers.clone();
@@ -316,6 +333,13 @@ impl Provider for OpenAiCompatProvider {
         };
 
         Box::pin(async move {
+            let api_key = crate::auth::resolve_provider_auth(
+                &provider_name,
+                api_key_env.as_deref(),
+                credential_store.as_ref().map(|s| s.as_ref()),
+                fallback_api_key.as_deref(),
+            )?;
+
             let mut request = client.post(&url).header("Content-Type", "application/json");
 
             if let Some(ref key) = api_key {
@@ -375,7 +399,7 @@ mod tests {
             api_key_env: None,
             headers: HashMap::new(),
         };
-        let provider = OpenAiCompatProvider::from_config("groq", &config, Some("key".into()));
+        let provider = OpenAiCompatProvider::from_config("groq", &config, Some("key".into()), None);
         assert_eq!(provider.name(), "groq");
         assert_eq!(provider.base_url, "https://api.groq.com/openai/v1");
     }
@@ -390,7 +414,8 @@ mod tests {
             api_key_env: None,
             headers,
         };
-        let provider = OpenAiCompatProvider::from_config("azure", &config, Some("key".into()));
+        let provider =
+            OpenAiCompatProvider::from_config("azure", &config, Some("key".into()), None);
         assert_eq!(provider.headers.get("api-version").unwrap(), "2024-10-21");
     }
 
@@ -410,7 +435,7 @@ mod tests {
             api_key_env: None,
             headers: HashMap::new(),
         };
-        let provider = OpenAiCompatProvider::from_config("local-vllm", &config, None);
+        let provider = OpenAiCompatProvider::from_config("local-vllm", &config, None, None);
         assert!(provider.api_key.is_none());
     }
 

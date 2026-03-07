@@ -5,7 +5,9 @@
 //! from [`provider_auth_info`] — the caller can still use well-known auth or
 //! manual API key entry.
 
+use crate::flows::browser_oauth::BrowserOAuthConfig;
 use crate::flows::device_code::DeviceCodeConfig;
+use crate::refresh::RefreshConfig;
 
 /// Auth methods a provider supports.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -42,7 +44,7 @@ pub fn provider_auth_info(provider: &str) -> Option<ProviderAuthInfo> {
         "openai" => Some(ProviderAuthInfo {
             display_name: "OpenAI",
             env_vars: &["OPENAI_API_KEY"],
-            auth_methods: &[AuthMethod::ApiKey],
+            auth_methods: &[AuthMethod::ApiKey, AuthMethod::BrowserOAuth],
         }),
         "anthropic" => Some(ProviderAuthInfo {
             display_name: "Anthropic",
@@ -124,6 +126,73 @@ pub fn github_copilot_device_config(enterprise_domain: Option<&str>) -> DeviceCo
         token_url: format!("https://{domain}/login/oauth/access_token"),
         scope: "read:user".into(),
         grant_type: "urn:ietf:params:oauth:grant-type:device_code".into(),
+    }
+}
+
+/// Build a browser OAuth config for OpenAI ChatGPT subscription (Codex).
+///
+/// Uses the same client ID and endpoints as the official OpenAI Codex CLI.
+/// Requires a ChatGPT Plus/Pro subscription.
+pub fn openai_subscription_oauth_config() -> BrowserOAuthConfig {
+    BrowserOAuthConfig {
+        client_id: "app_EMoamEEZ73f0CkXaXp7hrann".into(),
+        auth_url: "https://auth.openai.com/oauth/authorize".into(),
+        token_url: "https://auth.openai.com/oauth/token".into(),
+        scope: "openid profile email offline_access".into(),
+        redirect_port: 1455,
+        redirect_uri: None,
+        extra_params: vec![
+            ("id_token_add_organizations".into(), "true".into()),
+            ("codex_cli_simplified_flow".into(), "true".into()),
+            ("originator".into(), "codex_cli_rs".into()),
+        ],
+    }
+}
+
+/// Build a refresh config for OpenAI OAuth tokens.
+pub fn openai_refresh_config() -> RefreshConfig {
+    RefreshConfig {
+        token_url: "https://auth.openai.com/oauth/token".into(),
+        client_id: "app_EMoamEEZ73f0CkXaXp7hrann".into(),
+    }
+}
+
+/// Build a browser OAuth config for Anthropic Claude Max subscription.
+///
+/// Uses the same client ID as Claude Code. The redirect goes to Anthropic's
+/// console, so the user must paste the authorization code manually.
+pub fn anthropic_max_oauth_config() -> BrowserOAuthConfig {
+    BrowserOAuthConfig {
+        client_id: "9d1c250a-e61b-44d9-88ed-5944d1962f5e".into(),
+        auth_url: "https://claude.ai/oauth/authorize".into(),
+        token_url: "https://console.anthropic.com/v1/oauth/token".into(),
+        scope: "org:create_api_key user:profile user:inference".into(),
+        redirect_port: 0,
+        redirect_uri: Some("https://console.anthropic.com/oauth/code/callback".into()),
+        extra_params: vec![],
+    }
+}
+
+/// Build a browser OAuth config for Anthropic Console (creates an API key).
+///
+/// Same as max config but auth URL points to console.anthropic.com.
+pub fn anthropic_console_oauth_config() -> BrowserOAuthConfig {
+    BrowserOAuthConfig {
+        client_id: "9d1c250a-e61b-44d9-88ed-5944d1962f5e".into(),
+        auth_url: "https://console.anthropic.com/oauth/authorize".into(),
+        token_url: "https://console.anthropic.com/v1/oauth/token".into(),
+        scope: "org:create_api_key user:profile user:inference".into(),
+        redirect_port: 0,
+        redirect_uri: Some("https://console.anthropic.com/oauth/code/callback".into()),
+        extra_params: vec![],
+    }
+}
+
+/// Build a refresh config for Anthropic OAuth tokens.
+pub fn anthropic_refresh_config() -> RefreshConfig {
+    RefreshConfig {
+        token_url: "https://console.anthropic.com/v1/oauth/token".into(),
+        client_id: "9d1c250a-e61b-44d9-88ed-5944d1962f5e".into(),
     }
 }
 
@@ -211,5 +280,54 @@ mod tests {
                 "{name} should have at least one env var"
             );
         }
+    }
+
+    #[test]
+    fn openai_subscription_config() {
+        let cfg = openai_subscription_oauth_config();
+        assert_eq!(cfg.client_id, "app_EMoamEEZ73f0CkXaXp7hrann");
+        assert!(cfg.auth_url.contains("auth.openai.com"));
+        assert!(cfg.token_url.contains("auth.openai.com"));
+        assert!(cfg.scope.contains("offline_access"));
+        assert_eq!(cfg.redirect_port, 1455);
+        assert!(cfg.redirect_uri.is_none());
+        assert!(!cfg.extra_params.is_empty());
+        assert!(cfg.extra_params.iter().any(|(k, _)| k == "originator"));
+    }
+
+    #[test]
+    fn openai_refresh_config_values() {
+        let cfg = openai_refresh_config();
+        assert!(cfg.token_url.contains("auth.openai.com"));
+        assert_eq!(cfg.client_id, "app_EMoamEEZ73f0CkXaXp7hrann");
+    }
+
+    #[test]
+    fn openai_now_supports_browser_oauth() {
+        let info = provider_auth_info("openai").unwrap();
+        assert!(info.auth_methods.contains(&AuthMethod::BrowserOAuth));
+    }
+
+    #[test]
+    fn anthropic_max_config() {
+        let cfg = anthropic_max_oauth_config();
+        assert_eq!(cfg.client_id, "9d1c250a-e61b-44d9-88ed-5944d1962f5e");
+        assert!(cfg.auth_url.contains("claude.ai"));
+        assert!(cfg.token_url.contains("console.anthropic.com"));
+        let redirect = cfg.redirect_uri.unwrap();
+        assert!(redirect.contains("console.anthropic.com"));
+    }
+
+    #[test]
+    fn anthropic_console_config() {
+        let cfg = anthropic_console_oauth_config();
+        assert!(cfg.auth_url.contains("console.anthropic.com"));
+        assert_eq!(cfg.client_id, "9d1c250a-e61b-44d9-88ed-5944d1962f5e");
+    }
+
+    #[test]
+    fn anthropic_refresh_config_values() {
+        let cfg = anthropic_refresh_config();
+        assert!(cfg.token_url.contains("console.anthropic.com"));
     }
 }

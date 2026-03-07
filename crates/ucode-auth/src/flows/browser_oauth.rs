@@ -15,6 +15,18 @@ pub struct BrowserOAuthConfig {
     pub token_url: String,
     pub scope: String,
     pub redirect_port: u16,
+    /// Override the redirect URI (default: http://127.0.0.1:{redirect_port}).
+    pub redirect_uri: Option<String>,
+    /// Extra query parameters appended to the authorization URL.
+    pub extra_params: Vec<(String, String)>,
+}
+
+/// Pending OAuth authorization — holds the PKCE verifier needed for token exchange.
+pub struct OAuthPending {
+    /// The authorization URL to open in the browser.
+    pub auth_url: String,
+    /// The PKCE code verifier (needed for token exchange).
+    code_verifier: String,
 }
 
 // ── PKCE helpers ──────────────────────────────────────────────────────────────
@@ -42,7 +54,10 @@ fn build_auth_url(
         message: format!("invalid auth_url: {e}"),
     })?;
 
-    let redirect_uri = format!("http://127.0.0.1:{}", config.redirect_port);
+    let redirect_uri = config
+        .redirect_uri
+        .clone()
+        .unwrap_or_else(|| format!("http://127.0.0.1:{}", config.redirect_port));
 
     url.query_pairs_mut()
         .append_pair("response_type", "code")
@@ -52,6 +67,10 @@ fn build_auth_url(
         .append_pair("code_challenge", code_challenge)
         .append_pair("code_challenge_method", "S256")
         .append_pair("state", state);
+
+    for (k, v) in &config.extra_params {
+        url.query_pairs_mut().append_pair(k, v);
+    }
 
     Ok(url.to_string())
 }
@@ -131,7 +150,6 @@ async fn wait_for_callback(
 struct TokenResponse {
     access_token: String,
     refresh_token: Option<String>,
-    #[allow(dead_code)]
     expires_in: Option<u64>,
 }
 
@@ -140,7 +158,10 @@ async fn exchange_code(
     code: &str,
     code_verifier: &str,
 ) -> Result<AuthMaterial, AuthError> {
-    let redirect_uri = format!("http://127.0.0.1:{}", config.redirect_port);
+    let redirect_uri = config
+        .redirect_uri
+        .clone()
+        .unwrap_or_else(|| format!("http://127.0.0.1:{}", config.redirect_port));
 
     let client = reqwest::Client::new();
     let resp = client
@@ -171,14 +192,18 @@ async fn exchange_code(
         message: format!("failed to parse token response: {e}"),
     })?;
 
+    let expires_at = token
+        .expires_in
+        .map(|secs| (chrono::Utc::now() + chrono::Duration::seconds(secs as i64)).to_rfc3339());
+
     Ok(AuthMaterial::OAuth {
         access_token: token.access_token,
         refresh_token: token.refresh_token,
-        expires_at: None,
+        expires_at,
     })
 }
 
-// ── Public entry point ────────────────────────────────────────────────────────
+// ── Public entry points ───────────────────────────────────────────────────────
 
 /// Perform browser-based OAuth authorization with PKCE.
 pub async fn browser_oauth_authorize(
@@ -210,6 +235,29 @@ pub async fn browser_oauth_authorize(
     exchange_code(config, &code, &code_verifier).await
 }
 
+/// Start a browser OAuth flow: generate PKCE, build the auth URL.
+pub fn start_browser_oauth(config: &BrowserOAuthConfig) -> Result<OAuthPending, AuthError> {
+    let code_verifier = generate_code_verifier();
+    let code_challenge = generate_code_challenge(&code_verifier);
+    let mut rng = rand::rng();
+    let state_bytes: [u8; 16] = std::array::from_fn(|_| rand::Rng::random::<u8>(&mut rng));
+    let state = hex_encode(&state_bytes);
+    let auth_url = build_auth_url(config, &code_challenge, &state)?;
+    Ok(OAuthPending {
+        auth_url,
+        code_verifier,
+    })
+}
+
+/// Complete a browser OAuth flow by exchanging the authorization code for tokens.
+pub async fn complete_browser_oauth(
+    config: &BrowserOAuthConfig,
+    pending: &OAuthPending,
+    authorization_code: &str,
+) -> Result<AuthMaterial, AuthError> {
+    exchange_code(config, authorization_code, &pending.code_verifier).await
+}
+
 fn hex_encode(bytes: &[u8]) -> String {
     bytes.iter().fold(String::new(), |mut s, b| {
         use std::fmt::Write as _;
@@ -223,6 +271,18 @@ fn hex_encode(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn base_config() -> BrowserOAuthConfig {
+        BrowserOAuthConfig {
+            client_id: "my-client".into(),
+            auth_url: "https://auth.example.com/authorize".into(),
+            token_url: "https://auth.example.com/token".into(),
+            scope: "openid profile".into(),
+            redirect_port: 8080,
+            redirect_uri: None,
+            extra_params: vec![],
+        }
+    }
 
     #[test]
     fn code_verifier_length() {
@@ -269,13 +329,7 @@ mod tests {
 
     #[test]
     fn build_auth_url_contains_required_params() {
-        let config = BrowserOAuthConfig {
-            client_id: "my-client".into(),
-            auth_url: "https://auth.example.com/authorize".into(),
-            token_url: "https://auth.example.com/token".into(),
-            scope: "openid profile".into(),
-            redirect_port: 8080,
-        };
+        let config = base_config();
         let url = build_auth_url(&config, "challenge-abc", "state-xyz").unwrap();
 
         let parsed = url::Url::parse(&url).unwrap();
@@ -298,6 +352,8 @@ mod tests {
             token_url: "https://auth.example.com/token".into(),
             scope: "read:user write:repo".into(),
             redirect_port: 9000,
+            redirect_uri: None,
+            extra_params: vec![],
         };
         let url = build_auth_url(&config, "ch", "st").unwrap();
 
@@ -327,8 +383,62 @@ mod tests {
             token_url: "https://t.example.com/token".into(),
             scope: "read".into(),
             redirect_port: 8080,
+            redirect_uri: None,
+            extra_params: vec![],
         };
         assert!(build_auth_url(&config, "ch", "st").is_err());
+    }
+
+    #[test]
+    fn build_auth_url_includes_extra_params() {
+        let config = BrowserOAuthConfig {
+            extra_params: vec![
+                ("audience".into(), "https://api.example.com".into()),
+                ("prompt".into(), "consent".into()),
+            ],
+            ..base_config()
+        };
+        let url = build_auth_url(&config, "ch", "st").unwrap();
+        let parsed = url::Url::parse(&url).unwrap();
+        let params: std::collections::HashMap<_, _> = parsed.query_pairs().collect();
+
+        assert_eq!(params["audience"], "https://api.example.com");
+        assert_eq!(params["prompt"], "consent");
+    }
+
+    #[test]
+    fn build_auth_url_custom_redirect_uri() {
+        let config = BrowserOAuthConfig {
+            redirect_uri: Some("https://myapp.example.com/callback".into()),
+            ..base_config()
+        };
+        let url = build_auth_url(&config, "ch", "st").unwrap();
+        let parsed = url::Url::parse(&url).unwrap();
+        let params: std::collections::HashMap<_, _> = parsed.query_pairs().collect();
+
+        assert_eq!(params["redirect_uri"], "https://myapp.example.com/callback");
+    }
+
+    #[test]
+    fn start_browser_oauth_returns_url_with_pkce() {
+        let config = base_config();
+        let pending = start_browser_oauth(&config).unwrap();
+
+        let parsed = url::Url::parse(&pending.auth_url).unwrap();
+        let params: std::collections::HashMap<_, _> = parsed.query_pairs().collect();
+
+        assert!(
+            params.contains_key("code_challenge"),
+            "auth_url must contain code_challenge"
+        );
+        assert_eq!(
+            params["code_challenge_method"], "S256",
+            "code_challenge_method must be S256"
+        );
+        assert!(
+            !pending.code_verifier.is_empty(),
+            "code_verifier must be set"
+        );
     }
 
     #[test]

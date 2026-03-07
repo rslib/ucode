@@ -10,6 +10,7 @@ thiserror = { workspace = true }
 futures-core = { workspace = true }
 futures-util = { workspace = true }
 tokio = { workspace = true }
+ucode-auth = { workspace = true }
 ucode-core = { workspace = true }
 reqwest = { version = "0.13.2", features = ["stream", "json"] }
 toml = "1.0.6"

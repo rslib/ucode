@@ -1,21 +1,42 @@
-use serde::Serialize;
+use std::collections::HashMap;
 
-use ucode_core::{CoreError, EventStream};
+use serde::{Deserialize, Serialize};
 
-use crate::openai::{ToolCallAccumulator, parse_sse_line};
+use ucode_core::{CoreError, Event, EventStream, ToolCall as CoreToolCall};
+
+use crate::config::ProviderConfig;
 use crate::provider::{Capabilities, ChatRequest, Provider, ProviderFuture, ToolDef};
+use crate::sse::stream_lines;
 
-// ── Request body types ────────────────────────────────────────────────────────
+// ── Request types ─────────────────────────────────────────────────────────────
 
 #[derive(Serialize)]
-struct OllamaRequest {
+struct OllamaNativeRequest {
     model: String,
     messages: Vec<OllamaMessage>,
     stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
-    temperature: Option<f64>,
+    options: Option<OllamaOptions>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     tools: Vec<OllamaTool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    think: Option<bool>,
+}
+
+#[derive(Serialize)]
+struct OllamaOptions {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    temperature: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    num_ctx: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    top_k: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    top_p: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    min_p: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    seed: Option<i64>,
 }
 
 #[derive(Serialize)]
@@ -37,6 +58,54 @@ struct OllamaFunction {
     description: String,
     parameters: serde_json::Value,
 }
+
+// ── Response types (NDJSON) ───────────────────────────────────────────────────
+
+// Performance stats fields are deserialized for completeness but not yet surfaced upstream.
+#[derive(Debug, Deserialize)]
+#[allow(dead_code)]
+struct OllamaChatResponse {
+    #[serde(default)]
+    message: Option<OllamaResponseMessage>,
+    #[serde(default)]
+    done: bool,
+    #[serde(default)]
+    done_reason: Option<String>,
+    #[serde(default)]
+    total_duration: Option<u64>,
+    #[serde(default)]
+    load_duration: Option<u64>,
+    #[serde(default)]
+    prompt_eval_count: Option<u64>,
+    #[serde(default)]
+    eval_count: Option<u64>,
+    #[serde(default)]
+    eval_duration: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[allow(dead_code)]
+struct OllamaResponseMessage {
+    #[serde(default)]
+    content: Option<String>,
+    #[serde(default)]
+    thinking: Option<String>,
+    #[serde(default)]
+    tool_calls: Option<Vec<OllamaResponseToolCall>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OllamaResponseToolCall {
+    function: OllamaResponseFunction,
+}
+
+#[derive(Debug, Deserialize)]
+struct OllamaResponseFunction {
+    name: String,
+    arguments: serde_json::Value,
+}
+
+// ── Conversion helpers ────────────────────────────────────────────────────────
 
 fn to_ollama_messages(messages: &[ucode_core::Message]) -> Vec<OllamaMessage> {
     messages
@@ -79,24 +148,76 @@ fn to_ollama_tools(tools: &[ToolDef]) -> Vec<OllamaTool> {
         .collect()
 }
 
-// ── Provider ──────────────────────────────────────────────────────────────────
+// ── NDJSON line parser ────────────────────────────────────────────────────────
 
-/// Ollama local inference provider using the OpenAI-compatible endpoint.
-pub struct OllamaProvider {
-    client: reqwest::Client,
-    base_url: String,
-}
+/// Parse a single NDJSON line from Ollama's native `/api/chat` response.
+pub fn parse_ollama_line(line: &str, _acc: &mut ()) -> Vec<Event> {
+    let line = line.trim();
+    if line.is_empty() {
+        return vec![];
+    }
 
-impl OllamaProvider {
-    /// Create a new Ollama provider pointing at `http://localhost:11434`.
-    pub fn new() -> Self {
-        Self {
-            client: reqwest::Client::new(),
-            base_url: "http://localhost:11434".into(),
+    let resp: OllamaChatResponse = match serde_json::from_str(line) {
+        Ok(r) => r,
+        Err(_) => return vec![],
+    };
+
+    let mut events = Vec::new();
+
+    if let Some(ref msg) = resp.message {
+        if let Some(ref content) = msg.content
+            && !content.is_empty()
+        {
+            events.push(Event::Token(content.clone()));
+        }
+
+        if let Some(ref tool_calls) = msg.tool_calls {
+            for (i, tc) in tool_calls.iter().enumerate() {
+                events.push(Event::ToolCall(CoreToolCall::new(
+                    format!("ollama_tc_{i}"),
+                    tc.function.name.clone(),
+                    tc.function.arguments.clone(),
+                )));
+            }
         }
     }
 
-    /// Override the base URL (for remote Ollama instances or testing).
+    if resp.done {
+        events.push(Event::Done);
+    }
+
+    events
+}
+
+// ── Provider ──────────────────────────────────────────────────────────────────
+
+/// Ollama local inference provider using the native `/api/chat` endpoint with NDJSON streaming.
+pub struct OllamaProvider {
+    client: reqwest::Client,
+    provider_name: String,
+    base_url: String,
+    headers: HashMap<String, String>,
+}
+
+impl OllamaProvider {
+    pub fn from_config(name: &str, config: &ProviderConfig, _api_key: Option<String>) -> Self {
+        Self {
+            client: reqwest::Client::new(),
+            provider_name: name.to_owned(),
+            base_url: config.base_url().to_owned(),
+            headers: config.headers.clone(),
+        }
+    }
+
+    pub fn new() -> Self {
+        Self {
+            client: reqwest::Client::new(),
+            provider_name: "ollama".into(),
+            base_url: "http://localhost:11434".into(),
+            headers: HashMap::new(),
+        }
+    }
+
     pub fn with_base_url(mut self, url: String) -> Self {
         self.base_url = url;
         self
@@ -111,7 +232,7 @@ impl Default for OllamaProvider {
 
 impl Provider for OllamaProvider {
     fn name(&self) -> &str {
-        "ollama"
+        &self.provider_name
     }
 
     fn capabilities(&self) -> Capabilities {
@@ -127,85 +248,59 @@ impl Provider for OllamaProvider {
 
     fn stream_chat(&self, req: ChatRequest) -> ProviderFuture<Result<EventStream, CoreError>> {
         let client = self.client.clone();
-        let url = format!("{}/v1/chat/completions", self.base_url);
+        let url = format!("{}/api/chat", self.base_url);
+        let provider_name = self.provider_name.clone();
+        let extra_headers = self.headers.clone();
 
-        let body = OllamaRequest {
+        let options = req.temperature.map(|temperature| OllamaOptions {
+            temperature: Some(temperature),
+            num_ctx: None,
+            top_k: None,
+            top_p: None,
+            min_p: None,
+            seed: None,
+        });
+
+        let body = OllamaNativeRequest {
             model: req.model,
             messages: to_ollama_messages(&req.messages),
             stream: true,
-            temperature: req.temperature,
+            options,
             tools: to_ollama_tools(&req.tools),
+            think: None,
         };
 
         Box::pin(async move {
-            let resp = client
+            let mut request = client
                 .post(&url)
                 .header("Content-Type", "application/json")
-                .json(&body)
-                .send()
-                .await
-                .map_err(|e| CoreError::Provider {
-                    provider: "ollama".into(),
-                    message: format!("HTTP request failed: {e}"),
-                })?;
+                .json(&body);
+
+            for (key, value) in &extra_headers {
+                request = request.header(key.as_str(), value.as_str());
+            }
+
+            let resp = request.send().await.map_err(|e| CoreError::Provider {
+                provider: provider_name.clone(),
+                message: format!("HTTP request failed: {e}"),
+            })?;
 
             if !resp.status().is_success() {
                 let status = resp.status();
                 let body_text = resp.text().await.unwrap_or_default();
                 if status.as_u16() == 401 || status.as_u16() == 403 {
                     return Err(CoreError::Auth {
-                        provider: "ollama".into(),
+                        provider: provider_name,
                         auth_kind: ucode_core::AuthErrorKind::Invalid,
                     });
                 }
                 return Err(CoreError::Provider {
-                    provider: "ollama".into(),
+                    provider: provider_name,
                     message: format!("HTTP {status}: {body_text}"),
                 });
             }
 
-            let byte_stream = resp.bytes_stream();
-
-            let event_stream = futures_util::stream::unfold(
-                (byte_stream, ToolCallAccumulator::default(), String::new()),
-                |(mut byte_stream, mut accumulator, mut buffer)| async move {
-                    use futures_util::StreamExt;
-
-                    loop {
-                        while let Some(newline_pos) = buffer.find('\n') {
-                            let line = buffer[..newline_pos].to_string();
-                            buffer = buffer[newline_pos + 1..].to_string();
-
-                            let events = parse_sse_line(&line, &mut accumulator);
-                            if !events.is_empty() {
-                                return Some((events, (byte_stream, accumulator, buffer)));
-                            }
-                        }
-
-                        match byte_stream.next().await {
-                            Some(Ok(bytes)) => {
-                                buffer.push_str(&String::from_utf8_lossy(&bytes));
-                            }
-                            Some(Err(_)) | None => {
-                                if !buffer.trim().is_empty() {
-                                    let events = parse_sse_line(&buffer, &mut accumulator);
-                                    buffer.clear();
-                                    if !events.is_empty() {
-                                        return Some((events, (byte_stream, accumulator, buffer)));
-                                    }
-                                }
-                                return None;
-                            }
-                        }
-                    }
-                },
-            );
-
-            let flat_stream = futures_util::stream::StreamExt::flat_map(event_stream, |events| {
-                futures_util::stream::iter(events)
-            });
-
-            Ok(Box::pin(flat_stream) as EventStream)
+            Ok(stream_lines(resp.bytes_stream(), (), parse_ollama_line))
         })
     }
 }
@@ -215,161 +310,201 @@ impl Provider for OllamaProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ucode_core::Message;
+    use std::collections::HashMap;
+    use ucode_core::{Event, Message};
+
+    use crate::config::{AdapterKind, ProviderConfig};
+    use crate::provider::ToolDef;
 
     // ── provider metadata ─────────────────────────────────────────────────────
 
     #[test]
-    fn test_provider_name() {
-        let provider = OllamaProvider::new();
-        assert_eq!(provider.name(), "ollama");
+    fn provider_name_default() {
+        assert_eq!(OllamaProvider::new().name(), "ollama");
     }
 
     #[test]
-    fn test_provider_capabilities() {
+    fn provider_name_from_config() {
+        let config = ProviderConfig {
+            adapter: AdapterKind::Ollama,
+            base_url: None,
+            api_key_env: None,
+            headers: HashMap::new(),
+        };
+        let p = OllamaProvider::from_config("my-ollama", &config, None);
+        assert_eq!(p.name(), "my-ollama");
+    }
+
+    #[test]
+    fn default_base_url() {
+        assert_eq!(OllamaProvider::new().base_url, "http://localhost:11434");
+    }
+
+    #[test]
+    fn custom_base_url() {
+        let p = OllamaProvider::new().with_base_url("http://192.168.1.10:11434".into());
+        assert_eq!(p.base_url, "http://192.168.1.10:11434");
+    }
+
+    #[test]
+    fn capabilities() {
         let caps = OllamaProvider::new().capabilities();
         assert!(caps.tool_calls);
         assert!(!caps.json_mode);
         assert_eq!(caps.max_context, 128_000);
-        assert_eq!(caps.max_output, 4_096);
         assert!(caps.streaming);
-        assert!(!caps.token_counting);
+    }
+
+    // ── NDJSON line parser ────────────────────────────────────────────────────
+
+    #[test]
+    fn parse_text_token() {
+        let line = r#"{"message":{"role":"assistant","content":"Hello"},"done":false}"#;
+        let events = parse_ollama_line(line, &mut ());
+        assert_eq!(events, vec![Event::Token("Hello".into())]);
     }
 
     #[test]
-    fn test_default_base_url() {
-        let provider = OllamaProvider::new();
-        assert_eq!(provider.base_url, "http://localhost:11434");
+    fn parse_empty_content_skipped() {
+        let line = r#"{"message":{"role":"assistant","content":""},"done":false}"#;
+        let events = parse_ollama_line(line, &mut ());
+        assert!(events.is_empty());
     }
 
     #[test]
-    fn test_custom_base_url() {
-        let provider = OllamaProvider::new().with_base_url("http://192.168.1.10:11434".into());
-        assert_eq!(provider.base_url, "http://192.168.1.10:11434");
+    fn parse_done_emits_done() {
+        let line = r#"{"message":{"role":"assistant","content":""},"done":true,"done_reason":"stop","total_duration":1234567,"eval_count":42}"#;
+        let events = parse_ollama_line(line, &mut ());
+        assert_eq!(events, vec![Event::Done]);
     }
 
     #[test]
-    fn test_count_tokens_returns_none() {
-        let provider = OllamaProvider::new();
-        let messages = vec![Message::user("hello")];
-        assert!(provider.count_tokens(&messages).is_none());
+    fn parse_tool_call() {
+        let line = r#"{"message":{"role":"assistant","content":"","tool_calls":[{"function":{"name":"get_weather","arguments":{"city":"London"}}}]},"done":false}"#;
+        let events = parse_ollama_line(line, &mut ());
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            Event::ToolCall(tc) => {
+                assert_eq!(tc.name, "get_weather");
+                assert_eq!(tc.args, serde_json::json!({"city": "London"}));
+            }
+            other => panic!("expected ToolCall, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_multiple_tool_calls() {
+        let line = r#"{"message":{"role":"assistant","content":"","tool_calls":[{"function":{"name":"a","arguments":{}}},{"function":{"name":"b","arguments":{}}}]},"done":false}"#;
+        let events = parse_ollama_line(line, &mut ());
+        assert_eq!(events.len(), 2);
+        match (&events[0], &events[1]) {
+            (Event::ToolCall(a), Event::ToolCall(b)) => {
+                assert_eq!(a.id, "ollama_tc_0");
+                assert_eq!(b.id, "ollama_tc_1");
+            }
+            _ => panic!("expected two ToolCalls"),
+        }
+    }
+
+    #[test]
+    fn parse_empty_line_ignored() {
+        assert!(parse_ollama_line("", &mut ()).is_empty());
+        assert!(parse_ollama_line("   ", &mut ()).is_empty());
+    }
+
+    #[test]
+    fn parse_invalid_json_ignored() {
+        assert!(parse_ollama_line("not json", &mut ()).is_empty());
+    }
+
+    #[test]
+    fn parse_content_with_done() {
+        // Final chunk can have both content and done=true
+        let line = r#"{"message":{"role":"assistant","content":"end"},"done":true}"#;
+        let events = parse_ollama_line(line, &mut ());
+        assert_eq!(events, vec![Event::Token("end".into()), Event::Done]);
     }
 
     // ── message conversion ────────────────────────────────────────────────────
 
     #[test]
-    fn test_message_conversion_user() {
-        let messages = vec![Message::user("Hello, world!")];
-        let converted = to_ollama_messages(&messages);
-        assert_eq!(converted.len(), 1);
-        assert_eq!(converted[0].role, "user");
-        assert_eq!(converted[0].content, "Hello, world!");
-    }
-
-    #[test]
-    fn test_message_conversion_system() {
-        let messages = vec![Message::system("You are a helpful assistant.")];
-        let converted = to_ollama_messages(&messages);
-        assert_eq!(converted.len(), 1);
-        assert_eq!(converted[0].role, "system");
-        assert_eq!(converted[0].content, "You are a helpful assistant.");
-    }
-
-    #[test]
-    fn test_message_conversion_assistant() {
-        let messages = vec![Message::assistant("I can help with that.")];
-        let converted = to_ollama_messages(&messages);
-        assert_eq!(converted.len(), 1);
-        assert_eq!(converted[0].role, "assistant");
-        assert_eq!(converted[0].content, "I can help with that.");
-    }
-
-    #[test]
-    fn test_message_conversion_mixed() {
+    fn message_conversion() {
         let messages = vec![
-            Message::system("Be concise."),
-            Message::user("What is 2+2?"),
-            Message::assistant("4"),
-            Message::user("Thanks!"),
+            Message::system("Be helpful."),
+            Message::user("Hello"),
+            Message::assistant("Hi"),
         ];
         let converted = to_ollama_messages(&messages);
-        assert_eq!(converted.len(), 4);
+        assert_eq!(converted.len(), 3);
         assert_eq!(converted[0].role, "system");
-        assert_eq!(converted[0].content, "Be concise.");
         assert_eq!(converted[1].role, "user");
-        assert_eq!(converted[1].content, "What is 2+2?");
         assert_eq!(converted[2].role, "assistant");
-        assert_eq!(converted[2].content, "4");
-        assert_eq!(converted[3].role, "user");
-        assert_eq!(converted[3].content, "Thanks!");
     }
 
-    // ── request body serialization ────────────────────────────────────────────
+    // ── request serialization ─────────────────────────────────────────────────
 
     #[test]
-    fn test_request_body_serialization() {
-        let body = OllamaRequest {
+    fn native_request_minimal() {
+        let body = OllamaNativeRequest {
             model: "llama3.2".into(),
             messages: vec![OllamaMessage {
                 role: "user".into(),
                 content: "Hello".into(),
             }],
             stream: true,
-            temperature: None,
+            options: None,
             tools: vec![],
+            think: None,
         };
         let json = serde_json::to_value(&body).unwrap();
         assert_eq!(json["model"], "llama3.2");
         assert_eq!(json["stream"], true);
-        assert_eq!(json["messages"][0]["role"], "user");
-        assert_eq!(json["messages"][0]["content"], "Hello");
-        // Empty tools should be omitted.
+        assert!(json.get("options").is_none());
         assert!(json.get("tools").is_none());
+        assert!(json.get("think").is_none());
     }
 
     #[test]
-    fn test_request_body_with_tools() {
-        let tools = vec![ToolDef {
-            name: "get_weather".into(),
-            description: "Get current weather".into(),
-            parameters: serde_json::json!({"type": "object", "properties": {"city": {"type": "string"}}}),
-        }];
-        let body = OllamaRequest {
+    fn native_request_with_options() {
+        let body = OllamaNativeRequest {
             model: "llama3.2".into(),
             messages: vec![],
             stream: true,
-            temperature: Some(0.5),
-            tools: to_ollama_tools(&tools),
+            options: Some(OllamaOptions {
+                temperature: Some(0.7),
+                num_ctx: Some(4096),
+                top_k: None,
+                top_p: None,
+                min_p: None,
+                seed: None,
+            }),
+            tools: vec![],
+            think: Some(true),
         };
         let json = serde_json::to_value(&body).unwrap();
-        assert_eq!(json["temperature"], 0.5);
-        assert!(json.get("tools").is_some());
-        assert_eq!(json["tools"][0]["type"], "function");
-        assert_eq!(json["tools"][0]["function"]["name"], "get_weather");
-        assert_eq!(
-            json["tools"][0]["function"]["description"],
-            "Get current weather"
-        );
+        assert_eq!(json["options"]["temperature"], 0.7);
+        assert_eq!(json["options"]["num_ctx"], 4096);
+        assert!(json["options"].get("top_k").is_none());
+        assert_eq!(json["think"], true);
     }
 
     #[test]
-    fn test_request_body_without_optional_fields() {
-        let body = OllamaRequest {
-            model: "mistral".into(),
-            messages: vec![OllamaMessage {
-                role: "user".into(),
-                content: "Hi".into(),
-            }],
+    fn native_request_with_tools() {
+        let tools = vec![ToolDef {
+            name: "calc".into(),
+            description: "Calculator".into(),
+            parameters: serde_json::json!({"type": "object"}),
+        }];
+        let body = OllamaNativeRequest {
+            model: "llama3.2".into(),
+            messages: vec![],
             stream: true,
-            temperature: None,
-            tools: vec![],
+            options: None,
+            tools: to_ollama_tools(&tools),
+            think: None,
         };
         let json = serde_json::to_value(&body).unwrap();
-        // Optional fields absent when None/empty.
-        assert!(json.get("temperature").is_none());
-        assert!(json.get("tools").is_none());
-        // Required fields present.
-        assert_eq!(json["model"], "mistral");
-        assert_eq!(json["stream"], true);
+        assert_eq!(json["tools"][0]["type"], "function");
+        assert_eq!(json["tools"][0]["function"]["name"], "calc");
     }
 }

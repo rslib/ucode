@@ -6,6 +6,7 @@ pub mod error;
 pub mod file_store;
 pub mod flows;
 pub mod providers;
+pub mod refresh;
 pub mod resolve;
 
 pub use chain_store::ChainStore;
@@ -23,4 +24,5 @@ pub use flows::{
 pub use providers::{
     AuthMethod, ProviderAuthInfo, github_copilot_device_config, provider_auth_info,
 };
+pub use refresh::{RefreshConfig, refresh_oauth_token, resolve_auth_with_refresh};
 pub use resolve::resolve_auth;

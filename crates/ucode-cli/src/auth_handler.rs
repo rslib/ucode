@@ -41,20 +41,65 @@ pub fn handle_logout(store: &dyn CredentialStore, provider: &str) -> Result<()> 
     Ok(())
 }
 
-pub fn handle_login(
-    _store: &dyn CredentialStore,
+pub async fn handle_login(
+    store: &dyn CredentialStore,
     provider: &str,
     device: bool,
     subscription: bool,
+    url: Option<&str>,
 ) -> Result<()> {
-    println!("Login flow for {provider} is not yet implemented.");
-    if device {
-        println!("  (device-code flow requested)");
+    // 1. Well-known URL login: provider argument is itself a URL.
+    if provider.starts_with("http://") || provider.starts_with("https://") {
+        println!("Authenticating via well-known endpoint: {provider}");
+        let material = ucode_auth::wellknown_authorize(provider).await?;
+        store.store(provider, &material)?;
+        println!("Authenticated successfully via well-known endpoint.");
+        return Ok(());
     }
+
+    let info = ucode_auth::provider_auth_info(provider);
+
+    // 2. Device code flow: explicit --device flag or provider defaults to it.
+    if device
+        || matches!(&info, Some(i) if i.auth_methods.contains(&ucode_auth::AuthMethod::DeviceCode))
+    {
+        let display = info.as_ref().map_or(provider, |i| i.display_name);
+        let enterprise_domain = url.map(|u| u.trim_start_matches("https://").trim_end_matches('/'));
+        let config = ucode_auth::github_copilot_device_config(enterprise_domain);
+
+        println!("Starting device code flow for {display}...");
+
+        let client = reqwest::Client::new();
+        let pending = ucode_auth::request_device_code(&client, &config).await?;
+
+        println!();
+        println!("  Open:  {}", pending.verification_uri);
+        println!("  Code:  {}", pending.user_code);
+        println!();
+        println!("Waiting for authorization...");
+
+        let material = ucode_auth::poll_for_token(&client, &config, &pending).await?;
+        store.store(provider, &material)?;
+        println!("Authenticated successfully as {display}.");
+        return Ok(());
+    }
+
+    // 3. Browser OAuth (subscription) — not yet configured per-provider.
     if subscription {
-        println!("  (subscription login requested)");
+        println!("Browser OAuth login is not yet configured for {provider}.");
+        println!("Use 'ucode auth set-key {provider}' to enter an API key instead.");
+        return Ok(());
     }
-    Ok(())
+
+    // 4. No auth needed (e.g., Ollama).
+    if matches!(&info, Some(i) if i.auth_methods.contains(&ucode_auth::AuthMethod::None)) {
+        let display = info.as_ref().unwrap().display_name;
+        println!("{display} does not require authentication.");
+        return Ok(());
+    }
+
+    // 5. Default: prompt for API key (known provider or unknown).
+    handle_set_key(store, provider)
 }
 
 #[cfg(test)]
@@ -90,10 +135,36 @@ mod tests {
         assert!(store.load("openai").is_err());
     }
 
-    #[test]
-    fn login_stub_returns_ok() {
+    #[tokio::test]
+    async fn login_no_auth_provider() {
         let store = InMemoryStore::new();
-        handle_login(&store, "ollama", true, false).unwrap();
+        handle_login(&store, "ollama", false, false, None)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn login_url_provider_attempts_wellknown() {
+        let store = InMemoryStore::new();
+        // Fails with an HTTP error since the URL doesn't exist,
+        // but proves the well-known path is taken (not the API key path).
+        let result = handle_login(
+            &store,
+            "https://nonexistent.example.com",
+            false,
+            false,
+            None,
+        )
+        .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn login_subscription_not_configured() {
+        let store = InMemoryStore::new();
+        handle_login(&store, "anthropic", false, true, None)
+            .await
+            .unwrap();
     }
 
     #[test]

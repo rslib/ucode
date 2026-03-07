@@ -17,17 +17,21 @@ pub enum AuthCommand {
         provider: String,
     },
 
-    /// Initiate a login flow for a provider (stub).
+    /// Initiate a login flow for a provider.
     Login {
-        /// Provider name.
+        /// Provider name or URL for well-known auth.
         provider: String,
 
         /// Use device-code flow.
         #[arg(long)]
         device: bool,
 
-        /// Use subscription-based login.
+        /// Use subscription-based login (browser OAuth).
         #[arg(long)]
         subscription: bool,
+
+        /// Enterprise URL (for GitHub Copilot Enterprise).
+        #[arg(long)]
+        url: Option<String>,
     },
 }

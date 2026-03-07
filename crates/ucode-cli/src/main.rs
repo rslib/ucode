@@ -170,7 +170,11 @@ async fn main() -> Result<()> {
                 provider,
                 device,
                 subscription,
-            } => auth_handler::handle_login(&store, &provider, device, subscription)?,
+                url,
+            } => {
+                auth_handler::handle_login(&store, &provider, device, subscription, url.as_deref())
+                    .await?
+            }
         },
         Some(Command::Session { subcommand }) => match subcommand {
             SessionCommand::List { all } => session_handler::handle_list(&session_store, all)?,

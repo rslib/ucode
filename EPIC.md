@@ -286,7 +286,7 @@ Commands:
 * Each command runs and updates keychain state accordingly.
   **Owner:** Auth/CLI
 
-### ISSUE 0203 — Auth foundation refactor (ucode-auth) [P0]
+### ISSUE 0203 — Auth foundation refactor (ucode-auth) [P0] [DONE]
 
 **Goal:** Generalize auth crate to support arbitrary providers and all auth methods (OpenCode-compatible).
 **Scope/Notes:**
@@ -307,7 +307,7 @@ Commands:
 * Auth precedence: env var > stored credential > prompt.
   **Owner:** Auth
 
-### ISSUE 0204 — Auth flow framework (ucode-auth) [P0]
+### ISSUE 0204 — Auth flow framework (ucode-auth) [P0] [DONE]
 
 **Goal:** Implement generic auth flow functions for all supported login methods.
 **Scope/Notes:**
@@ -324,7 +324,7 @@ Commands:
 * Well-known auth fetches endpoint, runs command, stores token.
   **Owner:** Auth
 
-### ISSUE 0205 — Provider-specific auth handlers (ucode-auth) [P0]
+### ISSUE 0205 — Provider-specific auth handlers (ucode-auth) [P0] [DONE]
 
 **Goal:** Concrete auth configurations for each supported provider.
 **Scope/Notes:**
@@ -363,7 +363,7 @@ CLI commands:
 * Each provider's env var is checked before prompting.
   **Owner:** Auth
 
-### ISSUE 0206 — Token refresh + expiry management (ucode-auth) [P0]
+### ISSUE 0206 — Token refresh + expiry management (ucode-auth) [P0] [DONE]
 
 **Goal:** Automatic token refresh for OAuth credentials before expiry.
 **Scope/Notes:**
@@ -444,7 +444,7 @@ CLI commands:
 * `ucode chat --provider ollama` streams output (requires local ollama running or mock)
   **Owner:** Providers
 
-### ISSUE 0306 — Provider adapter refactor — generic multi-protocol support (ucode-providers) [P0]
+### ISSUE 0306 — Provider adapter refactor — generic multi-protocol support (ucode-providers) [P0] [DONE]
 
 **Goal:** Replace hardcoded single-endpoint providers with four generic, configurable adapters.
 **Scope/Notes:**

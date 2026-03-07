@@ -292,7 +292,7 @@ TUI:
 
 * Keys persist across runs; status shows configured providers.
 
-## 2.2 Auth foundation refactor (ucode-auth) [P0]
+## 2.2 Auth foundation refactor (ucode-auth) [P0] [DONE]
 
 Generalize the auth crate to support arbitrary providers and all auth methods from the
 OpenCode ecosystem. This is the infrastructure layer that all subsequent auth tasks build on.
@@ -381,7 +381,7 @@ enum AuthMaterial {
 * Auth precedence: env var > stored credential > prompt.
 * Existing keyring-stored credentials continue to work.
 
-## 2.3 Auth flow framework (ucode-auth) [P0]
+## 2.3 Auth flow framework (ucode-auth) [P0] [DONE]
 
 Generic auth flow implementations that providers can use. Each flow is a standalone
 async function — no traits needed (only one implementation per flow type).
@@ -469,7 +469,7 @@ pub async fn wellknown_authorize(base_url: &str) -> Result<AuthMaterial, AuthErr
 * Well-known: fetches endpoint, runs command, stores token.
 * All flows store result via `CredentialStore`.
 
-## 2.4 Provider-specific auth handlers (ucode-auth) [P0]
+## 2.4 Provider-specific auth handlers (ucode-auth) [P0] [DONE]
 
 Concrete auth configurations for each supported provider. Each is a function that
 returns the appropriate `DeviceCodeConfig`, `BrowserOAuthConfig`, or env var names
@@ -531,7 +531,7 @@ pub fn github_copilot_auth_config(enterprise_url: Option<&str>) -> DeviceCodeCon
 * `ucode auth set-key groq` stores API key.
 * Each provider's env var is checked before prompting.
 
-## 2.5 Token refresh + expiry management (ucode-auth) [P0]
+## 2.5 Token refresh + expiry management (ucode-auth) [P0] [DONE]
 
 Background token refresh for OAuth credentials. Runs as a tokio task during active sessions.
 
@@ -593,7 +593,7 @@ Background token refresh for OAuth credentials. Runs as a tokio task during acti
 
 * Fast fallback / offline mode
 
-### Task 3.6 Provider adapter refactor — generic multi-protocol support (ucode-providers) [P0]
+### Task 3.6 Provider adapter refactor — generic multi-protocol support (ucode-providers) [P0] [DONE]
 
 Replace hardcoded single-endpoint providers with four generic, configurable adapters that cover
 the entire LLM API landscape. Each adapter is protocol-generic: users configure named provider

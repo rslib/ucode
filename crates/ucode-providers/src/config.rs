@@ -15,7 +15,7 @@ impl AdapterKind {
     pub fn default_base_url(&self) -> &'static str {
         match self {
             Self::Openai => "https://api.openai.com/v1",
-            Self::Anthropic => "https://api.anthropic.com",
+            Self::Anthropic => "https://api.anthropic.com/v1",
             Self::Ollama => "http://localhost:11434",
             Self::Gemini => "https://generativelanguage.googleapis.com",
         }
@@ -155,7 +155,7 @@ mod tests {
         );
         let cfg = &table.providers["claude"];
         assert_eq!(cfg.adapter, AdapterKind::Anthropic);
-        assert_eq!(cfg.base_url(), "https://api.anthropic.com");
+        assert_eq!(cfg.base_url(), "https://api.anthropic.com/v1");
     }
 
     #[test]
@@ -188,7 +188,7 @@ mod tests {
         );
         assert_eq!(
             AdapterKind::Anthropic.default_base_url(),
-            "https://api.anthropic.com"
+            "https://api.anthropic.com/v1"
         );
         assert_eq!(
             AdapterKind::Ollama.default_base_url(),

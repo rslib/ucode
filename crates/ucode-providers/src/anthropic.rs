@@ -1,7 +1,10 @@
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 
 use ucode_core::{CoreError, Event, EventStream, ToolCall as CoreToolCall};
 
+use crate::config::ProviderConfig;
 use crate::provider::{Capabilities, ChatRequest, Provider, ProviderFuture, ToolDef};
 use crate::sse::stream_lines;
 
@@ -282,19 +285,34 @@ fn to_anthropic_tools(tools: &[ToolDef]) -> Vec<AnthropicTool> {
 // ── Provider ──────────────────────────────────────────────────────────────────
 
 /// Anthropic Messages API provider.
-pub struct AnthropicProvider {
+///
+/// Works with Anthropic and any Anthropic-compatible API endpoint.
+pub struct AnthropicCompatProvider {
     client: reqwest::Client,
-    api_key: String,
+    provider_name: String,
+    api_key: Option<String>,
     base_url: String,
+    headers: HashMap<String, String>,
 }
 
-impl AnthropicProvider {
-    /// Create a new Anthropic provider with the given API key.
+impl AnthropicCompatProvider {
+    pub fn from_config(name: &str, config: &ProviderConfig, api_key: Option<String>) -> Self {
+        Self {
+            client: reqwest::Client::new(),
+            provider_name: name.to_owned(),
+            api_key,
+            base_url: config.base_url().to_owned(),
+            headers: config.headers.clone(),
+        }
+    }
+
     pub fn new(api_key: String) -> Self {
         Self {
             client: reqwest::Client::new(),
-            api_key,
+            provider_name: "anthropic".into(),
+            api_key: Some(api_key),
             base_url: "https://api.anthropic.com/v1".into(),
+            headers: HashMap::new(),
         }
     }
 
@@ -305,9 +323,9 @@ impl AnthropicProvider {
     }
 }
 
-impl Provider for AnthropicProvider {
+impl Provider for AnthropicCompatProvider {
     fn name(&self) -> &str {
-        "anthropic"
+        &self.provider_name
     }
 
     fn capabilities(&self) -> Capabilities {
@@ -324,6 +342,8 @@ impl Provider for AnthropicProvider {
     fn stream_chat(&self, req: ChatRequest) -> ProviderFuture<Result<EventStream, CoreError>> {
         let client = self.client.clone();
         let api_key = self.api_key.clone();
+        let provider_name = self.provider_name.clone();
+        let extra_headers = self.headers.clone();
         let url = format!("{}/messages", self.base_url);
 
         let (system, messages) = split_messages(&req.messages);
@@ -338,16 +358,24 @@ impl Provider for AnthropicProvider {
         };
 
         Box::pin(async move {
-            let resp = client
-                .post(&url)
-                .header("x-api-key", &api_key)
+            let mut builder = client.post(&url);
+
+            if let Some(key) = &api_key {
+                builder = builder.header("x-api-key", key);
+            }
+            builder = builder
                 .header("anthropic-version", "2023-06-01")
-                .header("content-type", "application/json")
+                .header("content-type", "application/json");
+            for (k, v) in &extra_headers {
+                builder = builder.header(k.as_str(), v.as_str());
+            }
+
+            let resp = builder
                 .json(&body)
                 .send()
                 .await
                 .map_err(|e| CoreError::Provider {
-                    provider: "anthropic".into(),
+                    provider: provider_name.clone(),
                     message: format!("HTTP request failed: {e}"),
                 })?;
 
@@ -356,12 +384,12 @@ impl Provider for AnthropicProvider {
                 let body_text = resp.text().await.unwrap_or_default();
                 if status.as_u16() == 401 || status.as_u16() == 403 {
                     return Err(CoreError::Auth {
-                        provider: "anthropic".into(),
+                        provider: provider_name,
                         auth_kind: ucode_core::AuthErrorKind::Invalid,
                     });
                 }
                 return Err(CoreError::Provider {
-                    provider: "anthropic".into(),
+                    provider: provider_name,
                     message: format!("HTTP {status}: {body_text}"),
                 });
             }
@@ -382,6 +410,7 @@ impl Provider for AnthropicProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::AdapterKind;
     use ucode_core::{Event, Message};
 
     fn feed(lines: &[&str], acc: &mut AnthropicToolAccumulator) -> Vec<Event> {
@@ -680,7 +709,7 @@ mod tests {
 
     #[test]
     fn provider_name_and_capabilities() {
-        let provider = AnthropicProvider::new("test-key".into());
+        let provider = AnthropicCompatProvider::new("test-key".into());
         assert_eq!(provider.name(), "anthropic");
 
         let caps = provider.capabilities();
@@ -694,9 +723,55 @@ mod tests {
 
     #[test]
     fn provider_with_base_url() {
-        let provider =
-            AnthropicProvider::new("key".into()).with_base_url("http://localhost:8080".into());
+        let provider = AnthropicCompatProvider::new("key".into())
+            .with_base_url("http://localhost:8080".into());
         assert_eq!(provider.base_url, "http://localhost:8080");
+    }
+
+    #[test]
+    fn from_config_uses_provider_name() {
+        let config = ProviderConfig {
+            adapter: AdapterKind::Anthropic,
+            base_url: None,
+            api_key_env: None,
+            headers: HashMap::new(),
+        };
+        let provider =
+            AnthropicCompatProvider::from_config("my-anthropic", &config, Some("key".into()));
+        assert_eq!(provider.name(), "my-anthropic");
+        assert_eq!(provider.base_url, "https://api.anthropic.com/v1");
+    }
+
+    #[test]
+    fn from_config_with_custom_base_url() {
+        let config = ProviderConfig {
+            adapter: AdapterKind::Anthropic,
+            base_url: Some("https://proxy.example.com/anthropic".into()),
+            api_key_env: None,
+            headers: HashMap::new(),
+        };
+        let provider = AnthropicCompatProvider::from_config("proxy", &config, Some("key".into()));
+        assert_eq!(provider.base_url, "https://proxy.example.com/anthropic");
+    }
+
+    #[test]
+    fn new_defaults_to_anthropic() {
+        let provider = AnthropicCompatProvider::new("test-key".into());
+        assert_eq!(provider.name(), "anthropic");
+        assert_eq!(provider.base_url, "https://api.anthropic.com/v1");
+        assert_eq!(provider.api_key, Some("test-key".into()));
+    }
+
+    #[test]
+    fn no_api_key_allowed() {
+        let config = ProviderConfig {
+            adapter: AdapterKind::Anthropic,
+            base_url: None,
+            api_key_env: None,
+            headers: HashMap::new(),
+        };
+        let provider = AnthropicCompatProvider::from_config("proxy", &config, None);
+        assert!(provider.api_key.is_none());
     }
 
     // ── message_start / message_delta ignored ─────────────────────────────────

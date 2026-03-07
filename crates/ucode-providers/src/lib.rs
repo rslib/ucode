@@ -8,7 +8,10 @@ pub mod openai;
 pub mod provider;
 pub mod sse;
 
-pub use anthropic::{AnthropicProvider, parse_anthropic_sse_line};
+pub use anthropic::{AnthropicCompatProvider, parse_anthropic_sse_line};
+
+/// Backward-compat alias.
+pub type AnthropicProvider = AnthropicCompatProvider;
 pub use config::{AdapterKind, ProviderConfig, ProvidersTable};
 pub use mock::MockProvider;
 pub use ollama::OllamaProvider;

@@ -1310,7 +1310,7 @@ Design doc: `docs/plans/2026-03-06-wasm-runtime-design.md`
 * Runtime model and effective plugin permissions are visible in logs/UI.
   **Owner:** Plugins/Security
 
-### ISSUE 0806 — External plugin infrastructure + public hook surface (ucode-plugins + core) [P0]
+### ISSUE 0806 — External plugin infrastructure + public hook surface (ucode-plugins + core) [P0] [DONE]
 
 **Goal:** Complete the plugin runtime plumbing so external plugins (DCP-style context managers, custom tools, etc.) can load, receive hooks, transform messages, and register tools — all within the existing capability/policy model.
 **Scope/Notes:**

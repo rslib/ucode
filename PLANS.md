@@ -1403,7 +1403,7 @@ DONE. 115 plugin tests (111 unit + 4 integration), 0 clippy warnings. Implemente
 * Plugin-originated tool call triggers normal approval/sandbox checks.
 * Runtime model and effective permissions visible in logs/UI.
 
-### Task 8.6 External plugin infrastructure + public hook surface (ucode-plugins + ucode-core) [P0]
+### Task 8.6 External plugin infrastructure + public hook surface (ucode-plugins + ucode-core) [P0] [DONE]
 
 Enable external plugins (DCP-style, context-management, etc.) via documented public hook contracts
 and complete plugin runtime plumbing. This is the infrastructure layer — Phase B (Task 8.8) builds

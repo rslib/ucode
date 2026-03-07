@@ -408,7 +408,14 @@ impl AppState {
     /// arg1`, etc., before falling back to `/name` alone.
     ///
     /// Returns `true` if the command was found and executed, `false` otherwise.
-    pub fn execute_command(&mut self, name: &str, args: &[String]) -> bool {
+    /// Execute a slash command by name. Returns the associated [`Action`] if
+    /// the command has one, so the caller can dispatch it. Returns `None` for
+    /// unknown commands or commands without an action.
+    pub fn execute_command(
+        &mut self,
+        name: &str,
+        args: &[String],
+    ) -> Option<crate::keybinds::Action> {
         let bare_name = name.trim_start_matches('/');
 
         // Build candidate lookups from most-specific to least-specific.
@@ -428,10 +435,10 @@ impl AppState {
         let resolved = candidates.iter().find_map(|(lookup, remaining_args)| {
             self.command_registry
                 .resolve(lookup)
-                .map(|cmd| (cmd.name.clone(), cmd.action.is_some(), *remaining_args))
+                .map(|cmd| (cmd.name.clone(), cmd.action, *remaining_args))
         });
 
-        if let Some((cmd_name, has_action, remaining_args)) = resolved {
+        if let Some((cmd_name, action, remaining_args)) = resolved {
             let bare = cmd_name.trim_start_matches('/');
             let args_str = if remaining_args.is_empty() {
                 String::new()
@@ -440,12 +447,12 @@ impl AppState {
             };
             self.push_system_message(format!("/{bare}{args_str}"));
 
-            if has_action {
+            if action.is_some() {
                 self.push_system_message(format!("Executed: {bare}"));
             } else {
                 self.push_system_message(format!("Command {cmd_name} is not yet implemented"));
             }
-            true
+            action
         } else {
             let suggestions: Vec<String> = self
                 .command_registry
@@ -462,7 +469,7 @@ impl AppState {
                     suggestions.join(", ")
                 ));
             }
-            false
+            None
         }
     }
 
@@ -978,7 +985,10 @@ mod tests {
     fn test_execute_command_known() {
         let mut app = AppState::new();
         let result = app.execute_command("connect", &[]);
-        assert!(result, "known command should return true");
+        assert!(
+            result.is_some(),
+            "known command with action should return Some(Action)"
+        );
         // Should have two system messages: the echo and the "Executed: connect" note.
         let sys_msgs: Vec<_> = app
             .transcript
@@ -1001,7 +1011,7 @@ mod tests {
     fn test_execute_command_unknown() {
         let mut app = AppState::new();
         let result = app.execute_command("nonexistent", &[]);
-        assert!(!result, "unknown command should return false");
+        assert!(result.is_none(), "unknown command should return None");
         let has_unknown = app.transcript.iter().any(
             |e| matches!(e, TranscriptEntry::SystemMessage(m) if m.contains("Unknown command")),
         );
@@ -1013,7 +1023,10 @@ mod tests {
         let mut app = AppState::new();
         // With leading slash — same as without.
         let result = app.execute_command("/connect", &[]);
-        assert!(result, "execute_command should accept names with leading /");
+        assert!(
+            result.is_some(),
+            "execute_command should accept names with leading /"
+        );
     }
 
     #[test]
@@ -1021,7 +1034,7 @@ mod tests {
         let mut app = AppState::new();
         // "conect" is close enough to "/connect" to get a suggestion.
         let result = app.execute_command("conect", &[]);
-        assert!(!result);
+        assert!(result.is_none());
         let has_suggestion = app
             .transcript
             .iter()
@@ -1033,9 +1046,9 @@ mod tests {
     fn test_execute_command_with_args() {
         let mut app = AppState::new();
         let args = vec!["my-session".to_owned()];
-        // "/session rename" is a known command.
+        // "/session rename" is a known command — but has no action, so returns None.
         let result = app.execute_command("session rename", &args);
-        assert!(result);
+        assert!(result.is_none(), "command without action returns None");
         let has_args = app
             .transcript
             .iter()

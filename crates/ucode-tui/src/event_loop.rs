@@ -729,7 +729,10 @@ fn handle_terminal_event(
                     }
                     crossterm::event::KeyCode::Enter => {
                         if let Some(cmd) = app.palette.execute_selected() {
-                            app.execute_command(&cmd.name, &[]);
+                            if let Some(action) = app.execute_command(&cmd.name, &[]) {
+                                app.focus = FocusTarget::Input;
+                                return dispatch_action(action, app, input_box);
+                            }
                             app.focus = FocusTarget::Input;
                         }
                     }
@@ -1148,7 +1151,9 @@ fn dispatch_action(action: Action, app: &mut AppState, input_box: &mut InputBoxS
                     if let Some((name, args)) = slash_cmd {
                         // A slash command was parsed — dispatch it regardless of whether
                         // it resolves. Never fall back to streaming for slash input.
-                        app.execute_command(&name, &args);
+                        if let Some(action) = app.execute_command(&name, &args) {
+                            return dispatch_action(action, app, input_box);
+                        }
                     } else {
                         // Bare "/" with no command name — treat as regular message.
                         app.push_user_message(content);

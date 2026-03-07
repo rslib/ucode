@@ -1,6 +1,6 @@
 use futures_util::StreamExt;
 
-use ucode_core::{Event, Message};
+use ucode_core::{CoreError, Event, Message};
 use ucode_providers::{Capabilities, ChatRequest, MockProvider, Provider};
 
 #[tokio::test]
@@ -102,4 +102,43 @@ async fn capabilities_default_all_false() {
     assert_eq!(caps.max_output, 0);
     assert!(!caps.streaming);
     assert!(!caps.token_counting);
+}
+
+#[test]
+fn auth_error_kind_variants() {
+    let err = CoreError::Auth {
+        provider: "openai".into(),
+        auth_kind: ucode_core::AuthErrorKind::Invalid,
+    };
+    assert!(matches!(
+        err,
+        CoreError::Auth {
+            auth_kind: ucode_core::AuthErrorKind::Invalid,
+            ..
+        }
+    ));
+
+    let err = CoreError::Auth {
+        provider: "test".into(),
+        auth_kind: ucode_core::AuthErrorKind::Missing,
+    };
+    assert!(matches!(
+        err,
+        CoreError::Auth {
+            auth_kind: ucode_core::AuthErrorKind::Missing,
+            ..
+        }
+    ));
+
+    let err = CoreError::Auth {
+        provider: "test".into(),
+        auth_kind: ucode_core::AuthErrorKind::Expired,
+    };
+    assert!(matches!(
+        err,
+        CoreError::Auth {
+            auth_kind: ucode_core::AuthErrorKind::Expired,
+            ..
+        }
+    ));
 }

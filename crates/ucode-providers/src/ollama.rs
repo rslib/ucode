@@ -152,6 +152,12 @@ impl Provider for OllamaProvider {
             if !resp.status().is_success() {
                 let status = resp.status();
                 let body_text = resp.text().await.unwrap_or_default();
+                if status.as_u16() == 401 || status.as_u16() == 403 {
+                    return Err(CoreError::Auth {
+                        provider: "ollama".into(),
+                        auth_kind: ucode_core::AuthErrorKind::Invalid,
+                    });
+                }
                 return Err(CoreError::Provider {
                     provider: "ollama".into(),
                     message: format!("HTTP {status}: {body_text}"),

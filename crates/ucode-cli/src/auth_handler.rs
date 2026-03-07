@@ -84,10 +84,44 @@ pub async fn handle_login(
         return Ok(());
     }
 
-    // 3. Browser OAuth (subscription) — not yet configured per-provider.
+    // 3. Browser OAuth (subscription login).
     if subscription {
-        println!("Browser OAuth login is not yet configured for {provider}.");
-        println!("Use 'ucode auth set-key {provider}' to enter an API key instead.");
+        let info = ucode_auth::provider_auth_info(provider);
+        let display = info.as_ref().map_or(provider, |i| i.display_name);
+
+        match provider.to_lowercase().as_str() {
+            "openai" => {
+                let config = ucode_auth::openai_subscription_oauth_config();
+                println!("Starting ChatGPT subscription login for {display}...");
+                let material = ucode_auth::browser_oauth_authorize(&config).await?;
+                store.store(provider, &material)?;
+                println!("Authenticated successfully as {display} (ChatGPT subscription).");
+            }
+            "anthropic" => {
+                let config = ucode_auth::anthropic_max_oauth_config();
+                let pending = ucode_auth::start_browser_oauth(&config)?;
+
+                println!("Opening browser for {display} Claude Max login...");
+                let _ = open::that(&pending.auth_url);
+
+                println!();
+                println!("After authorizing, paste the authorization code below.");
+                print!("Authorization code: ");
+                io::stdout().flush()?;
+
+                let mut code = String::new();
+                io::stdin().lock().read_line(&mut code)?;
+                let code = code.trim();
+
+                let material = ucode_auth::complete_browser_oauth(&config, &pending, code).await?;
+                store.store(provider, &material)?;
+                println!("Authenticated successfully as {display} (Claude Max).");
+            }
+            _ => {
+                println!("Subscription OAuth is not available for {provider}.");
+                println!("Use 'ucode auth set-key {provider}' to enter an API key instead.");
+            }
+        }
         return Ok(());
     }
 
@@ -160,9 +194,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn login_subscription_not_configured() {
+    async fn login_subscription_unknown_provider() {
         let store = InMemoryStore::new();
-        handle_login(&store, "anthropic", false, true, None)
+        // Unknown provider with --subscription should print a message, not error
+        handle_login(&store, "groq", false, true, None)
             .await
             .unwrap();
     }

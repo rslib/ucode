@@ -19,12 +19,17 @@ pub use credential::{
 pub use error::AuthError;
 pub use file_store::FileStore;
 pub use flows::{
-    browser_oauth::{BrowserOAuthConfig, browser_oauth_authorize},
+    browser_oauth::{
+        BrowserOAuthConfig, OAuthPending, browser_oauth_authorize, complete_browser_oauth,
+        start_browser_oauth,
+    },
     device_code::{DeviceCodeConfig, DeviceCodePending, poll_for_token, request_device_code},
     wellknown::wellknown_authorize,
 };
 pub use providers::{
-    AuthMethod, ProviderAuthInfo, github_copilot_device_config, provider_auth_info,
+    AuthMethod, ProviderAuthInfo, anthropic_console_oauth_config, anthropic_max_oauth_config,
+    anthropic_refresh_config, github_copilot_device_config, openai_refresh_config,
+    openai_subscription_oauth_config, provider_auth_info,
 };
 pub use refresh::{RefreshConfig, refresh_oauth_token, resolve_auth_with_refresh};
 pub use resolve::resolve_auth;

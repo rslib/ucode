@@ -13,6 +13,21 @@ members = [
     "crates/ucode-context",
     "examples/plugins/hello-wasm",
 ]
+# hello-wasm is a WASM component plugin -- must be built with
+# --target wasm32-wasip1, so exclude it from default workspace builds.
+default-members = [
+    "crates/ucode-core",
+    "crates/ucode-auth",
+    "crates/ucode-providers",
+    "crates/ucode-tools",
+    "crates/ucode-mcp",
+    "crates/ucode-skills",
+    "crates/ucode-plugins",
+    "crates/ucode-plugin-sdk",
+    "crates/ucode-tui",
+    "crates/ucode-cli",
+    "crates/ucode-context",
+]
 resolver = "2"
 
 [workspace.package]

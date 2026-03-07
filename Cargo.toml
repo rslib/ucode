@@ -11,6 +11,7 @@ members = [
     "crates/ucode-tui",
     "crates/ucode-cli",
     "crates/ucode-context",
+    "crates/ucode-agent",
     "examples/plugins/hello-wasm",
 ]
 # hello-wasm is a WASM component plugin -- must be built with
@@ -27,6 +28,7 @@ default-members = [
     "crates/ucode-tui",
     "crates/ucode-cli",
     "crates/ucode-context",
+    "crates/ucode-agent",
 ]
 resolver = "2"
 
@@ -122,3 +124,4 @@ ucode-mcp = { path = "crates/ucode-mcp" }
 ucode-skills = { path = "crates/ucode-skills" }
 ucode-plugins = { path = "crates/ucode-plugins" }
 ucode-tui = { path = "crates/ucode-tui" }
+ucode-agent = { path = "crates/ucode-agent" }

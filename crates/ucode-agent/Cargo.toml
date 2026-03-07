@@ -1,0 +1,25 @@
+[package]
+name = "ucode-agent"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = "0.8"
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+futures-util = { workspace = true }
+
+ucode-core = { workspace = true }
+ucode-providers = { workspace = true }
+ucode-tools = { workspace = true }
+ucode-auth = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }

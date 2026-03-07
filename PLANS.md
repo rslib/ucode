@@ -553,7 +553,7 @@ Background token refresh for OAuth credentials. Runs as a tokio task during acti
 * Failed refresh triggers clean auth error and fallback.
 * Refreshed credentials persist to store.
 
-## 2.6 Auth-aware fallback (ucode-core + providers) [P0]
+## 2.6 Auth-aware fallback (ucode-core + providers) [P0] [DONE]
 
 * Auth errors mapped to `AuthMissing/AuthInvalid/AuthExpired`
 * Router immediately falls back and emits `Event::Log` explaining why

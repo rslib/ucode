@@ -380,7 +380,7 @@ CLI commands:
 * Refreshed credentials persist to store.
   **Owner:** Auth
 
-### ISSUE 0207 — Auth-aware fallback integration (ucode-core + providers) [P0]
+### ISSUE 0207 — Auth-aware fallback integration (ucode-core + providers) [P0] [DONE]
 
 **Goal:** Ensure auth failures trigger routing fallback with clear logs.
 **Scope/Notes:**

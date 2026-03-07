@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
 
 use crate::error::AuthError;
@@ -24,42 +23,60 @@ pub enum AuthMaterial {
         /// ISO 8601 timestamp.
         expires_at: Option<String>,
     },
+    WellKnown {
+        /// Env var name the provider expects (e.g., "CUSTOM_API_KEY").
+        env_key: String,
+        /// The actual token value.
+        token: String,
+    },
+    AwsCredentials {
+        access_key_id: String,
+        secret_access_key: String,
+        session_token: Option<String>,
+        region: String,
+    },
 }
 
-/// Known provider identifiers.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, ValueEnum)]
+/// The protocol adapter type. Selected by the `type` field in TOML config.
+/// This is NOT the provider identity — provider IDs are arbitrary strings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ProviderId {
+pub enum ProviderType {
     OpenAi,
     Anthropic,
     Ollama,
+    Gemini,
 }
 
-impl ProviderId {
+impl ProviderType {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::OpenAi => "openai",
             Self::Anthropic => "anthropic",
             Self::Ollama => "ollama",
+            Self::Gemini => "gemini",
         }
     }
 }
 
-impl std::fmt::Display for ProviderId {
+impl std::fmt::Display for ProviderType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.as_str())
     }
 }
 
-impl std::str::FromStr for ProviderId {
-    type Err = String;
+impl std::str::FromStr for ProviderType {
+    type Err = AuthError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
             "openai" => Ok(Self::OpenAi),
             "anthropic" => Ok(Self::Anthropic),
             "ollama" => Ok(Self::Ollama),
-            other => Err(format!("unknown provider: {other}")),
+            "gemini" => Ok(Self::Gemini),
+            other => Err(AuthError::InvalidProvider {
+                name: other.to_owned(),
+            }),
         }
     }
 }
@@ -67,16 +84,16 @@ impl std::str::FromStr for ProviderId {
 /// Status of a provider's credentials.
 #[derive(Debug, Clone, PartialEq)]
 pub enum CredentialStatus {
-    Configured { provider: ProviderId, kind: String },
-    NotConfigured { provider: ProviderId },
+    Configured { provider: String, kind: String },
+    NotConfigured { provider: String },
 }
 
 /// Backend for storing and retrieving credentials.
 pub trait CredentialStore: Send + Sync {
-    fn store(&self, provider: ProviderId, material: &AuthMaterial) -> Result<(), AuthError>;
-    fn load(&self, provider: ProviderId) -> Result<AuthMaterial, AuthError>;
-    fn delete(&self, provider: ProviderId) -> Result<(), AuthError>;
-    fn status(&self, provider: ProviderId) -> CredentialStatus;
+    fn store(&self, provider: &str, material: &AuthMaterial) -> Result<(), AuthError>;
+    fn load(&self, provider: &str) -> Result<AuthMaterial, AuthError>;
+    fn delete(&self, provider: &str) -> Result<(), AuthError>;
+    fn status(&self, provider: &str) -> CredentialStatus;
     fn list_configured(&self) -> Vec<CredentialStatus>;
 }
 
@@ -92,7 +109,7 @@ pub fn redact(secret: &str) -> String {
 
 /// In-memory credential store for tests and fallback environments.
 pub struct InMemoryStore {
-    data: Mutex<HashMap<ProviderId, AuthMaterial>>,
+    data: Mutex<HashMap<String, AuthMaterial>>,
 }
 
 impl InMemoryStore {
@@ -110,44 +127,54 @@ impl Default for InMemoryStore {
 }
 
 impl CredentialStore for InMemoryStore {
-    fn store(&self, provider: ProviderId, material: &AuthMaterial) -> Result<(), AuthError> {
-        self.data.lock().unwrap().insert(provider, material.clone());
-        Ok(())
-    }
-
-    fn load(&self, provider: ProviderId) -> Result<AuthMaterial, AuthError> {
+    fn store(&self, provider: &str, material: &AuthMaterial) -> Result<(), AuthError> {
         self.data
             .lock()
             .unwrap()
-            .get(&provider)
+            .insert(provider.to_owned(), material.clone());
+        Ok(())
+    }
+
+    fn load(&self, provider: &str) -> Result<AuthMaterial, AuthError> {
+        self.data
+            .lock()
+            .unwrap()
+            .get(provider)
             .cloned()
             .ok_or_else(|| AuthError::NotFound {
-                provider: provider.to_string(),
+                provider: provider.to_owned(),
             })
     }
 
-    fn delete(&self, provider: ProviderId) -> Result<(), AuthError> {
-        let removed = self.data.lock().unwrap().remove(&provider);
+    fn delete(&self, provider: &str) -> Result<(), AuthError> {
+        let removed = self.data.lock().unwrap().remove(provider);
         removed.map(|_| ()).ok_or_else(|| AuthError::NotFound {
-            provider: provider.to_string(),
+            provider: provider.to_owned(),
         })
     }
 
-    fn status(&self, provider: ProviderId) -> CredentialStatus {
+    fn status(&self, provider: &str) -> CredentialStatus {
         match self.load(provider) {
-            Ok(mat) => {
-                let kind = material_kind(&mat);
-                CredentialStatus::Configured {
-                    provider,
-                    kind: kind.into(),
-                }
-            }
-            Err(_) => CredentialStatus::NotConfigured { provider },
+            Ok(mat) => CredentialStatus::Configured {
+                provider: provider.to_owned(),
+                kind: material_kind(&mat).into(),
+            },
+            Err(_) => CredentialStatus::NotConfigured {
+                provider: provider.to_owned(),
+            },
         }
     }
 
     fn list_configured(&self) -> Vec<CredentialStatus> {
-        all_providers().map(|p| self.status(p)).collect()
+        self.data
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(id, mat)| CredentialStatus::Configured {
+                provider: id.clone(),
+                kind: material_kind(mat).into(),
+            })
+            .collect()
     }
 }
 
@@ -165,8 +192,8 @@ impl KeyringStore {
         }
     }
 
-    fn entry(&self, provider: ProviderId) -> Result<keyring::Entry, AuthError> {
-        keyring::Entry::new(&self.service_name, provider.as_str()).map_err(|e| AuthError::Keyring {
+    fn entry(&self, provider: &str) -> Result<keyring::Entry, AuthError> {
+        keyring::Entry::new(&self.service_name, provider).map_err(|e| AuthError::Keyring {
             message: e.to_string(),
         })
     }
@@ -179,7 +206,7 @@ impl Default for KeyringStore {
 }
 
 impl CredentialStore for KeyringStore {
-    fn store(&self, provider: ProviderId, material: &AuthMaterial) -> Result<(), AuthError> {
+    fn store(&self, provider: &str, material: &AuthMaterial) -> Result<(), AuthError> {
         let json = serde_json::to_string(material).map_err(|e| AuthError::Serialization {
             message: e.to_string(),
         })?;
@@ -190,10 +217,10 @@ impl CredentialStore for KeyringStore {
             })
     }
 
-    fn load(&self, provider: ProviderId) -> Result<AuthMaterial, AuthError> {
+    fn load(&self, provider: &str) -> Result<AuthMaterial, AuthError> {
         let json = self.entry(provider)?.get_password().map_err(|e| match e {
             keyring::Error::NoEntry => AuthError::NotFound {
-                provider: provider.to_string(),
+                provider: provider.to_owned(),
             },
             other => AuthError::Keyring {
                 message: other.to_string(),
@@ -204,12 +231,12 @@ impl CredentialStore for KeyringStore {
         })
     }
 
-    fn delete(&self, provider: ProviderId) -> Result<(), AuthError> {
+    fn delete(&self, provider: &str) -> Result<(), AuthError> {
         self.entry(provider)?
             .delete_credential()
             .map_err(|e| match e {
                 keyring::Error::NoEntry => AuthError::NotFound {
-                    provider: provider.to_string(),
+                    provider: provider.to_owned(),
                 },
                 other => AuthError::Keyring {
                     message: other.to_string(),
@@ -217,36 +244,33 @@ impl CredentialStore for KeyringStore {
             })
     }
 
-    fn status(&self, provider: ProviderId) -> CredentialStatus {
+    fn status(&self, provider: &str) -> CredentialStatus {
         match self.load(provider) {
             Ok(mat) => CredentialStatus::Configured {
-                provider,
+                provider: provider.to_owned(),
                 kind: material_kind(&mat).into(),
             },
-            Err(_) => CredentialStatus::NotConfigured { provider },
+            Err(_) => CredentialStatus::NotConfigured {
+                provider: provider.to_owned(),
+            },
         }
     }
 
     fn list_configured(&self) -> Vec<CredentialStatus> {
-        all_providers().map(|p| self.status(p)).collect()
+        // KeyringStore cannot enumerate — return empty.
+        // Use ChainStore or config-driven listing instead.
+        Vec::new()
     }
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
-fn material_kind(mat: &AuthMaterial) -> &'static str {
+pub(crate) fn material_kind(mat: &AuthMaterial) -> &'static str {
     match mat {
         AuthMaterial::ApiKey { .. } => "api_key",
         AuthMaterial::OAuth { .. } => "oauth",
         AuthMaterial::SessionToken { .. } => "session_token",
+        AuthMaterial::WellKnown { .. } => "wellknown",
+        AuthMaterial::AwsCredentials { .. } => "aws_credentials",
     }
-}
-
-pub fn all_providers() -> impl Iterator<Item = ProviderId> {
-    [
-        ProviderId::OpenAi,
-        ProviderId::Anthropic,
-        ProviderId::Ollama,
-    ]
-    .into_iter()
 }

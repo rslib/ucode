@@ -1,7 +1,5 @@
-use std::str::FromStr;
-
 use ucode_auth::{
-    AuthError, AuthMaterial, CredentialStatus, CredentialStore, InMemoryStore, ProviderId, redact,
+    AuthError, AuthMaterial, CredentialStatus, CredentialStore, InMemoryStore, ProviderType, redact,
 };
 
 fn api_key(key: &str) -> AuthMaterial {
@@ -23,60 +21,102 @@ fn session(token: &str) -> AuthMaterial {
     }
 }
 
+fn wellknown(env_key: &str, token: &str) -> AuthMaterial {
+    AuthMaterial::WellKnown {
+        env_key: env_key.into(),
+        token: token.into(),
+    }
+}
+
+fn aws_creds() -> AuthMaterial {
+    AuthMaterial::AwsCredentials {
+        access_key_id: "AKIAIOSFODNN7EXAMPLE".into(),
+        secret_access_key: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY".into(),
+        session_token: Some("FwoGZXIvYXdzEBY...".into()),
+        region: "us-east-1".into(),
+    }
+}
+
+// ── Store / Load ─────────────────────────────────────────────────────────────
+
 #[test]
 fn store_and_load_api_key() {
     let store = InMemoryStore::new();
     let mat = api_key("sk-test-key");
-    store.store(ProviderId::OpenAi, &mat).unwrap();
-    assert_eq!(store.load(ProviderId::OpenAi).unwrap(), mat);
+    store.store("openai", &mat).unwrap();
+    assert_eq!(store.load("openai").unwrap(), mat);
 }
 
 #[test]
 fn store_and_load_oauth() {
     let store = InMemoryStore::new();
     let mat = oauth("access-token-abc");
-    store.store(ProviderId::Anthropic, &mat).unwrap();
-    assert_eq!(store.load(ProviderId::Anthropic).unwrap(), mat);
+    store.store("anthropic", &mat).unwrap();
+    assert_eq!(store.load("anthropic").unwrap(), mat);
 }
 
 #[test]
 fn store_and_load_session_token() {
     let store = InMemoryStore::new();
     let mat = session("sess-token-xyz");
-    store.store(ProviderId::Ollama, &mat).unwrap();
-    assert_eq!(store.load(ProviderId::Ollama).unwrap(), mat);
+    store.store("ollama", &mat).unwrap();
+    assert_eq!(store.load("ollama").unwrap(), mat);
+}
+
+#[test]
+fn store_and_load_wellknown() {
+    let store = InMemoryStore::new();
+    let mat = wellknown("CUSTOM_API_KEY", "tok-abc-123");
+    store.store("custom-provider", &mat).unwrap();
+    assert_eq!(store.load("custom-provider").unwrap(), mat);
+}
+
+#[test]
+fn store_and_load_aws_credentials() {
+    let store = InMemoryStore::new();
+    let mat = aws_creds();
+    store.store("aws-bedrock", &mat).unwrap();
+    assert_eq!(store.load("aws-bedrock").unwrap(), mat);
+}
+
+#[test]
+fn arbitrary_provider_name() {
+    let store = InMemoryStore::new();
+    let mat = api_key("sk-custom");
+    store.store("my-custom-proxy", &mat).unwrap();
+    assert_eq!(store.load("my-custom-proxy").unwrap(), mat);
 }
 
 #[test]
 fn load_not_found() {
     let store = InMemoryStore::new();
-    let err = store.load(ProviderId::OpenAi).unwrap_err();
+    let err = store.load("openai").unwrap_err();
     assert!(matches!(err, AuthError::NotFound { .. }));
 }
 
 #[test]
 fn delete_credential() {
     let store = InMemoryStore::new();
-    store.store(ProviderId::OpenAi, &api_key("key")).unwrap();
-    store.delete(ProviderId::OpenAi).unwrap();
-    let err = store.load(ProviderId::OpenAi).unwrap_err();
+    store.store("openai", &api_key("key")).unwrap();
+    store.delete("openai").unwrap();
+    let err = store.load("openai").unwrap_err();
     assert!(matches!(err, AuthError::NotFound { .. }));
 }
 
 #[test]
 fn delete_not_found() {
     let store = InMemoryStore::new();
-    let err = store.delete(ProviderId::OpenAi).unwrap_err();
+    let err = store.delete("openai").unwrap_err();
     assert!(matches!(err, AuthError::NotFound { .. }));
 }
 
 #[test]
 fn status_configured() {
     let store = InMemoryStore::new();
-    store.store(ProviderId::OpenAi, &api_key("key")).unwrap();
-    let s = store.status(ProviderId::OpenAi);
+    store.store("openai", &api_key("key")).unwrap();
+    let s = store.status("openai");
     assert!(
-        matches!(s, CredentialStatus::Configured { provider: ProviderId::OpenAi, ref kind } if kind == "api_key")
+        matches!(s, CredentialStatus::Configured { ref provider, ref kind } if provider == "openai" && kind == "api_key")
     );
 }
 
@@ -84,45 +124,37 @@ fn status_configured() {
 fn status_not_configured() {
     let store = InMemoryStore::new();
     assert_eq!(
-        store.status(ProviderId::Anthropic),
+        store.status("anthropic"),
         CredentialStatus::NotConfigured {
-            provider: ProviderId::Anthropic
+            provider: "anthropic".into()
         }
     );
 }
 
 #[test]
-fn list_configured() {
+fn list_configured_returns_only_stored() {
     let store = InMemoryStore::new();
-    store.store(ProviderId::OpenAi, &api_key("k1")).unwrap();
-    store.store(ProviderId::Anthropic, &api_key("k2")).unwrap();
+    store.store("openai", &api_key("k1")).unwrap();
+    store.store("anthropic", &api_key("k2")).unwrap();
 
     let statuses = store.list_configured();
-    assert_eq!(statuses.len(), 3);
+    assert_eq!(statuses.len(), 2);
 
-    let configured: Vec<_> = statuses
-        .iter()
-        .filter(|s| matches!(s, CredentialStatus::Configured { .. }))
-        .collect();
-    let not_configured: Vec<_> = statuses
-        .iter()
-        .filter(|s| matches!(s, CredentialStatus::NotConfigured { .. }))
-        .collect();
-
-    assert_eq!(configured.len(), 2);
-    assert_eq!(not_configured.len(), 1);
+    for s in &statuses {
+        assert!(matches!(s, CredentialStatus::Configured { .. }));
+    }
 }
 
 #[test]
 fn overwrite_credential() {
     let store = InMemoryStore::new();
-    store
-        .store(ProviderId::OpenAi, &api_key("old-key"))
-        .unwrap();
+    store.store("openai", &api_key("old-key")).unwrap();
     let new_mat = oauth("new-access-token");
-    store.store(ProviderId::OpenAi, &new_mat).unwrap();
-    assert_eq!(store.load(ProviderId::OpenAi).unwrap(), new_mat);
+    store.store("openai", &new_mat).unwrap();
+    assert_eq!(store.load("openai").unwrap(), new_mat);
 }
+
+// ── Redact ───────────────────────────────────────────────────────────────────
 
 #[test]
 fn redact_short() {
@@ -131,9 +163,10 @@ fn redact_short() {
 
 #[test]
 fn redact_long() {
-    // "sk-1234567890abcdef" is 18 chars — first 4 = "sk-1", last 4 = "cdef"
     assert_eq!(redact("sk-1234567890abcdef"), "sk-1...cdef");
 }
+
+// ── Serde ────────────────────────────────────────────────────────────────────
 
 #[test]
 fn auth_material_serde_roundtrip() {
@@ -150,6 +183,14 @@ fn auth_material_serde_roundtrip() {
             token: "t".into(),
             expires_at: None,
         },
+        wellknown("MY_KEY", "secret-value"),
+        aws_creds(),
+        AuthMaterial::AwsCredentials {
+            access_key_id: "AKIA".into(),
+            secret_access_key: "secret".into(),
+            session_token: None,
+            region: "eu-west-1".into(),
+        },
     ];
 
     for mat in &cases {
@@ -159,31 +200,46 @@ fn auth_material_serde_roundtrip() {
     }
 }
 
-#[test]
-fn provider_id_display() {
-    assert_eq!(ProviderId::OpenAi.to_string(), "openai");
-    assert_eq!(ProviderId::Anthropic.to_string(), "anthropic");
-    assert_eq!(ProviderId::Ollama.to_string(), "ollama");
-}
+// ── ProviderType ─────────────────────────────────────────────────────────────
 
 #[test]
-fn provider_id_from_str_valid() {
-    assert_eq!(ProviderId::from_str("openai").unwrap(), ProviderId::OpenAi);
+fn provider_type_from_str_valid() {
     assert_eq!(
-        ProviderId::from_str("anthropic").unwrap(),
-        ProviderId::Anthropic
+        "openai".parse::<ProviderType>().unwrap(),
+        ProviderType::OpenAi
     );
-    assert_eq!(ProviderId::from_str("ollama").unwrap(), ProviderId::Ollama);
+    assert_eq!(
+        "anthropic".parse::<ProviderType>().unwrap(),
+        ProviderType::Anthropic
+    );
+    assert_eq!(
+        "ollama".parse::<ProviderType>().unwrap(),
+        ProviderType::Ollama
+    );
+    assert_eq!(
+        "gemini".parse::<ProviderType>().unwrap(),
+        ProviderType::Gemini
+    );
     // case-insensitive
-    assert_eq!(ProviderId::from_str("OpenAI").unwrap(), ProviderId::OpenAi);
     assert_eq!(
-        ProviderId::from_str("ANTHROPIC").unwrap(),
-        ProviderId::Anthropic
+        "OpenAI".parse::<ProviderType>().unwrap(),
+        ProviderType::OpenAi
     );
-    assert_eq!(ProviderId::from_str("Ollama").unwrap(), ProviderId::Ollama);
+    assert_eq!(
+        "ANTHROPIC".parse::<ProviderType>().unwrap(),
+        ProviderType::Anthropic
+    );
 }
 
 #[test]
-fn provider_id_from_str_invalid() {
-    assert!(ProviderId::from_str("unknown").is_err());
+fn provider_type_from_str_invalid() {
+    assert!("unknown".parse::<ProviderType>().is_err());
+}
+
+#[test]
+fn provider_type_display() {
+    assert_eq!(ProviderType::OpenAi.to_string(), "openai");
+    assert_eq!(ProviderType::Anthropic.to_string(), "anthropic");
+    assert_eq!(ProviderType::Ollama.to_string(), "ollama");
+    assert_eq!(ProviderType::Gemini.to_string(), "gemini");
 }

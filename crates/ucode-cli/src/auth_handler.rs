@@ -1,7 +1,7 @@
 use std::io::{self, BufRead, Write};
 
 use anyhow::Result;
-use ucode_auth::{AuthError, AuthMaterial, CredentialStatus, CredentialStore, ProviderId};
+use ucode_auth::{AuthError, AuthMaterial, CredentialStatus, CredentialStore};
 
 pub fn handle_status(store: &dyn CredentialStore) -> Result<()> {
     for status in store.list_configured() {
@@ -17,7 +17,7 @@ pub fn handle_status(store: &dyn CredentialStore) -> Result<()> {
     Ok(())
 }
 
-pub fn handle_set_key(store: &dyn CredentialStore, provider: ProviderId) -> Result<()> {
+pub fn handle_set_key(store: &dyn CredentialStore, provider: &str) -> Result<()> {
     print!("Enter API key for {provider}: ");
     io::stdout().flush()?;
 
@@ -30,7 +30,7 @@ pub fn handle_set_key(store: &dyn CredentialStore, provider: ProviderId) -> Resu
     Ok(())
 }
 
-pub fn handle_logout(store: &dyn CredentialStore, provider: ProviderId) -> Result<()> {
+pub fn handle_logout(store: &dyn CredentialStore, provider: &str) -> Result<()> {
     match store.delete(provider) {
         Ok(()) => println!("Logged out from {provider}."),
         Err(AuthError::NotFound { .. }) => {
@@ -43,7 +43,7 @@ pub fn handle_logout(store: &dyn CredentialStore, provider: ProviderId) -> Resul
 
 pub fn handle_login(
     _store: &dyn CredentialStore,
-    provider: ProviderId,
+    provider: &str,
     device: bool,
     subscription: bool,
 ) -> Result<()> {
@@ -66,15 +66,13 @@ mod tests {
     #[test]
     fn status_shows_all_providers() {
         let store = InMemoryStore::new();
-        // No credentials stored — all should be "not configured".
         handle_status(&store).unwrap();
     }
 
     #[test]
     fn logout_not_found_is_not_an_error() {
         let store = InMemoryStore::new();
-        // Should print a message but not return Err.
-        handle_logout(&store, ProviderId::Anthropic).unwrap();
+        handle_logout(&store, "anthropic").unwrap();
     }
 
     #[test]
@@ -82,40 +80,39 @@ mod tests {
         let store = InMemoryStore::new();
         store
             .store(
-                ProviderId::OpenAi,
+                "openai",
                 &AuthMaterial::ApiKey {
                     key: "sk-test".into(),
                 },
             )
             .unwrap();
-        handle_logout(&store, ProviderId::OpenAi).unwrap();
-        // Credential should be gone.
-        assert!(store.load(ProviderId::OpenAi).is_err());
+        handle_logout(&store, "openai").unwrap();
+        assert!(store.load("openai").is_err());
     }
 
     #[test]
     fn login_stub_returns_ok() {
         let store = InMemoryStore::new();
-        handle_login(&store, ProviderId::Ollama, true, false).unwrap();
+        handle_login(&store, "ollama", true, false).unwrap();
     }
 
     #[test]
     fn set_key_then_status_shows_configured() {
         let store = InMemoryStore::new();
-        // Simulate what handle_set_key does (minus stdin read).
         store
             .store(
-                ProviderId::Anthropic,
+                "anthropic",
                 &AuthMaterial::ApiKey {
                     key: "sk-ant-test".into(),
                 },
             )
             .unwrap();
-        // Status should now show configured.
         let statuses = store.list_configured();
         let anthropic = statuses
             .iter()
-            .find(|s| matches!(s, CredentialStatus::Configured { provider, .. } if *provider == ProviderId::Anthropic));
+            .find(|s| {
+                matches!(s, CredentialStatus::Configured { provider, .. } if provider == "anthropic")
+            });
         assert!(anthropic.is_some());
     }
 }

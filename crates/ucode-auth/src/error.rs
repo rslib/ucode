@@ -9,4 +9,13 @@ pub enum AuthError {
 
     #[error("serialization error: {message}")]
     Serialization { message: String },
+
+    #[error("unknown provider type: '{name}'")]
+    InvalidProvider { name: String },
+
+    #[error("file store error: {message}")]
+    FileStore { message: String },
+
+    #[error("missing credential for provider '{provider}': {detail}")]
+    MissingCredential { provider: String, detail: String },
 }

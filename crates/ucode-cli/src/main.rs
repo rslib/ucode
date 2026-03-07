@@ -164,13 +164,13 @@ async fn main() -> Result<()> {
         }
         Some(Command::Auth { subcommand }) => match subcommand {
             AuthCommand::Status => auth_handler::handle_status(&store)?,
-            AuthCommand::SetKey { provider } => auth_handler::handle_set_key(&store, provider)?,
-            AuthCommand::Logout { provider } => auth_handler::handle_logout(&store, provider)?,
+            AuthCommand::SetKey { provider } => auth_handler::handle_set_key(&store, &provider)?,
+            AuthCommand::Logout { provider } => auth_handler::handle_logout(&store, &provider)?,
             AuthCommand::Login {
                 provider,
                 device,
                 subscription,
-            } => auth_handler::handle_login(&store, provider, device, subscription)?,
+            } => auth_handler::handle_login(&store, &provider, device, subscription)?,
         },
         Some(Command::Session { subcommand }) => match subcommand {
             SessionCommand::List { all } => session_handler::handle_list(&session_store, all)?,

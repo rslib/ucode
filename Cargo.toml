@@ -8,6 +8,7 @@ members = [
     "crates/ucode-skills",
     "crates/ucode-plugins",
     "crates/ucode-plugin-sdk",
+    "crates/ucode-themes",
     "crates/ucode-tui",
     "crates/ucode-cli",
     "crates/ucode-context",
@@ -25,6 +26,7 @@ default-members = [
     "crates/ucode-skills",
     "crates/ucode-plugins",
     "crates/ucode-plugin-sdk",
+    "crates/ucode-themes",
     "crates/ucode-tui",
     "crates/ucode-cli",
     "crates/ucode-context",
@@ -59,12 +61,15 @@ tracing-appender = "0.2"
 clap = { version = "4", features = ["derive"] }
 
 # TUI
-ratatui = { version = "0.29", features = ["crossterm"] }
-crossterm = "0.28"
+ratatui = { version = "0.30", features = ["crossterm"] }
+crossterm = "0.29"
 
 # async streams
 futures-core = "0.3"
 futures-util = "0.3"
+
+# cancellation / sync utilities
+tokio-util = "0.7"
 
 # time
 chrono = { version = "0.4", features = ["serde"] }
@@ -87,6 +92,9 @@ regex = "1"
 
 # HTTP client (MCP SSE + HTTP transports)
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+
+# config
+toml = "0.8"
 
 # testing
 tempfile = "3"
@@ -120,8 +128,6 @@ ucode-core = { path = "crates/ucode-core" }
 ucode-auth = { path = "crates/ucode-auth" }
 ucode-providers = { path = "crates/ucode-providers" }
 ucode-tools = { path = "crates/ucode-tools" }
-ucode-mcp = { path = "crates/ucode-mcp" }
-ucode-skills = { path = "crates/ucode-skills" }
-ucode-plugins = { path = "crates/ucode-plugins" }
+ucode-themes = { path = "crates/ucode-themes" }
 ucode-tui = { path = "crates/ucode-tui" }
 ucode-agent = { path = "crates/ucode-agent" }

@@ -1,7 +1,10 @@
 //! ucode-core: canonical messages, events, router, session state, subagent orchestration
 
 pub mod agent;
+pub mod agent_def;
+pub mod agent_registry;
 pub mod budget;
+pub mod builtin_agents;
 pub mod comm;
 pub mod directive;
 pub mod error;
@@ -9,6 +12,7 @@ pub mod event;
 pub mod jobs;
 pub mod logging;
 pub mod message;
+pub mod operational;
 pub mod router;
 pub mod session;
 

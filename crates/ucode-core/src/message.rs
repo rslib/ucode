@@ -34,6 +34,11 @@ pub enum Part {
     Text(String),
     ToolCall(ToolCall),
     ToolResult(ToolResult),
+    /// An image attachment (base64-encoded bytes + MIME type).
+    Image {
+        mime_type: String,
+        data: String, // base64
+    },
 }
 
 /// A single turn in a conversation.
@@ -98,5 +103,21 @@ impl Message {
                 id, name, result, is_error,
             ))],
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn part_image_serde_round_trip() {
+        let original = Part::Image {
+            mime_type: "image/png".into(),
+            data: "iVBOR...".into(),
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        let decoded: Part = serde_json::from_str(&json).unwrap();
+        assert_eq!(original, decoded);
     }
 }

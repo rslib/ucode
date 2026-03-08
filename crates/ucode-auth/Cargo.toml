@@ -17,6 +17,7 @@ base64 = "0.22.1"
 open = "5.3.3"
 url = "2.5.8"
 chrono = { workspace = true }
+tracing.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

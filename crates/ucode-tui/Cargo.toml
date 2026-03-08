@@ -11,14 +11,19 @@ futures-util = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
 unicode-width = { workspace = true }
+chrono = { workspace = true }
 ucode-core = { workspace = true }
 pulldown-cmark = { version = "0.13.1", default-features = false }
 ucode-auth = { workspace = true }
 ucode-agent = { workspace = true }
+ucode-themes = { workspace = true }
 ucode-tools = { workspace = true }
 ucode-providers = { workspace = true }
 tracing = { workspace = true }
 reqwest.workspace = true
+ratatui-image = { version = "10", default-features = false, features = ["crossterm"] }
+image = { version = "0.25.9", default-features = false, features = ["png", "jpeg"] }
+syntect = "5.3.0"
 
 [dev-dependencies]
 tempfile = { workspace = true }

@@ -99,6 +99,8 @@ impl TokenCounter for CharEstimator {
                     Part::ToolResult(tr) => {
                         self.count_text(&tr.name) + self.count_text(&tr.result.to_string())
                     }
+                    // Images carry no text tokens; treat as zero for budget purposes.
+                    Part::Image { .. } => 0,
                 };
             }
         }

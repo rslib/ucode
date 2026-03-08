@@ -3,8 +3,12 @@ use std::time::Instant;
 
 use tokio::sync::mpsc::UnboundedSender;
 
+use ucode_core::agent_registry::AgentRegistry;
+
 use crate::command_registry::CommandRegistry;
 use crate::components::input::AutocompleteEntry;
+use crate::components::master_detail::MasterDetailState;
+use crate::components::tab_bar::TabBarState;
 use crate::components::toast::{ToastLevel, ToastState};
 use crate::keybinds::{KeybindPreset, KeybindResolver};
 use crate::layout::{InputState, SidebarState, TerminalSize};
@@ -138,6 +142,7 @@ pub enum FocusTarget {
     Transcript,
     Sidebar,
     Overlay,
+    Panel,
 }
 
 // ---------------------------------------------------------------------------
@@ -191,6 +196,7 @@ pub struct AppState {
     /// The real CLI uses this to forward prompts to the LLM.
     #[allow(clippy::type_complexity)]
     pub message_tx: Option<UnboundedSender<ucode_agent::AgentMessage>>,
+    pub agent_registry: AgentRegistry,
     pub command_registry: CommandRegistry,
     pub palette: PaletteState,
     pub connect_modal: ConnectModalState,
@@ -222,6 +228,37 @@ pub struct AppState {
     /// The model currently used by the agent loop.
     pub active_model: Option<String>,
     pub models_modal: crate::overlays::models_modal::ModelsModalState,
+    pub session_picker: crate::overlays::session_picker::SessionPickerState,
+    pub image_popup: crate::overlays::image_popup::ImagePopupState,
+    /// The tool_call_id of the currently pending approval (from the agent loop).
+    /// Set when `TuiEvent::ApprovalRequired` arrives; cleared when the decision is sent.
+    pub pending_tool_call_id: Option<String>,
+    /// Messages queued by the user while a streaming response is in progress.
+    /// Sent in order when the current stream completes.
+    pub message_queue: Vec<String>,
+    /// Session store for persistence (set at startup).
+    pub session_store: Option<Arc<ucode_core::SessionStore>>,
+    /// ID of the currently active session.
+    pub current_session_id: Option<String>,
+    /// Image rendering protocol picker (sixel, kitty, halfblocks).
+    /// Detected at startup via terminal capability query.
+    pub image_picker: Option<ratatui_image::picker::Picker>,
+    /// Last computed transcript area rect (for mouse hit-testing).
+    pub transcript_area: ratatui::layout::Rect,
+    /// Last computed tab bar area rect (for mouse hit-testing).
+    pub tab_bar_area: ratatui::layout::Rect,
+    /// The currently selected Primary agent (Tab-cycled by the user).
+    pub active_agent: String,
+    /// Tab bar state for the tabbed panel UI.
+    pub tab_bar: TabBarState,
+    /// Master-detail panel state for the Subagents tab.
+    pub subagents_panel: MasterDetailState,
+    /// Master-detail panel state for the Tools tab.
+    pub tools_panel: MasterDetailState,
+    /// Master-detail panel state for the MCP tab.
+    pub mcp_panel: MasterDetailState,
+    /// Master-detail panel state for the Logs tab.
+    pub logs_panel: MasterDetailState,
 }
 
 impl AppState {
@@ -253,6 +290,7 @@ impl AppState {
             parent_title: None,
             multiplexer: detect_multiplexer(),
             message_tx: None,
+            agent_registry: AgentRegistry::default(),
             command_registry,
             palette,
             connect_modal: ConnectModalState::new(),
@@ -272,6 +310,21 @@ impl AppState {
             models_fetch_pending: false,
             active_model: None,
             models_modal: crate::overlays::models_modal::ModelsModalState::new(),
+            session_picker: crate::overlays::session_picker::SessionPickerState::new(),
+            image_popup: crate::overlays::image_popup::ImagePopupState::new(),
+            pending_tool_call_id: None,
+            message_queue: Vec::new(),
+            session_store: None,
+            current_session_id: None,
+            image_picker: None,
+            transcript_area: ratatui::layout::Rect::default(),
+            tab_bar_area: ratatui::layout::Rect::default(),
+            active_agent: "coder".to_string(),
+            tab_bar: TabBarState::default(),
+            subagents_panel: MasterDetailState::default(),
+            tools_panel: MasterDetailState::default(),
+            mcp_panel: MasterDetailState::default(),
+            logs_panel: MasterDetailState::default(),
         }
     }
 
@@ -297,6 +350,76 @@ impl AppState {
             .collect()
     }
 
+    /// Returns autocomplete entries for @mention input.
+    /// Searches agents first, then files if query contains '/' or '.'.
+    pub fn mention_completions(&self, input: &str) -> Vec<AutocompleteEntry> {
+        let query = input.strip_prefix('@').unwrap_or(input);
+
+        let mut entries: Vec<AutocompleteEntry> = self
+            .agent_registry
+            .search(query)
+            .into_iter()
+            .map(|agent| {
+                AutocompleteEntry::new(&agent.name, &agent.description, agent.source.badge())
+            })
+            .collect();
+
+        if query.is_empty() || query.contains('/') || query.contains('.') {
+            entries.extend(self.file_completions(query));
+        }
+
+        entries
+    }
+
+    fn file_completions(&self, query: &str) -> Vec<AutocompleteEntry> {
+        let base = std::path::Path::new(".");
+        let (dir, prefix) = if let Some(pos) = query.rfind('/') {
+            let dir_part = &query[..pos];
+            let file_part = &query[pos + 1..];
+            (base.join(dir_part), file_part.to_string())
+        } else {
+            (base.to_path_buf(), query.to_string())
+        };
+
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            return vec![];
+        };
+
+        let mut results: Vec<AutocompleteEntry> = entries
+            .flatten()
+            .filter_map(|e| {
+                let name = e.file_name().to_string_lossy().to_string();
+                if !prefix.is_empty() && !name.to_lowercase().starts_with(&prefix.to_lowercase()) {
+                    return None;
+                }
+                if name.starts_with('.') {
+                    return None;
+                }
+                let is_dir = e.file_type().map(|t| t.is_dir()).unwrap_or(false);
+                let display_path = if dir == base {
+                    if is_dir {
+                        format!("{name}/")
+                    } else {
+                        name.clone()
+                    }
+                } else {
+                    let dir_str = dir.strip_prefix(base).unwrap_or(&dir).display();
+                    if is_dir {
+                        format!("{dir_str}/{name}/")
+                    } else {
+                        format!("{dir_str}/{name}")
+                    }
+                };
+                let desc = if is_dir { "directory" } else { "file" };
+                Some(AutocompleteEntry::new(&display_path, desc, "[fs]"))
+            })
+            .collect();
+
+        results.sort_by(|a, b| a.name.cmp(&b.name));
+        results.truncate(20);
+        results
+    }
+
     // ------------------------------------------------------------------
     // Streaming
     // ------------------------------------------------------------------
@@ -311,9 +434,13 @@ impl AppState {
 
     /// Append `token` to the active streaming entry.
     ///
-    /// If the last entry is not a `Streaming` variant a new one is created
-    /// (defensive: callers should always call `start_streaming` first).
+    /// Tokens arriving after cancellation or finalization (`streaming == false`)
+    /// are silently dropped to prevent resurrecting a completed entry.
     pub fn push_token(&mut self, token: &str) {
+        // Ignore late tokens that arrive after cancellation/finalization.
+        if !self.streaming {
+            return;
+        }
         match self.transcript.last_mut() {
             Some(TranscriptEntry::Streaming(msg)) => {
                 msg.push_token(token);
@@ -322,7 +449,6 @@ impl AppState {
                 let mut msg = StreamingMessage::new();
                 msg.push_token(token);
                 self.transcript.push(TranscriptEntry::Streaming(msg));
-                self.streaming = true;
             }
         }
 
@@ -351,9 +477,18 @@ impl AppState {
     // Transcript mutations
     // ------------------------------------------------------------------
 
-    pub fn push_user_message(&mut self, msg: String) {
+    pub fn push_user_message(
+        &mut self,
+        msg: String,
+        target_agent: Option<String>,
+        file_context: Vec<ucode_agent::FileContext>,
+    ) {
         if let Some(tx) = &self.message_tx {
-            let _ = tx.send(ucode_agent::AgentMessage::UserMessage(msg.clone()));
+            let _ = tx.send(ucode_agent::AgentMessage::UserMessage {
+                text: msg.clone(),
+                target_agent,
+                file_context,
+            });
         }
         self.transcript.push(TranscriptEntry::UserMessage(msg));
         self.mark_dirty();
@@ -631,21 +766,22 @@ impl AppState {
         self.mark_dirty();
     }
 
-    /// Scroll down by `lines`. Re-engages auto-scroll when at the bottom.
+    /// Scroll down by `lines`.
+    ///
+    /// This does **not** re-engage auto-scroll because `scroll_offset` is a
+    /// line-level index and we don't know the total rendered line count here
+    /// (it depends on terminal width and word-wrapping).  The renderer clamps
+    /// the offset to the valid range.  To re-engage auto-scroll the user
+    /// should press End / G / scroll_to_bottom().
     pub fn scroll_down(&mut self, lines: usize) {
         self.scroll_offset = self.scroll_offset.saturating_add(lines);
-        // We treat "at bottom" as scroll_offset >= transcript length.
-        // The renderer is responsible for clamping to the real maximum; here
-        // we just check whether we've reached or passed the end.
-        if self.scroll_offset >= self.transcript.len() {
-            self.auto_scroll = true;
-        }
         self.mark_dirty();
     }
 
     /// Jump to the bottom and re-engage auto-scroll.
     pub fn scroll_to_bottom(&mut self) {
-        self.scroll_offset = self.transcript.len();
+        // Use a large sentinel — the renderer clamps to the real maximum.
+        self.scroll_offset = usize::MAX / 2;
         self.auto_scroll = true;
         self.mark_dirty();
     }
@@ -666,6 +802,69 @@ impl AppState {
         body: impl Into<String>,
     ) {
         self.toasts.push_with_body(level, title, body);
+        self.mark_dirty();
+    }
+
+    // ------------------------------------------------------------------
+    // Session helpers
+    // ------------------------------------------------------------------
+
+    /// Convert the current transcript to `Message` list for session persistence.
+    pub fn transcript_to_messages(&self) -> Vec<ucode_core::Message> {
+        use ucode_core::message::{Part, Role};
+
+        self.transcript
+            .iter()
+            .filter_map(|entry| match entry {
+                TranscriptEntry::UserMessage(text) => Some(ucode_core::Message {
+                    role: Role::User,
+                    parts: vec![Part::Text(text.clone())],
+                }),
+                TranscriptEntry::AssistantMessage(text) => Some(ucode_core::Message {
+                    role: Role::Assistant,
+                    parts: vec![Part::Text(text.clone())],
+                }),
+                TranscriptEntry::Streaming(sm) => Some(ucode_core::Message {
+                    role: Role::Assistant,
+                    parts: vec![Part::Text(sm.content.clone())],
+                }),
+                // Tool calls, router events, system messages, and patches are
+                // not round-tripped through the session transcript.
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Replace the current transcript with messages loaded from a session.
+    pub fn load_session_transcript(&mut self, messages: &[ucode_core::Message]) {
+        use ucode_core::message::{Part, Role};
+
+        self.transcript.clear();
+        for msg in messages {
+            let text = msg
+                .parts
+                .iter()
+                .filter_map(|p| match p {
+                    Part::Text(t) => Some(t.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("");
+
+            if text.is_empty() {
+                continue;
+            }
+
+            match msg.role {
+                Role::User => self.transcript.push(TranscriptEntry::UserMessage(text)),
+                Role::Assistant => {
+                    self.transcript
+                        .push(TranscriptEntry::AssistantMessage(text));
+                }
+                _ => {}
+            }
+        }
+        self.scroll_to_bottom();
         self.mark_dirty();
     }
 
@@ -708,6 +907,20 @@ impl AppState {
     /// `SidebarData::remove_plugin_sections`.
     pub fn plugin_session_end(&mut self, plugin_name: &str) {
         self.remove_plugin_commands(plugin_name);
+    }
+
+    /// Returns a mutable reference to the active master-detail panel, if the
+    /// current tab is not Chat.
+    pub fn active_panel_mut(
+        &mut self,
+    ) -> Option<&mut crate::components::master_detail::MasterDetailState> {
+        match self.tab_bar.active {
+            crate::components::tab_bar::TabId::Chat => None,
+            crate::components::tab_bar::TabId::Subagents => Some(&mut self.subagents_panel),
+            crate::components::tab_bar::TabId::Tools => Some(&mut self.tools_panel),
+            crate::components::tab_bar::TabId::Mcp => Some(&mut self.mcp_panel),
+            crate::components::tab_bar::TabId::Logs => Some(&mut self.logs_panel),
+        }
     }
 
     // ------------------------------------------------------------------
@@ -784,7 +997,7 @@ mod tests {
     #[test]
     fn app_state_push_user_message() {
         let mut app = AppState::new();
-        app.push_user_message("hello".to_owned());
+        app.push_user_message("hello".to_owned(), None, vec![]);
         assert_eq!(app.transcript.len(), 1);
         assert_eq!(
             app.transcript[0],
@@ -816,16 +1029,28 @@ mod tests {
     #[test]
     fn app_state_scroll_disengages_auto_scroll() {
         let mut app = AppState::new();
-        app.push_user_message("msg".to_owned());
+        app.push_user_message("msg".to_owned(), None, vec![]);
         assert!(app.auto_scroll);
         app.scroll_up(1);
         assert!(!app.auto_scroll);
     }
 
     #[test]
+    fn app_state_scroll_down_does_not_reengage_auto_scroll() {
+        let mut app = AppState::new();
+        app.push_user_message("msg".to_owned(), None, vec![]);
+        app.scroll_up(1);
+        assert!(!app.auto_scroll);
+        // scroll_down should NOT re-engage auto_scroll because we don't know
+        // the total rendered line count (it depends on terminal width).
+        app.scroll_down(100);
+        assert!(!app.auto_scroll);
+    }
+
+    #[test]
     fn app_state_scroll_to_bottom_reengages() {
         let mut app = AppState::new();
-        app.push_user_message("msg".to_owned());
+        app.push_user_message("msg".to_owned(), None, vec![]);
         app.scroll_up(1);
         assert!(!app.auto_scroll);
         app.scroll_to_bottom();
@@ -1084,7 +1309,7 @@ mod tests {
         assert!(!app.dirty);
 
         // Any mutation re-sets it.
-        app.push_user_message("hi".to_owned());
+        app.push_user_message("hi".to_owned(), None, vec![]);
         assert!(app.dirty);
 
         app.dirty = false;

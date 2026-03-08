@@ -7,7 +7,7 @@ pub const SIDEBAR_MIN_WIDTH: u16 = 28;
 pub const SIDEBAR_MAX_WIDTH: u16 = 48;
 pub const SIDEBAR_ICON_STRIP_WIDTH: u16 = 6;
 pub const SIDEBAR_FULL_THRESHOLD: u16 = 120;
-pub const INPUT_MAX_LINES: u16 = 8;
+pub const INPUT_MAX_LINES: u16 = 6;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TerminalSize {
@@ -92,9 +92,9 @@ impl InputState {
         }
     }
 
-    /// Height including top and bottom border.
+    /// Height: content lines + 1 top padding + 1 bottom padding + 1 info line.
     pub fn height(&self) -> u16 {
-        self.line_count + 2
+        self.line_count + 3
     }
 }
 
@@ -106,42 +106,65 @@ impl Default for InputState {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LayoutAreas {
-    pub title_bar: Rect,
-    pub transcript: Rect,
+    pub tab_bar: Rect,
+    pub content: Rect,
     pub sidebar: Rect,
     pub input: Rect,
     pub status_bar: Rect,
 }
 
-/// Compute the five layout areas from the full terminal `area`.
+/// Horizontal padding on each side of the main content area.
+pub const LAYOUT_HORIZONTAL_PAD: u16 = 1;
+
+/// Compute the layout areas from the full terminal `area`.
 ///
 /// Vertical split (top to bottom):
-///   title_bar  — Length(1)
-///   middle     — Fill(1)  → split horizontally into transcript | sidebar
+///   tab_bar    — Length(1)
+///   middle     — Fill(1)  → split horizontally into content | sidebar
 ///   input      — Length(input.height())
 ///   status_bar — Length(1)
-pub fn compute_layout(area: Rect, sidebar: &SidebarState, input: &InputState) -> LayoutAreas {
-    let [title_bar, middle, input_area, status_bar] = Layout::vertical([
+///
+/// A 1-col horizontal margin is applied on left and right for breathing room.
+pub fn compute_layout(
+    area: Rect,
+    sidebar: &SidebarState,
+    input: &InputState,
+    show_input: bool,
+) -> LayoutAreas {
+    // Inset horizontally for breathing room against terminal edges.
+    let pad = LAYOUT_HORIZONTAL_PAD;
+    let area = if area.width > pad * 2 + MIN_WIDTH {
+        Rect::new(area.x + pad, area.y, area.width - pad * 2, area.height)
+    } else {
+        area
+    };
+
+    let input_height = if show_input { input.height() } else { 0 };
+    let [tab_bar, middle, input_area, status_bar] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Fill(1),
-        Constraint::Length(input.height()),
+        Constraint::Length(input_height),
         Constraint::Length(1),
     ])
     .areas(area);
 
-    let sidebar_width = sidebar.effective_width();
+    let sidebar_width = if show_input {
+        sidebar.effective_width()
+    } else {
+        0
+    };
 
-    let [transcript, sidebar_area] = if sidebar_width > 0 {
+    let [content, sidebar_area] = if sidebar_width > 0 {
         Layout::horizontal([Constraint::Fill(1), Constraint::Length(sidebar_width)]).areas(middle)
     } else {
-        // No sidebar: give everything to transcript, sidebar gets a zero-size rect.
-        let [transcript] = Layout::horizontal([Constraint::Fill(1)]).areas(middle);
-        [transcript, Rect::default()]
+        // No sidebar: give everything to content, sidebar gets a zero-size rect.
+        let [content] = Layout::horizontal([Constraint::Fill(1)]).areas(middle);
+        [content, Rect::default()]
     };
 
     LayoutAreas {
-        title_bar,
-        transcript,
+        tab_bar,
+        content,
         sidebar: sidebar_area,
         input: input_area,
         status_bar,
@@ -277,30 +300,33 @@ mod tests {
         let area = make_area(200, 50);
         let sidebar = SidebarState::new(SidebarMode::Full);
         let input = InputState::default();
-        let layout = compute_layout(area, &sidebar, &input);
+        let layout = compute_layout(area, &sidebar, &input, true);
 
-        // title bar: row 0, height 1
-        assert_eq!(layout.title_bar.y, 0);
-        assert_eq!(layout.title_bar.height, 1);
-        assert_eq!(layout.title_bar.width, 200);
+        // tab bar: row 0, height 1
+        assert_eq!(layout.tab_bar.y, 0);
+        assert_eq!(layout.tab_bar.height, 1);
+        assert_eq!(layout.tab_bar.width, 198);
+        assert_eq!(layout.tab_bar.x, 1);
 
         // status bar: last row, height 1
         assert_eq!(layout.status_bar.y, 49);
         assert_eq!(layout.status_bar.height, 1);
-        assert_eq!(layout.status_bar.width, 200);
+        assert_eq!(layout.status_bar.width, 198);
+        assert_eq!(layout.status_bar.x, 1);
 
-        // input: above status bar, height = 1 line + 2 borders = 3
-        assert_eq!(layout.input.height, 3);
-        assert_eq!(layout.input.y, 46);
-        assert_eq!(layout.input.width, 200);
+        // input: above status bar, height = 1 line + 3 (padding + info line) = 4
+        assert_eq!(layout.input.height, 4);
+        assert_eq!(layout.input.y, 45); // 50 - 1(status) - 4(input) = 45
+        assert_eq!(layout.input.width, 198);
+        assert_eq!(layout.input.x, 1);
 
         // sidebar: right portion, width = SIDEBAR_DEFAULT_WIDTH
         assert_eq!(layout.sidebar.width, SIDEBAR_DEFAULT_WIDTH);
-        assert_eq!(layout.sidebar.x, 200 - SIDEBAR_DEFAULT_WIDTH);
+        assert_eq!(layout.sidebar.x, 1 + 198 - SIDEBAR_DEFAULT_WIDTH);
 
-        // transcript: left portion
-        assert_eq!(layout.transcript.width, 200 - SIDEBAR_DEFAULT_WIDTH);
-        assert_eq!(layout.transcript.x, 0);
+        // content: left portion
+        assert_eq!(layout.content.width, 198 - SIDEBAR_DEFAULT_WIDTH);
+        assert_eq!(layout.content.x, 1);
     }
 
     #[test]
@@ -308,10 +334,10 @@ mod tests {
         let area = make_area(100, 30);
         let sidebar = SidebarState::new(SidebarMode::IconStrip);
         let input = InputState::default();
-        let layout = compute_layout(area, &sidebar, &input);
+        let layout = compute_layout(area, &sidebar, &input, true);
 
         assert_eq!(layout.sidebar.width, SIDEBAR_ICON_STRIP_WIDTH);
-        assert_eq!(layout.transcript.width, 100 - SIDEBAR_ICON_STRIP_WIDTH);
+        assert_eq!(layout.content.width, 98 - SIDEBAR_ICON_STRIP_WIDTH);
     }
 
     #[test]
@@ -319,10 +345,10 @@ mod tests {
         let area = make_area(120, 40);
         let sidebar = SidebarState::new(SidebarMode::Full);
         let input = InputState::new(3);
-        let layout = compute_layout(area, &sidebar, &input);
+        let layout = compute_layout(area, &sidebar, &input, true);
 
-        // 3 lines + 2 borders = 5
-        assert_eq!(layout.input.height, 5);
+        // 3 lines + 3 (padding + info line) = 6
+        assert_eq!(layout.input.height, 6);
     }
 
     #[test]
@@ -330,11 +356,11 @@ mod tests {
         let area = make_area(160, 40);
         let sidebar = SidebarState::new(SidebarMode::Full);
         let input = InputState::new(2);
-        let layout = compute_layout(area, &sidebar, &input);
+        let layout = compute_layout(area, &sidebar, &input, true);
 
         let rects = [
-            ("title_bar", layout.title_bar),
-            ("transcript", layout.transcript),
+            ("tab_bar", layout.tab_bar),
+            ("content", layout.content),
             ("sidebar", layout.sidebar),
             ("input", layout.input),
             ("status_bar", layout.status_bar),
@@ -359,7 +385,17 @@ mod tests {
         // The union of all rects should cover the full area.
         // We verify by checking total cell count equals area cells.
         // (This works because the layout is a perfect partition.)
+        let padded_area = if area.width > LAYOUT_HORIZONTAL_PAD * 2 + MIN_WIDTH {
+            Rect::new(
+                area.x + LAYOUT_HORIZONTAL_PAD,
+                area.y,
+                area.width - LAYOUT_HORIZONTAL_PAD * 2,
+                area.height,
+            )
+        } else {
+            area
+        };
         let total_cells: u32 = rects.iter().map(|(_, r)| r.area()).sum();
-        assert_eq!(total_cells, area.area());
+        assert_eq!(total_cells, padded_area.area());
     }
 }

@@ -90,8 +90,10 @@ pub async fn run(
     event_rx: tokio::sync::mpsc::UnboundedReceiver<event_loop::TuiEvent>,
     agent_config: Option<AgentConfig>,
     pending_setup: Option<PendingAgentSetup>,
+    agent_registry: ucode_core::agent_registry::AgentRegistry,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut app = app::AppState::new();
+    app.agent_registry = agent_registry;
 
     // If agent config is provided, spawn the agent loop immediately.
     let mut _agent_handles: Option<(tokio::task::JoinHandle<()>, tokio::task::JoinHandle<()>)> =
@@ -102,11 +104,48 @@ pub async fn run(
         app.providers = std::mem::take(&mut ac.all_providers);
         app.credential_store = ac.loop_config.credential_store.clone();
 
+        // Populate session info in the TUI.
+        app.session_id = ac.session.meta.id.clone();
+        app.session_title = ac
+            .session
+            .meta
+            .title
+            .clone()
+            .unwrap_or_else(|| truncate_id(&ac.session.meta.id));
+        app.session_store = Some(ac.session_store.clone());
+        app.current_session_id = Some(ac.session.meta.id.clone());
+
         let ac_model = ac.loop_config.model.clone();
+        let provider_name = ac.loop_config.provider_name.clone();
         let (msg_tx, ah, bh) = spawn_agent_loop(ac, &event_tx);
         app.message_tx = Some(msg_tx);
         app.active_model = Some(ac_model);
         _agent_handles = Some((ah, bh));
+
+        // Emit a system message confirming auto-connect.
+        let _ = event_tx.send(event_loop::TuiEvent::Toast {
+            level: components::toast::ToastLevel::Info,
+            title: format!("Connected to {provider_name}"),
+            body: None,
+        });
+    } else if let Some(ref setup) = pending_setup {
+        // Populate session info even without an agent.
+        app.session_id = setup.session.meta.id.clone();
+        app.session_title = setup
+            .session
+            .meta
+            .title
+            .clone()
+            .unwrap_or_else(|| truncate_id(&setup.session.meta.id));
+        app.session_store = Some(setup.session_store.clone());
+        app.current_session_id = Some(setup.session.meta.id.clone());
+
+        // No provider configured — suggest /connect.
+        let _ = event_tx.send(event_loop::TuiEvent::Toast {
+            level: components::toast::ToastLevel::Info,
+            title: "No provider configured".into(),
+            body: Some("Use /connect to set up a provider".into()),
+        });
     }
 
     let mut input_box = components::input::InputBoxState::new();
@@ -120,4 +159,13 @@ pub async fn run(
         pending_setup,
     )
     .await
+}
+
+/// Truncate a session ID to 8 characters for display.
+fn truncate_id(id: &str) -> String {
+    if id.len() > 8 {
+        format!("{}…", &id[..8])
+    } else {
+        id.to_string()
+    }
 }

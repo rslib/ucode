@@ -264,6 +264,51 @@ pub fn write_clipboard(
     }
 }
 
+// ── Clipboard image read ──────────────────────────────────────────────────────
+
+/// Try to read image bytes from the system clipboard.
+///
+/// Tries `xclip -selection clipboard -t image/png -o` first (X11),
+/// then `wl-paste --type image/png` (Wayland).
+/// Returns `None` if neither tool is available or the clipboard has no image.
+pub fn read_clipboard_image() -> Option<Vec<u8>> {
+    if let Some(data) = try_read_image_xclip() {
+        return Some(data);
+    }
+    if let Some(data) = try_read_image_wl_paste() {
+        return Some(data);
+    }
+    None
+}
+
+fn try_read_image_xclip() -> Option<Vec<u8>> {
+    let output = Command::new("xclip")
+        .args(["-selection", "clipboard", "-t", "image/png", "-o"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    if output.status.success() && !output.stdout.is_empty() {
+        Some(output.stdout)
+    } else {
+        None
+    }
+}
+
+fn try_read_image_wl_paste() -> Option<Vec<u8>> {
+    let output = Command::new("wl-paste")
+        .args(["--type", "image/png"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    if output.status.success() && !output.stdout.is_empty() {
+        Some(output.stdout)
+    } else {
+        None
+    }
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -353,5 +398,12 @@ mod tests {
         let path = data_home.join("ucode").join("clipboard");
         let content = std::fs::read_to_string(&path).unwrap();
         assert_eq!(content, "clipboard text");
+    }
+
+    #[test]
+    fn read_clipboard_image_does_not_panic() {
+        // Verify the function doesn't panic when clipboard tools are unavailable.
+        // In CI, neither xclip nor wl-paste is typically installed, so this returns None.
+        let _ = read_clipboard_image();
     }
 }

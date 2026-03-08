@@ -141,6 +141,7 @@ fn action_category(action: Action) -> &'static str {
         Action::ToggleSidebar | Action::GrowSidebar | Action::ShrinkSidebar => "Sidebar",
 
         Action::EnterCopyMode
+        | Action::EnterSelectionMode
         | Action::YankSelection
         | Action::NextSearchMatch
         | Action::PrevSearchMatch
@@ -157,7 +158,15 @@ fn action_category(action: Action) -> &'static str {
         | Action::ClearTranscript
         | Action::Exit => "Mode",
 
-        Action::OpenConnect | Action::OpenModels => "Overlays",
+        Action::OpenConnect | Action::OpenModels | Action::OpenImagePopup => "Overlays",
+
+        Action::SelectTab1
+        | Action::SelectTab2
+        | Action::SelectTab3
+        | Action::SelectTab4
+        | Action::SelectTab5
+        | Action::NextTab
+        | Action::PrevTab => "Navigation",
     }
 }
 
@@ -189,6 +198,7 @@ pub fn action_description(action: Action) -> &'static str {
         Action::GrowSidebar => "Grow sidebar",
         Action::ShrinkSidebar => "Shrink sidebar",
         Action::EnterCopyMode => "Enter copy mode",
+        Action::EnterSelectionMode => "Select mode (v=char V=line Ctrl+V=block)",
         Action::YankSelection => "Yank selection",
         Action::NextSearchMatch => "Next search match",
         Action::PrevSearchMatch => "Previous search match",
@@ -205,6 +215,14 @@ pub fn action_description(action: Action) -> &'static str {
         Action::ToggleDensity => "Toggle density",
         Action::OpenConnect => "Open connect modal",
         Action::OpenModels => "List available models",
+        Action::OpenImagePopup => "Open image popup",
+        Action::SelectTab1 => "Chat tab",
+        Action::SelectTab2 => "Subagents tab",
+        Action::SelectTab3 => "Tools tab",
+        Action::SelectTab4 => "MCP tab",
+        Action::SelectTab5 => "Logs tab",
+        Action::NextTab => "Next tab",
+        Action::PrevTab => "Previous tab",
     }
 }
 

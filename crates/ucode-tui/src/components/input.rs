@@ -3,7 +3,7 @@ use ratatui::{
     layout::Rect,
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Widget},
+    widgets::Widget,
 };
 use unicode_width::UnicodeWidthChar;
 
@@ -114,6 +114,20 @@ pub struct InputBoxState {
     pub autocomplete: AutocompleteState,
     /// Single-entry kill ring for readline-style cut/paste.
     pub kill_ring: String,
+    /// Previously sent messages (oldest first).
+    pub history: Vec<String>,
+    /// Current position in history. `None` means not browsing history.
+    /// When `Some(i)`, `history[i]` is displayed.
+    history_index: Option<usize>,
+    /// The in-progress text saved when the user starts browsing history,
+    /// so it can be restored when they navigate past the newest entry.
+    history_stash: String,
+    /// Line index of the first visible line when content exceeds max visible lines.
+    pub scroll_offset: usize,
+    /// Byte offset of the selection anchor.
+    pub selection_anchor: usize,
+    /// True when a text selection is active.
+    pub selecting: bool,
 }
 
 impl InputBoxState {
@@ -125,7 +139,18 @@ impl InputBoxState {
     pub fn insert_char(&mut self, c: char) {
         self.content.insert(self.cursor_pos, c);
         self.cursor_pos += c.len_utf8();
-        self.cursor_col += c.width().unwrap_or(1);
+        if c == '\n' {
+            self.cursor_col = 0;
+        } else {
+            self.cursor_col += c.width().unwrap_or(1);
+        }
+    }
+
+    /// Insert a string at the current cursor position and advance the cursor.
+    pub fn insert_str(&mut self, s: &str) {
+        for c in s.chars() {
+            self.insert_char(c);
+        }
     }
 
     /// Delete the character immediately before the cursor (backspace).
@@ -209,8 +234,6 @@ impl InputBoxState {
     /// Insert a newline at the cursor position.
     pub fn insert_newline(&mut self) {
         self.insert_char('\n');
-        // After the newline the column resets to 0.
-        self.cursor_col = 0;
     }
 
     /// Clear content and reset cursor.
@@ -218,7 +241,9 @@ impl InputBoxState {
         self.content.clear();
         self.cursor_pos = 0;
         self.cursor_col = 0;
+        self.scroll_offset = 0;
         self.autocomplete.hide();
+        self.selecting = false;
     }
 
     /// Take the content, clear state, and return the taken string.
@@ -226,8 +251,20 @@ impl InputBoxState {
         let taken = std::mem::take(&mut self.content);
         self.cursor_pos = 0;
         self.cursor_col = 0;
+        self.scroll_offset = 0;
         self.autocomplete.hide();
+        self.selecting = false;
         taken
+    }
+
+    /// Adjust `scroll_offset` so the cursor line is within the visible window.
+    pub fn ensure_cursor_visible(&mut self, max_visible_lines: usize) {
+        let (cursor_line, _) = cursor_line_and_col(&self.content, self.cursor_pos);
+        if cursor_line < self.scroll_offset {
+            self.scroll_offset = cursor_line;
+        } else if cursor_line >= self.scroll_offset + max_visible_lines {
+            self.scroll_offset = cursor_line + 1 - max_visible_lines;
+        }
     }
 
     pub fn is_empty(&self) -> bool {
@@ -718,6 +755,134 @@ impl InputBoxState {
         self.cursor_col += col_delta;
     }
 
+    /// Record a sent message in the history ring.
+    pub fn push_history(&mut self, msg: String) {
+        // Avoid consecutive duplicates.
+        if self.history.last().is_none_or(|last| *last != msg) {
+            self.history.push(msg);
+        }
+        self.history_index = None;
+        self.history_stash.clear();
+    }
+
+    /// Returns `true` if the cursor is on the first line of the input.
+    pub fn cursor_on_first_line(&self) -> bool {
+        let prefix = &self.content[..self.cursor_pos.min(self.content.len())];
+        !prefix.contains('\n')
+    }
+
+    /// Returns `true` if the cursor is on the last line of the input.
+    pub fn cursor_on_last_line(&self) -> bool {
+        let suffix = &self.content[self.cursor_pos.min(self.content.len())..];
+        !suffix.contains('\n')
+    }
+
+    /// Navigate to the previous history entry. Returns `true` if the
+    /// content changed (caller should mark dirty).
+    pub fn history_prev(&mut self) -> bool {
+        if self.history.is_empty() {
+            return false;
+        }
+        let new_idx = match self.history_index {
+            None => {
+                // Entering history — stash current input.
+                self.history_stash = self.content.clone();
+                self.history.len() - 1
+            }
+            Some(0) => return false, // already at oldest
+            Some(i) => i - 1,
+        };
+        self.history_index = Some(new_idx);
+        self.set_content_from_history(&self.history[new_idx].clone());
+        true
+    }
+
+    /// Navigate to the next history entry, or restore the stashed input
+    /// if past the newest entry. Returns `true` if content changed.
+    pub fn history_next(&mut self) -> bool {
+        let idx = match self.history_index {
+            None => return false, // not browsing history
+            Some(i) => i,
+        };
+        if idx + 1 < self.history.len() {
+            self.history_index = Some(idx + 1);
+            self.set_content_from_history(&self.history[idx + 1].clone());
+        } else {
+            // Past newest — restore stashed input.
+            self.history_index = None;
+            let stash = self.history_stash.clone();
+            self.set_content_from_history(&stash);
+            self.history_stash.clear();
+        }
+        true
+    }
+
+    /// Replace content and move cursor to end.
+    fn set_content_from_history(&mut self, text: &str) {
+        self.content = text.to_owned();
+        self.cursor_pos = self.content.len();
+        self.cursor_col =
+            display_width(&self.content[self.content.rfind('\n').map(|i| i + 1).unwrap_or(0)..]);
+    }
+
+    // ------------------------------------------------------------------
+    // Selection
+    // ------------------------------------------------------------------
+
+    /// Start a selection at the current cursor position.
+    pub fn start_selecting(&mut self) {
+        self.selecting = true;
+        self.selection_anchor = self.cursor_pos;
+    }
+
+    /// Cancel the active selection.
+    pub fn cancel_selecting(&mut self) {
+        self.selecting = false;
+    }
+
+    /// Ensure we are in selection mode. If not selecting, starts it.
+    /// If already selecting, does nothing (preserves anchor).
+    pub fn ensure_selecting(&mut self) {
+        if !self.selecting {
+            self.start_selecting();
+        }
+    }
+
+    /// Returns the selected byte range, or None if not selecting or anchor == cursor.
+    pub fn selected_range(&self) -> Option<std::ops::Range<usize>> {
+        if !self.selecting {
+            return None;
+        }
+        let start = self.selection_anchor.min(self.cursor_pos);
+        let end = self.selection_anchor.max(self.cursor_pos);
+        if start == end {
+            return None;
+        }
+        Some(start..end)
+    }
+
+    /// Returns the selected text slice, or None.
+    pub fn selected_text(&self) -> Option<&str> {
+        self.selected_range().map(|r| &self.content[r])
+    }
+
+    /// Delete the selected text, place cursor at the start of the range,
+    /// and cancel the selection.
+    pub fn delete_selected(&mut self) {
+        if let Some(range) = self.selected_range() {
+            let start = range.start;
+            self.content.drain(range);
+            self.cursor_pos = start;
+            self.cursor_col = display_width(
+                &self.content[self.content[..start]
+                    .rfind('\n')
+                    .map(|i| i + 1)
+                    .unwrap_or(0)..start],
+            );
+            self.selecting = false;
+        }
+    }
+
     // ------------------------------------------------------------------
     // Private helpers
     // ------------------------------------------------------------------
@@ -743,7 +908,7 @@ fn display_width(s: &str) -> usize {
 
 /// True for alphanumeric and underscore — readline word boundary definition.
 fn is_word_char(c: char) -> bool {
-    c.is_alphanumeric() || c == '_'
+    crate::overlays::copy_mode::is_word_char(c)
 }
 
 /// Return the byte offset of each line's first character in `text`.
@@ -777,17 +942,53 @@ fn byte_pos_at_col(line_text: &str, line_start: usize, col: usize) -> usize {
 }
 
 // ---------------------------------------------------------------------------
+// InputInfoLine
+// ---------------------------------------------------------------------------
+
+/// Data for the info line at the bottom of the input box.
+#[derive(Debug, Clone, Default)]
+pub struct InputInfoLine {
+    pub agent_name: String,
+    pub model_name: Option<String>,
+    pub provider_name: Option<String>,
+}
+
+impl InputInfoLine {
+    pub fn display_text(&self) -> String {
+        match (&self.model_name, &self.provider_name) {
+            (Some(model), Some(provider)) => {
+                format!("@{}   {}   {}", self.agent_name, model, provider)
+            }
+            (Some(model), None) => format!("@{}   {}", self.agent_name, model),
+            _ => format!("@{}   [not connected]", self.agent_name),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // InputBox widget
 // ---------------------------------------------------------------------------
 
 pub struct InputBox<'a> {
     pub state: &'a InputBoxState,
     pub theme: &'a UcodeTheme,
+    pub focused: bool,
+    pub info_line: Option<&'a InputInfoLine>,
 }
 
 impl<'a> InputBox<'a> {
-    pub fn new(state: &'a InputBoxState, theme: &'a UcodeTheme) -> Self {
-        Self { state, theme }
+    pub fn new(state: &'a InputBoxState, theme: &'a UcodeTheme, focused: bool) -> Self {
+        Self {
+            state,
+            theme,
+            focused,
+            info_line: None,
+        }
+    }
+
+    pub fn with_info_line(mut self, info: &'a InputInfoLine) -> Self {
+        self.info_line = Some(info);
+        self
     }
 }
 
@@ -797,63 +998,164 @@ impl Widget for InputBox<'_> {
             return;
         }
 
-        // Outer bordered block.
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(self.theme.border_style(true));
-        let inner = block.inner(area);
-        block.render(area, buf);
-
-        if inner.height == 0 || inner.width == 0 {
-            return;
+        // Fill entire area with surface background.
+        let bg_style = Style::new().bg(self.theme.surface);
+        for row in area.y..area.y + area.height {
+            for col in area.x..area.x + area.width {
+                buf[(col, row)].set_style(bg_style);
+            }
         }
 
-        // Build the visible content for the first (and usually only) line.
-        // We render line-by-line, one line per row inside the inner area.
+        // Left accent bar: 1 column, full height.
+        let accent_style = Style::new().fg(self.theme.accent).bg(self.theme.surface);
+        for row in area.y..area.y + area.height {
+            let cell = &mut buf[(area.x, row)];
+            cell.set_symbol("\u{2502}"); // "│"
+            cell.set_style(accent_style);
+        }
+
+        // Text area: after accent bar (1 col) + 1 col padding,
+        // inset 1 row top and 1 row bottom for vertical padding.
+        let text_x = area.x + 2;
+        let text_width = area.width.saturating_sub(2); // 2 left (bar + pad)
+        let text_y = area.y + 1;
+        let text_height = area.height.saturating_sub(2);
+        if text_width == 0 || text_height == 0 {
+            return;
+        }
+        let text_area = Rect {
+            x: text_x,
+            y: text_y,
+            width: text_width,
+            height: text_height,
+        };
+
         let lines: Vec<&str> = self.state.content.split('\n').collect();
-        let visible_rows = inner.height as usize;
+        let visible_rows = text_area.height as usize;
 
         // Determine which line the cursor is on and its column.
         let (cursor_line, cursor_line_col) =
             cursor_line_and_col(&self.state.content, self.state.cursor_pos);
 
-        // Render each visible line.
-        for (row_idx, line_text) in lines.iter().take(visible_rows).enumerate() {
-            let y = inner.y + row_idx as u16;
+        // Render each visible line, skipping lines above the scroll viewport.
+        for (row_idx, line_text) in lines
+            .iter()
+            .skip(self.state.scroll_offset)
+            .take(visible_rows)
+            .enumerate()
+        {
+            let y = text_area.y + row_idx as u16;
+            let content_span = Span::styled(*line_text, self.theme.text_style());
+            let line = Line::from(vec![content_span]);
+            let row_area = Rect {
+                y,
+                height: 1,
+                ..text_area
+            };
+            line.render(row_area, buf);
+        }
 
-            if row_idx == 0 {
-                // First row: prepend the "> " prompt in accent color.
-                let prompt = Span::styled("> ", self.theme.accent_style());
-                let content_span = Span::styled(*line_text, self.theme.text_style());
-                let line = Line::from(vec![prompt, content_span]);
-                let row_area = Rect {
-                    y,
-                    height: 1,
-                    ..inner
-                };
-                line.render(row_area, buf);
-            } else {
-                let content_span = Span::styled(*line_text, self.theme.text_style());
-                let line = Line::from(vec![content_span]);
-                let row_area = Rect {
-                    y,
-                    height: 1,
-                    ..inner
-                };
-                line.render(row_area, buf);
+        // Render selection highlight.
+        if let Some(sel_range) = self.state.selected_range() {
+            let sel_style = ratatui::style::Style::default().add_modifier(Modifier::REVERSED);
+
+            for (row_idx, line_text) in lines
+                .iter()
+                .skip(self.state.scroll_offset)
+                .take(visible_rows)
+                .enumerate()
+            {
+                let actual_line_idx = self.state.scroll_offset + row_idx;
+                let y = text_area.y + row_idx as u16;
+
+                // Byte offset of this line's first character within content.
+                let line_byte_start: usize = self
+                    .state
+                    .content
+                    .split('\n')
+                    .take(actual_line_idx)
+                    .map(|l| l.len() + 1) // +1 for the '\n' separator
+                    .sum();
+                let line_byte_end = line_byte_start + line_text.len();
+
+                // Intersect the selection range with this line's byte range.
+                let hl_start = sel_range.start.max(line_byte_start);
+                let hl_end = sel_range.end.min(line_byte_end);
+
+                if hl_start >= hl_end {
+                    // Selection may span past this line's end (covers the '\n').
+                    if sel_range.start <= line_byte_end && sel_range.end > line_byte_end {
+                        let start_in_line = sel_range.start.max(line_byte_start) - line_byte_start;
+                        let col_start = display_width(&line_text[..start_in_line]);
+                        let col_end = display_width(line_text);
+                        for col in col_start..=col_end {
+                            let x = text_area.x + col as u16;
+                            if x < text_area.x + text_area.width {
+                                let cell = &mut buf[(x, y)];
+                                cell.set_style(cell.style().patch(sel_style));
+                            }
+                        }
+                    }
+                    continue;
+                }
+
+                let start_in_line = hl_start - line_byte_start;
+                let end_in_line = hl_end - line_byte_start;
+                let col_start = display_width(&line_text[..start_in_line]);
+                let col_end = display_width(&line_text[..end_in_line]);
+
+                for col in col_start..col_end {
+                    let x = text_area.x + col as u16;
+                    if x < text_area.x + text_area.width {
+                        let cell = &mut buf[(x, y)];
+                        cell.set_style(cell.style().patch(sel_style));
+                    }
+                }
             }
         }
 
         // Render cursor highlight.
-        // The prompt "> " occupies 2 columns on row 0.
-        let prompt_width: u16 = if cursor_line == 0 { 2 } else { 0 };
-        let cursor_x = inner.x + prompt_width + cursor_line_col as u16;
-        let cursor_y = inner.y + cursor_line as u16;
+        let visible_cursor_line = cursor_line.saturating_sub(self.state.scroll_offset);
+        let cursor_x = text_area.x + cursor_line_col as u16;
+        let cursor_y = text_area.y + visible_cursor_line as u16;
 
-        if cursor_x < inner.x + inner.width && cursor_y < inner.y + inner.height {
+        if !self.state.selecting
+            && cursor_x < text_area.x + text_area.width
+            && cursor_y < text_area.y + text_area.height
+        {
             let cell = &mut buf[(cursor_x, cursor_y)];
             let current_style = cell.style();
             cell.set_style(current_style.add_modifier(Modifier::REVERSED));
+        }
+
+        // Render info line on the bottom row of the input area.
+        if let Some(info) = self.info_line {
+            let info_y = area.y + area.height - 1;
+            let info_x = area.x + 2; // after accent bar + padding
+            let info_width = area.width.saturating_sub(3) as usize; // leave 1 right margin
+
+            let display = info.display_text();
+            let agent_part = format!("@{}", info.agent_name);
+            let rest = &display[agent_part.len()..];
+
+            // Render agent name in accent color.
+            let accent_style = Style::new().fg(self.theme.accent).bg(self.theme.surface);
+            for (i, ch) in agent_part.chars().enumerate() {
+                let x = info_x + i as u16;
+                if x < area.x + area.width && (i < info_width) {
+                    buf[(x, info_y)].set_char(ch).set_style(accent_style);
+                }
+            }
+
+            // Render rest (model + provider) in dim style.
+            let dim_style = Style::new().fg(self.theme.text_dim).bg(self.theme.surface);
+            let offset = agent_part.len();
+            for (i, ch) in rest.chars().enumerate() {
+                let x = info_x + (offset + i) as u16;
+                if x < area.x + area.width && (offset + i < info_width) {
+                    buf[(x, info_y)].set_char(ch).set_style(dim_style);
+                }
+            }
         }
     }
 }
@@ -1366,6 +1668,193 @@ mod tests {
     }
 
     // ------------------------------------------------------------------
+    // insert_char / insert_str newline tests
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn insert_char_newline_resets_cursor_col() {
+        let mut state = InputBoxState::new();
+        state.insert_str("hello");
+        assert_eq!(state.cursor_col, 5);
+        state.insert_char('\n');
+        assert_eq!(state.cursor_col, 0);
+        assert_eq!(state.cursor_pos, 6); // "hello\n"
+    }
+
+    #[test]
+    fn insert_str_with_newlines_tracks_cursor_col() {
+        let mut state = InputBoxState::new();
+        state.insert_str("abc\ndef");
+        assert_eq!(state.cursor_col, 3); // on "def", col 3
+        assert_eq!(state.line_count(), 2);
+    }
+
+    #[test]
+    fn insert_str_multiple_newlines() {
+        let mut state = InputBoxState::new();
+        state.insert_str("a\nb\nc");
+        assert_eq!(state.cursor_col, 1); // on "c", col 1
+        assert_eq!(state.line_count(), 3);
+    }
+
+    // ------------------------------------------------------------------
+    // scroll_offset / ensure_cursor_visible tests
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn ensure_cursor_visible_scrolls_down() {
+        let mut state = InputBoxState::new();
+        state.insert_str("1\n2\n3\n4\n5\n6\n7\n8");
+        // Cursor is on line 7 (0-indexed). With max_visible=6, scroll_offset should be 2.
+        state.scroll_offset = 0;
+        state.ensure_cursor_visible(6);
+        assert_eq!(state.scroll_offset, 2);
+    }
+
+    #[test]
+    fn ensure_cursor_visible_scrolls_up() {
+        let mut state = InputBoxState::new();
+        state.insert_str("1\n2\n3\n4\n5\n6\n7\n8");
+        state.scroll_offset = 5;
+        state.move_home(); // cursor goes to start of current line
+        // Move to first line
+        for _ in 0..7 {
+            state.move_up();
+        }
+        state.ensure_cursor_visible(6);
+        assert_eq!(state.scroll_offset, 0);
+    }
+
+    #[test]
+    fn scroll_offset_reset_on_clear() {
+        let mut state = InputBoxState::new();
+        state.insert_str("1\n2\n3\n4\n5\n6\n7");
+        state.scroll_offset = 3;
+        state.clear();
+        assert_eq!(state.scroll_offset, 0);
+    }
+
+    // ------------------------------------------------------------------
+    // Selection tests
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn selection_start_and_cancel() {
+        let mut state = InputBoxState::new();
+        state.insert_str("hello");
+        assert!(!state.selecting);
+        state.start_selecting();
+        assert!(state.selecting);
+        assert_eq!(state.selection_anchor, 5);
+        state.cancel_selecting();
+        assert!(!state.selecting);
+    }
+
+    #[test]
+    fn ensure_selecting_idempotent() {
+        let mut state = InputBoxState::new();
+        state.insert_str("hello");
+        state.ensure_selecting(); // starts at pos 5
+        assert_eq!(state.selection_anchor, 5);
+        state.move_left(); // cursor moves to 4
+        state.ensure_selecting(); // should NOT reset anchor
+        assert_eq!(state.selection_anchor, 5); // anchor unchanged
+        assert!(state.selecting);
+    }
+
+    #[test]
+    fn selected_range_none_when_not_selecting() {
+        let mut state = InputBoxState::new();
+        state.insert_str("hello");
+        assert!(state.selected_range().is_none());
+    }
+
+    #[test]
+    fn selected_range_none_when_anchor_equals_cursor() {
+        let mut state = InputBoxState::new();
+        state.insert_str("hello");
+        state.start_selecting();
+        // anchor == cursor_pos == 5
+        assert!(state.selected_range().is_none());
+    }
+
+    #[test]
+    fn selected_range_forward() {
+        let mut state = InputBoxState::new();
+        state.insert_str("hello world");
+        // Position cursor at 5, start selecting, move to end
+        state.move_home();
+        for _ in 0..5 {
+            state.move_right();
+        }
+        state.start_selecting(); // anchor at 5
+        state.move_end(); // cursor at 11
+        let range = state.selected_range().unwrap();
+        assert_eq!(range, 5..11);
+        assert_eq!(state.selected_text().unwrap(), " world");
+    }
+
+    #[test]
+    fn selected_range_backward() {
+        let mut state = InputBoxState::new();
+        state.insert_str("hello world");
+        state.start_selecting(); // anchor at 11 (end)
+        state.move_home(); // cursor at 0
+        let range = state.selected_range().unwrap();
+        assert_eq!(range, 0..11);
+        assert_eq!(state.selected_text().unwrap(), "hello world");
+    }
+
+    #[test]
+    fn delete_selected_removes_text() {
+        let mut state = InputBoxState::new();
+        state.insert_str("hello world");
+        state.move_home();
+        for _ in 0..5 {
+            state.move_right();
+        }
+        state.start_selecting();
+        state.move_end();
+        state.delete_selected();
+        assert_eq!(state.content, "hello");
+        assert_eq!(state.cursor_pos, 5);
+        assert!(!state.selecting);
+    }
+
+    #[test]
+    fn delete_selected_multiline() {
+        let mut state = InputBoxState::new();
+        state.insert_str("abc\ndef\nghi");
+        // Select "def\n" (bytes 4..8)
+        state.move_home();
+        for _ in 0..3 {
+            state.move_up();
+        } // won't go past line 0
+        state.move_home();
+        // cursor at 0, move to byte 4
+        for _ in 0..4 {
+            state.move_right();
+        }
+        state.start_selecting(); // anchor at 4
+        for _ in 0..4 {
+            state.move_right();
+        } // cursor at 8
+        state.delete_selected();
+        assert_eq!(state.content, "abc\nghi");
+        assert_eq!(state.cursor_pos, 4);
+        assert_eq!(state.cursor_col, 0); // start of "ghi" line
+    }
+
+    #[test]
+    fn clear_cancels_selection() {
+        let mut state = InputBoxState::new();
+        state.insert_str("hello");
+        state.start_selecting();
+        state.clear();
+        assert!(!state.selecting);
+    }
+
+    // ------------------------------------------------------------------
     // Widget render test
     // ------------------------------------------------------------------
 
@@ -1376,8 +1865,9 @@ mod tests {
             state.insert_char(c);
         }
         let theme = UcodeTheme::default();
-        let widget = InputBox::new(&state, &theme);
+        let widget = InputBox::new(&state, &theme, true);
 
+        // 1 line + 2 padding = 3
         let area = Rect::new(0, 0, 40, 3);
         let mut buf = Buffer::empty(area);
         widget.render(area, &mut buf);
@@ -1389,8 +1879,61 @@ mod tests {
             .collect();
 
         assert!(
-            rendered.contains('>'),
-            "prompt '>' missing in rendered output"
+            rendered.contains('h'),
+            "text 'hello' missing in rendered output"
+        );
+    }
+
+    #[test]
+    fn input_info_line_display_text_full() {
+        let info = InputInfoLine {
+            agent_name: "coder".into(),
+            model_name: Some("claude-opus-4-6".into()),
+            provider_name: Some("Anthropic".into()),
+        };
+        assert_eq!(info.display_text(), "@coder   claude-opus-4-6   Anthropic");
+    }
+
+    #[test]
+    fn input_info_line_display_text_no_provider() {
+        let info = InputInfoLine {
+            agent_name: "coder".into(),
+            model_name: Some("claude-opus-4-6".into()),
+            provider_name: None,
+        };
+        assert_eq!(info.display_text(), "@coder   claude-opus-4-6");
+    }
+
+    #[test]
+    fn input_info_line_display_text_not_connected() {
+        let info = InputInfoLine {
+            agent_name: "coder".into(),
+            model_name: None,
+            provider_name: None,
+        };
+        assert_eq!(info.display_text(), "@coder   [not connected]");
+    }
+
+    #[test]
+    fn input_box_info_line_renders() {
+        let state = InputBoxState::new();
+        let theme = UcodeTheme::default();
+        let info = InputInfoLine {
+            agent_name: "coder".into(),
+            model_name: Some("claude-opus-4-6".into()),
+            provider_name: Some("Anthropic".into()),
+        };
+        let widget = InputBox::new(&state, &theme, true).with_info_line(&info);
+        let area = Rect::new(0, 0, 80, 5);
+        let mut buf = Buffer::empty(area);
+        widget.render(area, &mut buf);
+        // Verify it doesn't panic and the info line content appears on the last row.
+        let last_row: String = (0..80)
+            .map(|x| buf[(x, 4u16)].symbol().to_owned())
+            .collect::<String>();
+        assert!(
+            last_row.contains("@coder"),
+            "expected @coder in last row: {last_row:?}"
         );
     }
 }

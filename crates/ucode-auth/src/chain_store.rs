@@ -5,7 +5,9 @@ use crate::error::AuthError;
 
 /// Credential store that tries a primary store first, falling back to a secondary.
 ///
-/// Writes always go to the primary store. Reads try primary first, then fallback.
+/// Writes go to both stores so the fallback acts as a persistent backup.
+/// If the primary fails but the fallback succeeds, the write is considered
+/// successful (with a warning). Reads try primary first, then fallback.
 /// Deletes attempt both stores (best-effort on fallback).
 pub struct ChainStore {
     primary: Box<dyn CredentialStore>,
@@ -20,7 +22,17 @@ impl ChainStore {
 
 impl CredentialStore for ChainStore {
     fn store(&self, provider: &str, material: &AuthMaterial) -> Result<(), AuthError> {
-        self.primary.store(provider, material)
+        // Always persist to fallback (file) as a backup copy.
+        let fallback_ok = self.fallback.store(provider, material).is_ok();
+        match self.primary.store(provider, material) {
+            Ok(()) => Ok(()),
+            Err(e) if fallback_ok => {
+                // Primary (keyring) failed but fallback (file) succeeded — credential is saved.
+                tracing::warn!("keyring store failed ({e}), credential saved to file store");
+                Ok(())
+            }
+            Err(e) => Err(e),
+        }
     }
 
     fn load(&self, provider: &str) -> Result<AuthMaterial, AuthError> {

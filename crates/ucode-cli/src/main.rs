@@ -8,11 +8,22 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use ucode_auth::KeyringStore;
 use ucode_core::logging::{LogConfig, LogLevel, default_log_dir, init_logging};
 
 use cmd_auth::AuthCommand;
 use cmd_session::SessionCommand;
+
+/// Try to resume the most recent non-archived session, or create a new one.
+fn resume_or_create_session(store: &ucode_core::SessionStore) -> Result<ucode_core::Session> {
+    let sessions = store.list(false)?;
+    if let Some(most_recent) = sessions.first()
+        && let Ok(session) = store.load(&most_recent.id)
+    {
+        return Ok(session);
+    }
+    let session = store.create(std::env::current_dir().unwrap_or_default())?;
+    Ok(session)
+}
 
 fn default_model_for(adapter: &ucode_providers::config::AdapterKind) -> String {
     use ucode_providers::config::AdapterKind;
@@ -46,6 +57,9 @@ fn agent_event_to_core_event(ev: &ucode_agent::AgentEvent) -> ucode_core::Event 
             "tool {name} {} in {duration_ms}ms",
             if *success { "succeeded" } else { "failed" }
         )),
+        AgentEvent::ApprovalRequired {
+            tool_name, command, ..
+        } => ucode_core::Event::Log(format!("approval required: {tool_name} ({command})")),
     }
 }
 
@@ -65,6 +79,13 @@ fn print_agent_event(ev: &ucode_agent::AgentEvent) {
         } => {
             let status = if *success { "ok" } else { "failed" };
             eprintln!("[tool] {name}: {status} ({duration_ms}ms)");
+        }
+        AgentEvent::ApprovalRequired {
+            tool_name, command, ..
+        } => {
+            eprintln!("[approval] {tool_name}: {command}");
+            // In headless/CLI mode, auto-approve for now.
+            // TODO: interactive approval prompt for CLI mode.
         }
     }
 }
@@ -200,6 +221,17 @@ fn parse_bool_env(s: &str) -> Option<bool> {
     }
 }
 
+fn build_credential_store() -> Box<dyn ucode_auth::CredentialStore> {
+    let keyring = Box::new(ucode_auth::KeyringStore::new());
+    match ucode_auth::FileStore::new() {
+        Ok(file_store) => Box::new(ucode_auth::ChainStore::new(keyring, Box::new(file_store))),
+        Err(e) => {
+            tracing::warn!("FileStore unavailable ({e}), using keyring only");
+            keyring
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -218,7 +250,13 @@ async fn main() -> Result<()> {
     let _log_guard = init_logging(&config)?;
     tracing::debug!("logging initialised");
 
-    let store = KeyringStore::new();
+    // Create default config file on first run (no-op if it already exists).
+    if let Err(e) = ucode_agent::ensure_config_file() {
+        tracing::warn!("could not create default config: {e}");
+    }
+
+    let store: std::sync::Arc<dyn ucode_auth::CredentialStore> =
+        std::sync::Arc::from(build_credential_store());
 
     let session_dir = ucode_core::logging::default_config_home().join("sessions");
     let session_store = ucode_core::SessionStore::new(session_dir)?;
@@ -227,16 +265,19 @@ async fn main() -> Result<()> {
         None => {
             let mut app_config = ucode_agent::AppConfig::load_default()
                 .map_err(|e| anyhow::anyhow!("config error: {e}"))?;
-            app_config.discover_from_keyring(&store);
+            app_config.discover_from_store(store.as_ref());
+
+            let mut agent_registry = ucode_core::agent_registry::AgentRegistry::new();
+            let agents_dir = ucode_core::logging::default_config_home().join("agents");
+            agent_registry.discover_user_agents(&agents_dir);
+            agent_registry.apply_overrides(&app_config.agent_overrides);
 
             let (event_tx, event_rx) = ucode_tui::create_event_channel();
 
             if !app_config.has_providers() {
                 // No providers yet — launch TUI with a PendingAgentSetup so
                 // the user can `/connect` and spawn an agent mid-session.
-                let cred_store: std::sync::Arc<dyn ucode_auth::CredentialStore> =
-                    std::sync::Arc::new(store);
-                let session = session_store.create(std::env::current_dir().unwrap_or_default())?;
+                let session = resume_or_create_session(&session_store)?;
                 let session_store_arc = std::sync::Arc::new(session_store);
 
                 let mut tool_registry = ucode_tools::ToolRegistry::new();
@@ -244,13 +285,13 @@ async fn main() -> Result<()> {
                 let tool_registry = std::sync::Arc::new(tool_registry);
 
                 let pending = ucode_tui::PendingAgentSetup {
-                    credential_store: cred_store,
+                    credential_store: store,
                     session_store: session_store_arc,
                     session,
                     tool_registry,
                 };
 
-                ucode_tui::run(event_tx, event_rx, None, Some(pending))
+                ucode_tui::run(event_tx, event_rx, None, Some(pending), agent_registry)
                     .await
                     .map_err(|e| anyhow::anyhow!("{e}"))?;
             } else {
@@ -261,10 +302,7 @@ async fn main() -> Result<()> {
                 let provider_config = app_config.providers[&provider_name].clone();
                 let model = default_model_for(&provider_config.adapter);
 
-                let cred_store: std::sync::Arc<dyn ucode_auth::CredentialStore> =
-                    std::sync::Arc::new(store);
-
-                let session = session_store.create(std::env::current_dir().unwrap_or_default())?;
+                let session = resume_or_create_session(&session_store)?;
                 let session_store_arc = std::sync::Arc::new(session_store);
 
                 let mut tool_registry = ucode_tools::ToolRegistry::new();
@@ -276,7 +314,7 @@ async fn main() -> Result<()> {
                         provider_name,
                         provider_config,
                         model,
-                        credential_store: Some(cred_store),
+                        credential_store: Some(store),
                     },
                     session_store: session_store_arc,
                     session,
@@ -284,23 +322,33 @@ async fn main() -> Result<()> {
                     all_providers: app_config.providers,
                 };
 
-                ucode_tui::run(event_tx, event_rx, Some(agent_config), None)
+                ucode_tui::run(event_tx, event_rx, Some(agent_config), None, agent_registry)
                     .await
                     .map_err(|e| anyhow::anyhow!("{e}"))?;
             }
         }
         Some(Command::Auth { subcommand }) => match subcommand {
-            AuthCommand::Status => auth_handler::handle_status(&store)?,
-            AuthCommand::SetKey { provider } => auth_handler::handle_set_key(&store, &provider)?,
-            AuthCommand::Logout { provider } => auth_handler::handle_logout(&store, &provider)?,
+            AuthCommand::Status => auth_handler::handle_status(store.as_ref())?,
+            AuthCommand::SetKey { provider } => {
+                auth_handler::handle_set_key(store.as_ref(), &provider)?
+            }
+            AuthCommand::Logout { provider } => {
+                auth_handler::handle_logout(store.as_ref(), &provider)?
+            }
             AuthCommand::Login {
                 provider,
                 device,
                 subscription,
                 url,
             } => {
-                auth_handler::handle_login(&store, &provider, device, subscription, url.as_deref())
-                    .await?
+                auth_handler::handle_login(
+                    store.as_ref(),
+                    &provider,
+                    device,
+                    subscription,
+                    url.as_deref(),
+                )
+                .await?
             }
         },
         Some(Command::Session { subcommand }) => match subcommand {
@@ -334,9 +382,6 @@ async fn main() -> Result<()> {
             let provider_config = app_config.providers[&provider_name].clone();
             let model = default_model_for(&provider_config.adapter);
 
-            let cred_store: std::sync::Arc<dyn ucode_auth::CredentialStore> =
-                std::sync::Arc::new(store);
-
             let session = if let Some(ref id) = resume_session {
                 session_store.load(id)?
             } else {
@@ -352,13 +397,17 @@ async fn main() -> Result<()> {
                 provider_name,
                 provider_config,
                 model,
-                credential_store: Some(cred_store),
+                credential_store: Some(store),
             };
 
             let (msg_tx, msg_rx) = tokio::sync::mpsc::unbounded_channel();
             let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
 
-            let _ = msg_tx.send(ucode_agent::AgentMessage::UserMessage(prompt));
+            let _ = msg_tx.send(ucode_agent::AgentMessage::UserMessage {
+                text: prompt,
+                target_agent: None,
+                file_context: vec![],
+            });
             drop(msg_tx);
 
             let agent_handle = tokio::spawn(ucode_agent::run_agent_loop(

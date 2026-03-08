@@ -52,10 +52,13 @@ impl ProviderConfig {
     }
 }
 
-/// Top-level TOML structure: `[providers.<name>]` sections.
+/// Top-level TOML structure: `[providers.<name>]` and `[agents.<name>]` sections.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ProvidersTable {
+    #[serde(default)]
     pub providers: HashMap<String, ProviderConfig>,
+    #[serde(default)]
+    pub agents: HashMap<String, ucode_core::agent_registry::AgentConfigOverride>,
 }
 
 #[cfg(test)]

@@ -1,18 +1,24 @@
 use ratatui::style::{Color, Style};
 use serde::{Deserialize, Serialize};
+use ucode_themes::{ThemeDef, builtin_theme, theme_names};
 
 // ---------------------------------------------------------------------------
-// Palette helpers
+// Rgb → Color conversion
 // ---------------------------------------------------------------------------
 
-const fn rgb(r: u8, g: u8, b: u8) -> Color {
-    Color::Rgb(r, g, b)
+fn to_color(rgb: ucode_themes::Rgb) -> Color {
+    Color::Rgb(rgb.r, rgb.g, rgb.b)
 }
 
 // ---------------------------------------------------------------------------
 // Enums
 // ---------------------------------------------------------------------------
 
+/// Legacy preset enum kept for backward compatibility.
+///
+/// New code should prefer `UcodeTheme::from_def` / `next_theme` directly.
+/// The three variants map to the first three built-in themes: "ucode",
+/// "tokyonight", and the light-background "ucode" variant (synthesised).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum ThemePreset {
@@ -128,7 +134,13 @@ impl ModelGroup {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UcodeTheme {
-    pub preset: ThemePreset,
+    /// Theme name (matches `ThemeDef::name`).
+    pub name: String,
+    /// Original definition — gives the markdown renderer access to `SyntaxColors`
+    /// and `is_dark()` without re-deriving them from ratatui `Color` values.
+    pub def: ThemeDef,
+
+    // -- ratatui Color fields (converted from `def` at construction time) --
     pub background: Color,
     pub surface: Color,
     pub border: Color,
@@ -140,69 +152,71 @@ pub struct UcodeTheme {
     pub muted: Color,
     pub text: Color,
     pub text_dim: Color,
+    /// Background for the cursor line in selection mode (phase 1).
+    pub select_cursor: Color,
+    /// Background for selected lines in visual selection (phase 2).
+    pub select: Color,
+
+    // -- Legacy field kept for backward compatibility --
+    pub preset: ThemePreset,
 }
 
 impl Default for UcodeTheme {
     fn default() -> Self {
-        Self {
-            preset: ThemePreset::Hybrid,
-            background: rgb(0x0d, 0x0d, 0x0d),
-            surface: rgb(0x14, 0x14, 0x14),
-            border: rgb(0x2a, 0x2a, 0x2a),
-            border_focus: rgb(0x3a, 0x3a, 0x3a),
-            accent: rgb(0x00, 0xd4, 0xaa),
-            safe: rgb(0x22, 0xc5, 0x5e),
-            warning: rgb(0xf5, 0x9e, 0x0b),
-            danger: rgb(0xef, 0x44, 0x44),
-            muted: rgb(0x6b, 0x72, 0x80),
-            text: rgb(0xe5, 0xe7, 0xeb),
-            text_dim: rgb(0x9c, 0xa3, 0xaf),
-        }
+        let def = builtin_theme("ucode").expect("ucode built-in theme must exist");
+        Self::from_def(def)
     }
 }
 
 impl UcodeTheme {
-    /// Create a theme from a preset.
+    /// Build a `UcodeTheme` from a `ThemeDef`, converting `Rgb` → `Color::Rgb`.
+    pub fn from_def(def: ThemeDef) -> Self {
+        let preset = preset_for_name(&def.name);
+        Self {
+            name: def.name.clone(),
+            background: to_color(def.background),
+            surface: to_color(def.surface),
+            border: to_color(def.border),
+            border_focus: to_color(def.border_focus),
+            accent: to_color(def.accent),
+            safe: to_color(def.safe),
+            warning: to_color(def.warning),
+            danger: to_color(def.danger),
+            muted: to_color(def.muted),
+            text: to_color(def.text),
+            text_dim: to_color(def.text_dim),
+            select_cursor: to_color(def.select_cursor),
+            select: to_color(def.select),
+            preset,
+            def,
+        }
+    }
+
+    /// Cycle to the next built-in theme, wrapping around.
+    pub fn next_theme(&self) -> Self {
+        let names = theme_names();
+        let current = names.iter().position(|&n| n == self.name).unwrap_or(0);
+        let next_idx = (current + 1) % names.len();
+        let next_name = names[next_idx];
+        let def = builtin_theme(next_name)
+            .unwrap_or_else(|| builtin_theme("ucode").expect("ucode built-in theme must exist"));
+        Self::from_def(def)
+    }
+
+    /// Create a theme from a legacy preset (backward compat).
     pub fn from_preset(preset: ThemePreset) -> Self {
-        match preset {
-            ThemePreset::Hybrid => Self::default(),
-            ThemePreset::Dark => Self::dark(),
-            ThemePreset::Light => Self::light(),
-        }
-    }
-
-    fn dark() -> Self {
-        Self {
-            preset: ThemePreset::Dark,
-            background: rgb(0x00, 0x00, 0x00),
-            surface: rgb(0x0a, 0x0a, 0x0a),
-            border: rgb(0x1e, 0x1e, 0x1e),
-            border_focus: rgb(0x33, 0x33, 0x33),
-            accent: rgb(0x00, 0xd4, 0xaa),
-            safe: rgb(0x22, 0xc5, 0x5e),
-            warning: rgb(0xf5, 0x9e, 0x0b),
-            danger: rgb(0xef, 0x44, 0x44),
-            muted: rgb(0x52, 0x52, 0x52),
-            text: rgb(0xd4, 0xd4, 0xd4),
-            text_dim: rgb(0x80, 0x80, 0x80),
-        }
-    }
-
-    fn light() -> Self {
-        Self {
-            preset: ThemePreset::Light,
-            background: rgb(0xfa, 0xfa, 0xfa),
-            surface: rgb(0xf0, 0xf0, 0xf0),
-            border: rgb(0xd0, 0xd0, 0xd0),
-            border_focus: rgb(0xa0, 0xa0, 0xa0),
-            accent: rgb(0x00, 0x96, 0x7a),
-            safe: rgb(0x16, 0xa3, 0x4a),
-            warning: rgb(0xd9, 0x7a, 0x06),
-            danger: rgb(0xdc, 0x26, 0x26),
-            muted: rgb(0x9c, 0xa3, 0xaf),
-            text: rgb(0x1f, 0x1f, 0x1f),
-            text_dim: rgb(0x6b, 0x72, 0x80),
-        }
+        let name = match preset {
+            ThemePreset::Hybrid => "ucode",
+            ThemePreset::Dark => "tokyonight",
+            ThemePreset::Light => "nord",
+        };
+        let def = builtin_theme(name)
+            .unwrap_or_else(|| builtin_theme("ucode").expect("ucode built-in theme must exist"));
+        let mut theme = Self::from_def(def);
+        // Preserve the caller's preset value so legacy code that reads
+        // `theme.preset` still sees what it set.
+        theme.preset = preset;
+        theme
     }
 
     /// Return the default theme with a custom accent color.
@@ -257,6 +271,19 @@ impl UcodeTheme {
     /// Background style for panels and sidebar surfaces.
     pub fn surface_style(&self) -> Style {
         Style::new().bg(self.surface)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/// Map a theme name to the closest legacy `ThemePreset` for backward compat.
+fn preset_for_name(name: &str) -> ThemePreset {
+    match name {
+        "ucode" => ThemePreset::Hybrid,
+        "tokyonight" => ThemePreset::Dark,
+        _ => ThemePreset::Dark,
     }
 }
 
@@ -350,15 +377,16 @@ mod tests {
     fn theme_from_preset_dark() {
         let theme = UcodeTheme::from_preset(ThemePreset::Dark);
         assert_eq!(theme.preset, ThemePreset::Dark);
-        assert_eq!(theme.background, Color::Rgb(0x00, 0x00, 0x00));
+        // tokyonight background
+        assert_eq!(theme.background, Color::Rgb(0x1a, 0x1b, 0x26));
     }
 
     #[test]
     fn theme_from_preset_light() {
         let theme = UcodeTheme::from_preset(ThemePreset::Light);
         assert_eq!(theme.preset, ThemePreset::Light);
-        assert_eq!(theme.background, Color::Rgb(0xfa, 0xfa, 0xfa));
-        assert_eq!(theme.text, Color::Rgb(0x1f, 0x1f, 0x1f));
+        // nord background — dark but distinct from ucode
+        assert_eq!(theme.background, Color::Rgb(0x2e, 0x34, 0x40));
     }
 
     #[test]
@@ -378,5 +406,38 @@ mod tests {
     fn density_next_cycles() {
         assert_eq!(Density::Compact.next(), Density::Comfortable);
         assert_eq!(Density::Comfortable.next(), Density::Compact);
+    }
+
+    #[test]
+    fn from_def_populates_all_fields() {
+        let def = builtin_theme("ucode").unwrap();
+        let theme = UcodeTheme::from_def(def.clone());
+        assert_eq!(theme.name, "ucode");
+        assert_eq!(theme.def, def);
+        assert_eq!(
+            theme.accent,
+            Color::Rgb(def.accent.r, def.accent.g, def.accent.b)
+        );
+    }
+
+    #[test]
+    fn next_theme_cycles_through_builtins() {
+        let theme = UcodeTheme::default();
+        assert_eq!(theme.name, "ucode");
+        let t2 = theme.next_theme();
+        assert_eq!(t2.name, "tokyonight");
+        // Cycle all the way back.
+        let names = theme_names();
+        let mut t = UcodeTheme::default();
+        for _ in 0..names.len() {
+            t = t.next_theme();
+        }
+        assert_eq!(t.name, "ucode");
+    }
+
+    #[test]
+    fn def_is_dark_matches_theme() {
+        let theme = UcodeTheme::default();
+        assert!(theme.def.is_dark());
     }
 }

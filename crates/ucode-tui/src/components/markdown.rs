@@ -1,9 +1,93 @@
+use std::sync::LazyLock;
+
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
+use syntect::easy::HighlightLines;
+use syntect::highlighting::{
+    Color as SyntectColor, ScopeSelectors, StyleModifier, Theme, ThemeItem, ThemeSettings,
+};
+use syntect::parsing::SyntaxSet;
 use unicode_width::UnicodeWidthStr;
 
 use crate::theme::UcodeTheme;
+
+// ---------------------------------------------------------------------------
+// Syntect globals — loaded once, reused for every render call.
+// ---------------------------------------------------------------------------
+
+static SYNTAX_SET: LazyLock<SyntaxSet> = LazyLock::new(SyntaxSet::load_defaults_newlines);
+
+// ---------------------------------------------------------------------------
+// Syntect theme builder
+// ---------------------------------------------------------------------------
+
+fn theme_item(scope_str: &str, rgb: &ucode_themes::Rgb) -> ThemeItem {
+    ThemeItem {
+        scope: scope_str.parse::<ScopeSelectors>().unwrap_or_default(),
+        style: StyleModifier {
+            foreground: Some(SyntectColor {
+                r: rgb.r,
+                g: rgb.g,
+                b: rgb.b,
+                a: 0xff,
+            }),
+            background: None,
+            font_style: None,
+        },
+    }
+}
+
+fn build_syntect_theme(
+    syntax: &ucode_themes::SyntaxColors,
+    bg: &ucode_themes::Rgb,
+    fg: &ucode_themes::Rgb,
+) -> Theme {
+    let to_sc = |rgb: &ucode_themes::Rgb| SyntectColor {
+        r: rgb.r,
+        g: rgb.g,
+        b: rgb.b,
+        a: 0xff,
+    };
+
+    let settings = ThemeSettings {
+        foreground: Some(to_sc(fg)),
+        background: Some(to_sc(bg)),
+        ..Default::default()
+    };
+
+    let scopes = vec![
+        theme_item("keyword", &syntax.keyword),
+        theme_item("storage.type, storage.modifier", &syntax.keyword),
+        theme_item("string", &syntax.string),
+        theme_item("comment", &syntax.comment),
+        theme_item(
+            "entity.name.type, support.type, support.class",
+            &syntax.type_name,
+        ),
+        theme_item("entity.name.function, support.function", &syntax.function),
+        theme_item("constant.numeric", &syntax.number),
+        theme_item("keyword.operator, punctuation.accessor", &syntax.operator),
+        theme_item("variable, variable.parameter", &syntax.variable),
+        theme_item("constant.language, constant.other", &syntax.constant),
+        theme_item(
+            "entity.other.attribute-name, meta.annotation",
+            &syntax.attribute,
+        ),
+        theme_item("entity.name.tag", &syntax.tag),
+        theme_item(
+            "punctuation.definition, punctuation.section, punctuation.separator",
+            &syntax.punctuation,
+        ),
+    ];
+
+    Theme {
+        name: None,
+        author: None,
+        settings,
+        scopes,
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -181,6 +265,10 @@ struct RenderCtx<'a> {
 
     /// Table state.
     table: Option<TableCtx>,
+
+    /// Language token for the current fenced code block (e.g. "rust", "python").
+    /// None when not inside a code block or when no language was specified.
+    code_lang: Option<String>,
 }
 
 impl<'a> RenderCtx<'a> {
@@ -198,6 +286,7 @@ impl<'a> RenderCtx<'a> {
             list_stack: Vec::new(),
             item_text: String::new(),
             table: None,
+            code_lang: None,
         }
     }
 
@@ -278,10 +367,11 @@ impl<'a> RenderCtx<'a> {
                 self.block_ctx = BlockCtx::CodeBlock;
                 let lang = match kind {
                     CodeBlockKind::Fenced(l) if !l.is_empty() => l.as_ref().to_owned(),
-                    _ => "code".to_owned(),
+                    _ => String::new(),
                 };
-                let label = format!("  {lang}");
+                let label = format!("  {}", if lang.is_empty() { "code" } else { &lang });
                 self.push_line(Line::from(Span::styled(label, self.theme.dim_style())));
+                self.code_lang = if lang.is_empty() { None } else { Some(lang) };
             }
 
             Tag::List(start) => {
@@ -358,6 +448,8 @@ impl<'a> RenderCtx<'a> {
 
             TagEnd::CodeBlock => {
                 self.block_ctx = BlockCtx::None;
+                self.code_lang = None;
+                self.push_blank();
             }
 
             TagEnd::List(_) => {
@@ -430,9 +522,76 @@ impl<'a> RenderCtx<'a> {
                 // single Text event with embedded newlines. Split and emit
                 // one terminal line per source line.
                 let max = self.width as usize;
-                let style = Style::new().fg(self.theme.text).bg(self.theme.surface);
+                let fallback_style = Style::new().fg(self.theme.text).bg(self.theme.surface);
+                let bg = self.theme.surface;
                 // Strip a single trailing newline that pulldown-cmark appends.
                 let body = text.strip_suffix('\n').unwrap_or(text);
+
+                // Attempt syntect highlighting when a language token is present.
+                let syntax = self
+                    .code_lang
+                    .as_deref()
+                    .and_then(|lang| SYNTAX_SET.find_syntax_by_token(lang));
+
+                if let Some(syntax) = syntax {
+                    let hl_theme = build_syntect_theme(
+                        &self.theme.def.syntax,
+                        &self.theme.def.surface,
+                        &self.theme.def.text,
+                    );
+                    let mut hl = HighlightLines::new(syntax, &hl_theme);
+                    for src_line in body.split('\n') {
+                        // syntect expects a trailing newline per line.
+                        let line_nl = format!("{src_line}\n");
+                        let tokens = hl.highlight_line(&line_nl, &SYNTAX_SET);
+                        let spans = match tokens {
+                            Ok(ts) => {
+                                let mut spans: Vec<Span<'a>> = Vec::new();
+                                // 2-space indent prefix with surface bg.
+                                spans.push(Span::styled("  ", fallback_style));
+                                let mut col = 2usize;
+                                'tokens: for (hl_style, token) in ts {
+                                    // Strip the trailing newline syntect re-appends.
+                                    let token = token.trim_end_matches('\n');
+                                    if token.is_empty() {
+                                        continue;
+                                    }
+                                    let fg = hl_style.foreground;
+                                    let span_style =
+                                        Style::new().fg(Color::Rgb(fg.r, fg.g, fg.b)).bg(bg);
+                                    // Truncate to max width.
+                                    let remaining = max.saturating_sub(col);
+                                    if remaining == 0 {
+                                        break 'tokens;
+                                    }
+                                    let text_w = token.width();
+                                    let text_out = if col + text_w > max {
+                                        token.chars().take(remaining).collect::<String>()
+                                    } else {
+                                        token.to_owned()
+                                    };
+                                    col += text_out.width();
+                                    spans.push(Span::styled(text_out, span_style));
+                                }
+                                spans
+                            }
+                            // Highlighting failed — fall back to plain for this line.
+                            Err(_) => {
+                                let content = format!("  {src_line}");
+                                let display: String = if content.width() > max {
+                                    content.chars().take(max).collect()
+                                } else {
+                                    content
+                                };
+                                vec![Span::styled(display, fallback_style)]
+                            }
+                        };
+                        self.push_line(Line::from(spans));
+                    }
+                    return;
+                }
+
+                // No syntax found or no theme — plain rendering.
                 for src_line in body.split('\n') {
                     let content = format!("  {src_line}");
                     let display: String = if content.width() > max {
@@ -440,7 +599,7 @@ impl<'a> RenderCtx<'a> {
                     } else {
                         content
                     };
-                    self.push_line(Line::from(Span::styled(display, style)));
+                    self.push_line(Line::from(Span::styled(display, fallback_style)));
                 }
             }
 

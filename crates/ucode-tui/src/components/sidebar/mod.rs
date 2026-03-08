@@ -109,6 +109,10 @@ pub struct SidebarData {
     pub jobs: JobsData,
     pub mcp: McpData,
     pub plugin_sections: Vec<PluginSidebarSection>,
+    /// Working directory path for the fixed footer.
+    pub footer_dir: String,
+    /// Version string for the fixed footer.
+    pub footer_version: String,
 }
 
 impl SidebarData {
@@ -133,6 +137,8 @@ impl SidebarData {
             jobs: JobsData::default(),
             mcp: McpData::default(),
             plugin_sections: Vec::new(),
+            footer_dir: String::new(),
+            footer_version: String::new(),
         }
     }
 
@@ -306,8 +312,25 @@ fn icon_strip_badge(id: SectionId, data: &SidebarData, theme: &UcodeTheme) -> (S
 // ---------------------------------------------------------------------------
 
 fn render_full(data: &SidebarData, theme: &UcodeTheme, area: Rect, buf: &mut Buffer) {
-    let mut y = area.y;
-    let bottom = area.y + area.height;
+    // Reserve 2 rows at bottom for footer (divider + content line).
+    let footer_height: u16 = if data.footer_dir.is_empty() && data.footer_version.is_empty() {
+        0
+    } else {
+        2
+    };
+    let sections_height = area.height.saturating_sub(footer_height);
+    let sections_area = Rect {
+        height: sections_height,
+        ..area
+    };
+    let footer_area = Rect {
+        y: area.y + sections_height,
+        height: footer_height,
+        ..area
+    };
+
+    let mut y = sections_area.y;
+    let bottom = sections_area.y + sections_area.height;
 
     for (i, section) in data.sections.iter().enumerate() {
         if y >= bottom {
@@ -426,6 +449,50 @@ fn render_full(data: &SidebarData, theme: &UcodeTheme, area: Rect, buf: &mut Buf
                 y += 1;
             }
         }
+    }
+
+    if footer_height > 0 {
+        render_footer(data, theme, footer_area, buf);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Footer rendering
+// ---------------------------------------------------------------------------
+
+fn render_footer(data: &SidebarData, theme: &UcodeTheme, area: Rect, buf: &mut Buffer) {
+    if area.height == 0 || area.width == 0 {
+        return;
+    }
+
+    // Divider line at top of footer.
+    let divider = "─".repeat(area.width as usize);
+    let divider_line = Line::from(Span::styled(divider, theme.muted_style()));
+    let row0 = Rect {
+        x: area.x,
+        y: area.y,
+        width: area.width,
+        height: 1,
+    };
+    divider_line.render(row0, buf);
+
+    // Footer content on second row: "dir  version"
+    if area.height >= 2 {
+        let dir_text = truncate_str(&data.footer_dir, (area.width as usize) / 2);
+        let ver_text = &data.footer_version;
+
+        let footer_line = Line::from(vec![
+            Span::styled(dir_text, theme.dim_style()),
+            Span::styled("  ", Style::default()),
+            Span::styled(ver_text.clone(), theme.muted_style()),
+        ]);
+        let row1 = Rect {
+            x: area.x,
+            y: area.y + 1,
+            width: area.width,
+            height: 1,
+        };
+        footer_line.render(row1, buf);
     }
 }
 
@@ -1517,6 +1584,43 @@ mod tests {
             pos_high < pos_low,
             "HIGH PRIORITY (priority=10) should appear before LOW PRIORITY (priority=200)"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Footer
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn sidebar_footer_fields_exist() {
+        let mut data = SidebarData::new();
+        data.footer_dir = "~/code/ucode".into();
+        data.footer_version = "ucode v0.1.0".into();
+        assert_eq!(data.footer_dir, "~/code/ucode");
+        assert_eq!(data.footer_version, "ucode v0.1.0");
+    }
+
+    #[test]
+    fn sidebar_footer_renders_in_full_mode() {
+        let mut data = SidebarData::new();
+        data.footer_dir = "~/code/ucode".into();
+        data.footer_version = "v0.1.0".into();
+        let buf = render_sidebar(&data, SidebarMode::Full, 40, 60);
+        let text = buf_text(&buf);
+        assert!(
+            text.contains("~/code/ucode"),
+            "expected dir in footer:\n{text}"
+        );
+        assert!(
+            text.contains("v0.1.0"),
+            "expected version in footer:\n{text}"
+        );
+    }
+
+    #[test]
+    fn sidebar_footer_empty_when_no_data() {
+        let data = SidebarData::new();
+        assert!(data.footer_dir.is_empty());
+        assert!(data.footer_version.is_empty());
     }
 
     #[test]

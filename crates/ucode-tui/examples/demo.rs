@@ -5,21 +5,38 @@
 //! Type a message and press Enter to trigger a simulated AI interaction that
 //! showcases all TUI features: tool calls (with thinking/output), router events,
 //! system messages, patch proposals, approval modals, streaming responses,
-//! system-triggered toasts, search overlay, keybind overlay, and copy mode.
+//! system-triggered toasts, search overlay, keybind overlay, and selection mode.
 //!
 //! - First message: tool calls + streaming response + checkpoint/agent toasts
 //! - Second message: failed tool, approval modal, patch proposal + budget/failure toasts
 //! - Third+ messages: simple echo
 //!
 //! F6 toggles theme, F7 toggles density. Ctrl+P opens command palette.
-//! ? opens keybind reference. Ctrl+F opens search. v enters copy mode.
+//! ? opens keybind reference. Ctrl+F opens search. Ctrl+Y enters selection mode.
+//!
+//! Tab navigation:
+//!   Alt+1..5  — jump to Chat / Subagents / Tools / MCP / Logs
+//!   Alt+l/h   — next / previous tab
+//!
+//! Panel navigation (non-Chat tabs):
+//!   Tab       — toggle focus between master list and detail buffer
+//!   Enter     — open detail view for selected item
+//!   Esc       — detail→master, or panel→Chat tab
+//!   j/k       — navigate list (vim preset)
+//!   Ctrl+n/p  — navigate list (emacs preset)
+//!   Up/Down   — navigate list (all presets)
+//!   PgUp/PgDn — scroll detail buffer
+//!
+//! All tabs show fake operational data.
 
 use std::time::Duration;
 
 use tokio::sync::mpsc;
 use ucode_tui::app::ToolCallStatus;
 use ucode_tui::command_registry::{CommandCategory, CommandDef, CommandSource};
+use ucode_tui::components::master_detail::ListItem;
 use ucode_tui::components::sidebar::sections::PluginSidebarSection;
+use ucode_tui::components::tab_bar::TabId;
 use ucode_tui::components::toast::ToastLevel;
 use ucode_tui::event_loop::TuiEvent;
 use ucode_tui::overlays::palette::PaletteState;
@@ -74,13 +91,40 @@ const PATCH_DIFF: &str = "\
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Stream a string word-by-word into the TUI. Returns early if the channel closes.
-async fn stream_words(text: &str, delay_ms: u64, tui_tx: &mpsc::UnboundedSender<TuiEvent>) {
+/// Stream a string word-by-word into the TUI. Returns early if the channel closes or cancelled.
+async fn stream_words(
+    text: &str,
+    delay_ms: u64,
+    tui_tx: &mpsc::UnboundedSender<TuiEvent>,
+    cancel: &tokio::sync::watch::Receiver<bool>,
+) {
     for word in text.split_inclusive(|c: char| c.is_whitespace()) {
+        if *cancel.borrow() {
+            return;
+        }
         if tui_tx.send(TuiEvent::StreamToken(word.to_owned())).is_err() {
             return;
         }
         tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+    }
+}
+
+/// Sleep that returns early if cancelled. Returns `true` if cancelled.
+async fn cancellable_sleep(ms: u64, cancel: &tokio::sync::watch::Receiver<bool>) -> bool {
+    tokio::select! {
+        _ = tokio::time::sleep(Duration::from_millis(ms)) => false,
+        _ = cancel_signal(cancel) => true,
+    }
+}
+
+/// Wait until the cancel flag becomes true.
+async fn cancel_signal(cancel: &tokio::sync::watch::Receiver<bool>) {
+    let mut rx = cancel.clone();
+    while !*rx.borrow() {
+        if rx.changed().await.is_err() {
+            // Sender dropped — treat as cancelled.
+            return;
+        }
     }
 }
 
@@ -89,9 +133,14 @@ async fn stream_words(text: &str, delay_ms: u64, tui_tx: &mpsc::UnboundedSender<
 // ---------------------------------------------------------------------------
 
 /// First-message sequence: router event, three tool calls, streaming response.
-async fn run_sequence_one(tui_tx: &mpsc::UnboundedSender<TuiEvent>) {
+async fn run_sequence_one(
+    tui_tx: &mpsc::UnboundedSender<TuiEvent>,
+    cancel: &tokio::sync::watch::Receiver<bool>,
+) {
     // Router fallback notification.
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    if cancellable_sleep(200, cancel).await {
+        return;
+    }
     if tui_tx
         .send(TuiEvent::RouterEvent(
             "provider fallback: anthropic/claude-sonnet-4 -> anthropic/claude-sonnet-4-20250514"
@@ -103,7 +152,9 @@ async fn run_sequence_one(tui_tx: &mpsc::UnboundedSender<TuiEvent>) {
     }
 
     // Tool call 1: sequential_thinking (thinking only, no output).
-    tokio::time::sleep(Duration::from_millis(400)).await;
+    if cancellable_sleep(400, cancel).await {
+        return;
+    }
     if tui_tx
         .send(TuiEvent::ToolCallStarted {
             name: "sequential_thinking".to_owned(),
@@ -112,7 +163,9 @@ async fn run_sequence_one(tui_tx: &mpsc::UnboundedSender<TuiEvent>) {
     {
         return;
     }
-    tokio::time::sleep(Duration::from_millis(380)).await;
+    if cancellable_sleep(380, cancel).await {
+        return;
+    }
     if tui_tx
         .send(TuiEvent::ToolCallCompleted {
             index: TOOL_IDX_SEQUENTIAL_THINKING,
@@ -132,7 +185,9 @@ async fn run_sequence_one(tui_tx: &mpsc::UnboundedSender<TuiEvent>) {
     }
 
     // Tool call 2: Read (output only, no thinking).
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    if cancellable_sleep(200, cancel).await {
+        return;
+    }
     if tui_tx
         .send(TuiEvent::ToolCallStarted {
             name: "Read".to_owned(),
@@ -141,7 +196,9 @@ async fn run_sequence_one(tui_tx: &mpsc::UnboundedSender<TuiEvent>) {
     {
         return;
     }
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    if cancellable_sleep(300, cancel).await {
+        return;
+    }
     if tui_tx
         .send(TuiEvent::ToolCallCompleted {
             index: TOOL_IDX_READ,
@@ -157,7 +214,9 @@ async fn run_sequence_one(tui_tx: &mpsc::UnboundedSender<TuiEvent>) {
     }
 
     // Tool call 3: Grep (both thinking and output).
-    tokio::time::sleep(Duration::from_millis(150)).await;
+    if cancellable_sleep(150, cancel).await {
+        return;
+    }
     if tui_tx
         .send(TuiEvent::ToolCallStarted {
             name: "Grep".to_owned(),
@@ -166,7 +225,9 @@ async fn run_sequence_one(tui_tx: &mpsc::UnboundedSender<TuiEvent>) {
     {
         return;
     }
-    tokio::time::sleep(Duration::from_millis(350)).await;
+    if cancellable_sleep(350, cancel).await {
+        return;
+    }
     if tui_tx
         .send(TuiEvent::ToolCallCompleted {
             index: TOOL_IDX_GREP,
@@ -184,7 +245,9 @@ async fn run_sequence_one(tui_tx: &mpsc::UnboundedSender<TuiEvent>) {
     }
 
     // Streaming response — showcases markdown rendering.
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    if cancellable_sleep(200, cancel).await {
+        return;
+    }
     stream_words(
         "## Analysis Results\n\n\
          I've analyzed the codebase. Here's what I found:\n\n\
@@ -197,27 +260,29 @@ async fn run_sequence_one(tui_tx: &mpsc::UnboundedSender<TuiEvent>) {
          | src/lib.rs | 42 | Initialize subsystems |\n\
          | src/config.rs | 15 | Load from env |\n\
          | src/config.rs | 28 | Validate schema |\n\n\
-         ```rust\n\
-         // Example fix for the first TODO:\n\
-         pub fn init() -> Result<(), Box<dyn std::error::Error>> {\n\
-             config::load()?;\n\
-             Ok(())\n\
-         }\n\
-         ```\n\n\
+         ```rust\n// Example fix for the first TODO:\npub fn init() -> Result<(), Box<dyn std::error::Error>> {\n    config::load()?;\n    Ok(())\n}\n```\n\n\
          Would you like me to address any of the TODO items?",
         35,
         tui_tx,
+        cancel,
     )
     .await;
+    if *cancel.borrow() {
+        return;
+    }
 
     let _ = tui_tx.send(TuiEvent::StreamDone);
 
     // System-triggered toasts: checkpoint saved, agent completed.
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    if cancellable_sleep(200, cancel).await {
+        return;
+    }
     let _ = tui_tx.send(TuiEvent::CheckpointCreated {
         name: "auto-save-1".to_owned(),
     });
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    if cancellable_sleep(200, cancel).await {
+        return;
+    }
     let _ = tui_tx.send(TuiEvent::AgentCompleted {
         agent_id: "agent-001".to_owned(),
         name: "code-analyzer".to_owned(),
@@ -225,9 +290,14 @@ async fn run_sequence_one(tui_tx: &mpsc::UnboundedSender<TuiEvent>) {
 }
 
 /// Second-message sequence: failed tool, system message, approval modal, patch, streaming.
-async fn run_sequence_two(tui_tx: &mpsc::UnboundedSender<TuiEvent>) {
+async fn run_sequence_two(
+    tui_tx: &mpsc::UnboundedSender<TuiEvent>,
+    cancel: &tokio::sync::watch::Receiver<bool>,
+) {
     // Tool call: Write — fails.
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    if cancellable_sleep(200, cancel).await {
+        return;
+    }
     if tui_tx
         .send(TuiEvent::ToolCallStarted {
             name: "Write".to_owned(),
@@ -236,7 +306,9 @@ async fn run_sequence_two(tui_tx: &mpsc::UnboundedSender<TuiEvent>) {
     {
         return;
     }
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    if cancellable_sleep(500, cancel).await {
+        return;
+    }
     if tui_tx
         .send(TuiEvent::ToolCallCompleted {
             index: TOOL_IDX_WRITE,
@@ -252,7 +324,9 @@ async fn run_sequence_two(tui_tx: &mpsc::UnboundedSender<TuiEvent>) {
     }
 
     // System message about the failure.
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    if cancellable_sleep(100, cancel).await {
+        return;
+    }
     if tui_tx
         .send(TuiEvent::SystemMessage(
             "Tool failed: permission denied (sandbox: workspace)".to_owned(),
@@ -263,7 +337,9 @@ async fn run_sequence_two(tui_tx: &mpsc::UnboundedSender<TuiEvent>) {
     }
 
     // Patch proposal — opens diff modal.
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    if cancellable_sleep(300, cancel).await {
+        return;
+    }
     if tui_tx
         .send(TuiEvent::PatchProposed {
             file_path: "src/lib.rs".to_owned(),
@@ -276,13 +352,16 @@ async fn run_sequence_two(tui_tx: &mpsc::UnboundedSender<TuiEvent>) {
     }
 
     // Approval required for cargo test — preempts diff modal, opens approval modal.
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    if cancellable_sleep(500, cancel).await {
+        return;
+    }
     if tui_tx
         .send(TuiEvent::ApprovalRequired {
             tool_name: "run_cmd".to_owned(),
             command: "cargo test --workspace".to_owned(),
             cwd: "/home/user/project".to_owned(),
             sandbox_label: "workspace".to_owned(),
+            tool_call_id: Some("tc-demo-001".to_owned()),
         })
         .is_err()
     {
@@ -290,7 +369,9 @@ async fn run_sequence_two(tui_tx: &mpsc::UnboundedSender<TuiEvent>) {
     }
 
     // Streaming response — showcases markdown with inline styles.
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    if cancellable_sleep(300, cancel).await {
+        return;
+    }
     stream_words(
         "### Permission Issue\n\n\
          I encountered a **permission denied** error with `src/config.rs` \
@@ -302,18 +383,26 @@ async fn run_sequence_two(tui_tx: &mpsc::UnboundedSender<TuiEvent>) {
          See [Rust sandbox docs](https://doc.rust-lang.org/cargo/) for details.",
         35,
         tui_tx,
+        cancel,
     )
     .await;
+    if *cancel.borrow() {
+        return;
+    }
 
     let _ = tui_tx.send(TuiEvent::StreamDone);
 
     // System-triggered toasts: budget warning, agent failure.
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    if cancellable_sleep(200, cancel).await {
+        return;
+    }
     let _ = tui_tx.send(TuiEvent::BudgetWarning {
         used_pct: 75.0,
         message: "Token budget at 75%".to_owned(),
     });
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    if cancellable_sleep(200, cancel).await {
+        return;
+    }
     let _ = tui_tx.send(TuiEvent::AgentFailed {
         agent_id: "agent-002".to_owned(),
         name: "test-runner".to_owned(),
@@ -322,8 +411,14 @@ async fn run_sequence_two(tui_tx: &mpsc::UnboundedSender<TuiEvent>) {
 }
 
 /// Third-and-beyond sequence: echo with markdown formatting.
-async fn run_sequence_echo(user_msg: &str, tui_tx: &mpsc::UnboundedSender<TuiEvent>) {
-    tokio::time::sleep(Duration::from_millis(300)).await;
+async fn run_sequence_echo(
+    user_msg: &str,
+    tui_tx: &mpsc::UnboundedSender<TuiEvent>,
+    cancel: &tokio::sync::watch::Receiver<bool>,
+) {
+    if cancellable_sleep(300, cancel).await {
+        return;
+    }
 
     let response = format!(
         "You said: *\"{user_msg}\"*\n\n\
@@ -331,12 +426,16 @@ async fn run_sequence_echo(user_msg: &str, tui_tx: &mpsc::UnboundedSender<TuiEve
          | Key | Action |\n\
          |-----|--------|\n\
          | `?` | Keybind reference |\n\
-         | `Ctrl+F` | Search transcript |\n\
-         | `v` | Copy mode |\n\
-         | `Ctrl+P` | Command palette |"
+          | `Ctrl+F` | Search transcript |\n\
+          | `Ctrl+Y` | Selection mode |\n\
+          | `v/V/^V` | Char/Line/Block select |\n\
+          | `Ctrl+P` | Command palette |"
     );
 
-    stream_words(&response, 35, tui_tx).await;
+    stream_words(&response, 35, tui_tx, cancel).await;
+    if *cancel.borrow() {
+        return;
+    }
     let _ = tui_tx.send(TuiEvent::StreamDone);
 }
 
@@ -353,8 +452,8 @@ async fn fake_llm(
     tokio::time::sleep(Duration::from_millis(500)).await;
     if tui_tx
         .send(TuiEvent::SystemMessage(
-            "Demo mode -- showcasing all TUI features. Type any message to trigger a simulated \
-             AI interaction.\n\nKeys: F6 theme, F7 density, ? keybinds, Ctrl+F search, v copy mode, Ctrl+P palette"
+             "Demo mode -- showcasing all TUI features. Type any message to trigger a simulated \
+              AI interaction.\n\nKeys: F6 theme, F7 density, ? keybinds, Ctrl+F search, Ctrl+Y select, Ctrl+P palette"
                 .to_owned(),
         ))
         .is_err()
@@ -363,23 +462,38 @@ async fn fake_llm(
     }
 
     let mut message_count: u32 = 0;
+    let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
 
     while let Some(agent_msg) = user_rx.recv().await {
         let user_msg = match agent_msg {
-            ucode_agent::AgentMessage::UserMessage(text) => text,
+            ucode_agent::AgentMessage::UserMessage { text, .. } => text,
             ucode_agent::AgentMessage::SetModel(model) => {
                 let _ = tui_tx.send(TuiEvent::SystemMessage(format!(
                     "Model switched to: {model}"
                 )));
                 continue;
             }
+            ucode_agent::AgentMessage::Cancel => {
+                // Signal the running sequence to stop.
+                let _ = cancel_tx.send(true);
+                let _ = tui_tx.send(TuiEvent::SystemMessage("Generation cancelled.".to_owned()));
+                let _ = tui_tx.send(TuiEvent::StreamDone);
+                continue;
+            }
+            ucode_agent::AgentMessage::ApprovalDecision { .. } => {
+                // Demo doesn't implement real approval round-trips.
+                continue;
+            }
         };
         message_count += 1;
 
+        // Reset cancellation for the new sequence.
+        let _ = cancel_tx.send(false);
+
         match message_count {
-            1 => run_sequence_one(&tui_tx).await,
-            2 => run_sequence_two(&tui_tx).await,
-            _ => run_sequence_echo(&user_msg, &tui_tx).await,
+            1 => run_sequence_one(&tui_tx, &cancel_rx).await,
+            2 => run_sequence_two(&tui_tx, &cancel_rx).await,
+            _ => run_sequence_echo(&user_msg, &tui_tx, &cancel_rx).await,
         }
 
         // Stop if the channel closed mid-sequence.
@@ -419,6 +533,81 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Checkpoint and budget toasts are demonstrated via system-triggered events in the sequences.
     app.toast(ToastLevel::Info, "Session started");
 
+    // -- Fake data for tabbed panels ------------------------------------------
+
+    // Subagent runs.
+    app.subagents_panel.set_items(vec![
+        ListItem::new("rust-expert", "✓", "1.2s  890 tok").with_subtitle("C3+D1: @mention routing"),
+        ListItem::new("explore", "✓", "0.4s  210 tok").with_subtitle("Find layout test files"),
+        ListItem::new("quick-fix", "⟳", "running...").with_subtitle("Fix layout test assertions"),
+    ]);
+    app.subagents_panel.set_buffer(
+        "# Rust-Expert Task\n\n\
+         C3+D1: @mention routing (59 tool calls)\n\n\
+         ## Summary\n\n\
+         - Added `FileContext` struct\n\
+         - Changed `AgentMessage::UserMessage` from tuple to struct variant\n\
+         - Updated 20+ call sites\n\n\
+         ### Verification\n\
+         ```\n\
+         cargo test --workspace\n\
+         1725 passed, 0 failed\n\
+         ```"
+        .into(),
+    );
+
+    // Tool calls.
+    app.tools_panel.set_items(vec![
+        ListItem::new("Read", "✓", "45ms").with_subtitle("layout.rs"),
+        ListItem::new("Edit", "✓", "12ms").with_subtitle("layout.rs"),
+        ListItem::new("Bash", "✓", "1.2s").with_subtitle("cargo test"),
+        ListItem::new("Grep", "✓", "120ms").with_subtitle("pattern=TODO"),
+        ListItem::new("Write", "✗", "480ms").with_subtitle("config.rs — denied"),
+    ]);
+    app.tools_panel.set_buffer(
+        "Read\nStatus: ✓ Success\nDuration: 45ms\n\n\
+         Input:\n  file: crates/ucode-tui/src/layout.rs\n  offset: 286\n  limit: 100\n\n\
+         Output:\n  176: #[test]\n  177: fn terminal_size_minimum() {\n  178:     assert!(..."
+            .into(),
+    );
+
+    // MCP servers.
+    app.mcp_panel.set_items(vec![
+        ListItem::new("context7", "●", "12 tools"),
+        ListItem::new("git-docs", "●", "3 tools"),
+        ListItem::new("arxiv", "○", "disconnected"),
+    ]);
+    app.mcp_panel.set_buffer(
+        "context7\nStatus: connected\nTools: 12\n\n\
+         -- Tool Catalog --\n\
+         resolve-library-id\n  Resolve package name to library ID\n\
+         query-docs\n  Query documentation and examples\n\n\
+         -- Request Log (14 calls) --\n\n\
+         14:23:05 query-docs         ✓  45ms\n  lib=/vercel/next.js\n\n\
+         14:22:58 resolve-library-id ✓  120ms\n  name=\"next.js\""
+            .into(),
+    );
+
+    // Log events.
+    app.logs_panel.set_items(vec![
+        ListItem::new("agent_spawn", "INFO", "14:23:01").with_subtitle("rust-expert"),
+        ListItem::new("model_switch", "INFO", "14:23:00").with_subtitle("opus-4-6"),
+        ListItem::new("budget_warning", "WARN", "14:22:58").with_subtitle("75% used"),
+        ListItem::new("tool_failed", "ERROR", "14:22:45").with_subtitle("Write: denied"),
+    ]);
+    app.logs_panel.set_buffer(
+        "Agent Spawn\n\n\
+         Time: 2026-03-07 14:23:01\nLevel: INFO\nType: agent_spawn\n\n\
+         Agent: rust-expert\nTask: C3+D1 @mention routing\nModel: claude-opus-4-6\n\n\
+         Detail:\n  Spawned subagent rust-expert for implementing\n  AgentMessage struct expansion."
+            .into(),
+    );
+
+    // Badge counts.
+    app.tab_bar.set_badge(TabId::Subagents, 3);
+    app.tab_bar.set_badge(TabId::Tools, 5);
+    app.tab_bar.set_badge(TabId::Logs, 4);
+
     let mut input_box = ucode_tui::components::input::InputBoxState::new();
     let mut sidebar_data = ucode_tui::components::sidebar::SidebarData::new();
     sidebar_data.register_plugin_section(PluginSidebarSection {
@@ -429,6 +618,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         priority: 100,
         collapsed: false,
     });
+
+    // Sidebar footer.
+    sidebar_data.footer_dir = std::env::current_dir()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|_| "~/code/ucode".into());
+    sidebar_data.footer_version = format!("ucode v{}", env!("CARGO_PKG_VERSION"));
+
     ucode_tui::event_loop::run_event_loop(
         &mut app,
         &mut input_box,

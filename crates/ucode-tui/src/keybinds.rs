@@ -44,6 +44,7 @@ pub enum Action {
     GrowSidebar,
     ShrinkSidebar,
     EnterCopyMode,
+    EnterSelectionMode,
     YankSelection,
     NextSearchMatch,
     PrevSearchMatch,
@@ -60,6 +61,14 @@ pub enum Action {
     ToggleDensity,
     OpenConnect,
     OpenModels,
+    OpenImagePopup,
+    SelectTab1,
+    SelectTab2,
+    SelectTab3,
+    SelectTab4,
+    SelectTab5,
+    NextTab,
+    PrevTab,
 }
 
 // ---------------------------------------------------------------------------
@@ -131,6 +140,7 @@ pub fn default_vscode_bindings() -> KeybindMap {
     m.insert(KeyCombo::new(K::Tab, Mod::NONE), A::AcceptAutocomplete);
     m.insert(KeyCombo::new(K::Enter, Mod::NONE), A::SendMessage);
     m.insert(KeyCombo::new(K::Enter, Mod::SHIFT), A::NewlineInInput);
+    m.insert(KeyCombo::new(K::Enter, Mod::ALT), A::NewlineInInput);
 
     // Scroll / navigation
     m.insert(KeyCombo::new(K::Up, Mod::NONE), A::ScrollUp);
@@ -143,8 +153,11 @@ pub fn default_vscode_bindings() -> KeybindMap {
     m.insert(KeyCombo::new(K::Char(']'), Mod::NONE), A::GrowSidebar);
 
     // Transcript-focused actions (bare letters)
-    m.insert(KeyCombo::new(K::Char('v'), Mod::NONE), A::EnterCopyMode);
     m.insert(KeyCombo::new(K::Char('y'), Mod::NONE), A::YankSelection);
+    m.insert(
+        KeyCombo::new(K::Char('y'), Mod::CONTROL),
+        A::EnterSelectionMode,
+    );
     m.insert(KeyCombo::new(K::Char('n'), Mod::NONE), A::NextSearchMatch);
     m.insert(KeyCombo::new(K::Char('N'), Mod::SHIFT), A::PrevSearchMatch);
     m.insert(
@@ -160,6 +173,17 @@ pub fn default_vscode_bindings() -> KeybindMap {
     // Theme / density toggles — function keys avoid all readline conflicts.
     m.insert(KeyCombo::new(K::F(6), Mod::NONE), A::ToggleTheme);
     m.insert(KeyCombo::new(K::F(7), Mod::NONE), A::ToggleDensity);
+
+    m.insert(KeyCombo::new(K::Char('i'), Mod::CONTROL), A::OpenImagePopup);
+
+    // Tab selection
+    m.insert(KeyCombo::new(K::Char('1'), Mod::ALT), A::SelectTab1);
+    m.insert(KeyCombo::new(K::Char('2'), Mod::ALT), A::SelectTab2);
+    m.insert(KeyCombo::new(K::Char('3'), Mod::ALT), A::SelectTab3);
+    m.insert(KeyCombo::new(K::Char('4'), Mod::ALT), A::SelectTab4);
+    m.insert(KeyCombo::new(K::Char('5'), Mod::ALT), A::SelectTab5);
+    m.insert(KeyCombo::new(K::Char('l'), Mod::ALT), A::NextTab);
+    m.insert(KeyCombo::new(K::Char('h'), Mod::ALT), A::PrevTab);
 
     m
 }
@@ -212,6 +236,7 @@ pub fn default_vim_bindings() -> KeybindMap {
     // Editing
     m.insert(KeyCombo::new(K::Enter, Mod::NONE), A::SendMessage);
     m.insert(KeyCombo::new(K::Enter, Mod::SHIFT), A::NewlineInInput);
+    m.insert(KeyCombo::new(K::Enter, Mod::ALT), A::NewlineInInput);
     m.insert(KeyCombo::new(K::Tab, Mod::NONE), A::AcceptAutocomplete);
     m.insert(
         KeyCombo::new(K::Char('c'), Mod::CONTROL),
@@ -227,8 +252,11 @@ pub fn default_vim_bindings() -> KeybindMap {
     m.insert(KeyCombo::new(K::Char('q'), Mod::CONTROL), A::Exit);
 
     // Copy mode
-    m.insert(KeyCombo::new(K::Char('v'), Mod::NONE), A::EnterCopyMode);
     m.insert(KeyCombo::new(K::Char('y'), Mod::NONE), A::YankSelection);
+    m.insert(
+        KeyCombo::new(K::Char('y'), Mod::CONTROL),
+        A::EnterSelectionMode,
+    );
 
     // Sidebar resize
     m.insert(KeyCombo::new(K::Char('['), Mod::NONE), A::ShrinkSidebar);
@@ -247,6 +275,17 @@ pub fn default_vim_bindings() -> KeybindMap {
     // Theme / density toggles
     m.insert(KeyCombo::new(K::F(6), Mod::NONE), A::ToggleTheme);
     m.insert(KeyCombo::new(K::F(7), Mod::NONE), A::ToggleDensity);
+
+    m.insert(KeyCombo::new(K::Char('i'), Mod::CONTROL), A::OpenImagePopup);
+
+    // Tab selection
+    m.insert(KeyCombo::new(K::Char('1'), Mod::ALT), A::SelectTab1);
+    m.insert(KeyCombo::new(K::Char('2'), Mod::ALT), A::SelectTab2);
+    m.insert(KeyCombo::new(K::Char('3'), Mod::ALT), A::SelectTab3);
+    m.insert(KeyCombo::new(K::Char('4'), Mod::ALT), A::SelectTab4);
+    m.insert(KeyCombo::new(K::Char('5'), Mod::ALT), A::SelectTab5);
+    m.insert(KeyCombo::new(K::Char('l'), Mod::ALT), A::NextTab);
+    m.insert(KeyCombo::new(K::Char('h'), Mod::ALT), A::PrevTab);
 
     m
 }
@@ -300,6 +339,7 @@ pub fn default_emacs_bindings() -> KeybindMap {
     // Editing
     m.insert(KeyCombo::new(K::Enter, Mod::NONE), A::SendMessage);
     m.insert(KeyCombo::new(K::Enter, Mod::SHIFT), A::NewlineInInput);
+    m.insert(KeyCombo::new(K::Enter, Mod::ALT), A::NewlineInInput);
     m.insert(KeyCombo::new(K::Tab, Mod::NONE), A::AcceptAutocomplete);
     m.insert(
         KeyCombo::new(K::Char('c'), Mod::CONTROL),
@@ -316,6 +356,10 @@ pub fn default_emacs_bindings() -> KeybindMap {
     // Selection / copy — emacs mark-and-copy
     m.insert(KeyCombo::new(K::Char(' '), Mod::CONTROL), A::SetMark);
     m.insert(KeyCombo::new(K::Char('w'), Mod::ALT), A::CopySelection);
+    m.insert(
+        KeyCombo::new(K::Char('y'), Mod::CONTROL),
+        A::EnterSelectionMode,
+    );
 
     // Sidebar resize
     m.insert(KeyCombo::new(K::Char('['), Mod::NONE), A::ShrinkSidebar);
@@ -334,6 +378,17 @@ pub fn default_emacs_bindings() -> KeybindMap {
     // Theme / density toggles
     m.insert(KeyCombo::new(K::F(6), Mod::NONE), A::ToggleTheme);
     m.insert(KeyCombo::new(K::F(7), Mod::NONE), A::ToggleDensity);
+
+    m.insert(KeyCombo::new(K::Char('i'), Mod::CONTROL), A::OpenImagePopup);
+
+    // Tab selection
+    m.insert(KeyCombo::new(K::Char('1'), Mod::ALT), A::SelectTab1);
+    m.insert(KeyCombo::new(K::Char('2'), Mod::ALT), A::SelectTab2);
+    m.insert(KeyCombo::new(K::Char('3'), Mod::ALT), A::SelectTab3);
+    m.insert(KeyCombo::new(K::Char('4'), Mod::ALT), A::SelectTab4);
+    m.insert(KeyCombo::new(K::Char('5'), Mod::ALT), A::SelectTab5);
+    m.insert(KeyCombo::new(K::Char('l'), Mod::ALT), A::NextTab);
+    m.insert(KeyCombo::new(K::Char('h'), Mod::ALT), A::PrevTab);
 
     m
 }
@@ -398,6 +453,9 @@ impl KeybindResolver {
                 InputMode::Insert => {
                     // In insert mode, suppress normal-mode-only navigation actions.
                     // The user must press Esc (→ EnterNormalMode) to leave insert mode.
+                    // Tab switching (SelectTab1..5, NextTab, PrevTab) must
+                    // always work regardless of vim mode — they use Alt+key
+                    // combos that don't conflict with text entry.
                     match action {
                         Action::ScrollDown
                         | Action::ScrollUp
@@ -408,7 +466,8 @@ impl KeybindResolver {
                         | Action::OpenPalette
                         | Action::SearchTranscript
                         | Action::EnterCopyMode
-                        | Action::EnterInsertMode => return None,
+                        | Action::EnterInsertMode
+                        | Action::OpenImagePopup => return None,
                         _ => {}
                     }
                 }
@@ -675,6 +734,37 @@ mod tests {
         let mut resolver = KeybindResolver::new(KeybindPreset::Vscode);
         let combo = KeyCombo::new(KeyCode::Char('t'), KeyModifiers::CONTROL);
         assert_eq!(resolver.remove_binding(&combo), None);
+    }
+
+    #[test]
+    fn ctrl_y_maps_to_enter_selection_mode_all_presets() {
+        let ctrl_y = KeyCombo::new(KeyCode::Char('y'), KeyModifiers::CONTROL);
+        for preset in [
+            KeybindPreset::Vscode,
+            KeybindPreset::Vim,
+            KeybindPreset::Emacs,
+        ] {
+            let bindings = bindings_for_preset(preset);
+            assert_eq!(
+                bindings.get(&ctrl_y).copied(),
+                Some(Action::EnterSelectionMode),
+                "{preset:?} does not map Ctrl+Y to EnterSelectionMode"
+            );
+        }
+    }
+
+    #[test]
+    fn vscode_v_no_longer_enters_copy_mode() {
+        let bindings = default_vscode_bindings();
+        let bare_v = KeyCombo::new(KeyCode::Char('v'), KeyModifiers::NONE);
+        assert_ne!(bindings.get(&bare_v).copied(), Some(Action::EnterCopyMode));
+    }
+
+    #[test]
+    fn vim_v_no_longer_enters_copy_mode() {
+        let bindings = default_vim_bindings();
+        let bare_v = KeyCombo::new(KeyCode::Char('v'), KeyModifiers::NONE);
+        assert_ne!(bindings.get(&bare_v).copied(), Some(Action::EnterCopyMode));
     }
 
     #[test]

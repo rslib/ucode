@@ -20,6 +20,8 @@ pub struct TranscriptView<'a> {
     pub theme: &'a UcodeTheme,
     /// When true the streaming cursor `▌` is visible (caller toggles for blink).
     pub show_cursor: bool,
+    /// Copy-mode state for highlighting selected entries.
+    pub copy_mode: &'a crate::overlays::copy_mode::CopyModeState,
 }
 
 impl<'a> TranscriptView<'a> {
@@ -29,6 +31,7 @@ impl<'a> TranscriptView<'a> {
         auto_scroll: bool,
         theme: &'a UcodeTheme,
         show_cursor: bool,
+        copy_mode: &'a crate::overlays::copy_mode::CopyModeState,
     ) -> Self {
         Self {
             entries,
@@ -36,6 +39,7 @@ impl<'a> TranscriptView<'a> {
             auto_scroll,
             theme,
             show_cursor,
+            copy_mode,
         }
     }
 }
@@ -49,26 +53,51 @@ impl Widget for TranscriptView<'_> {
         let width = area.width;
         let viewport_height = area.height as usize;
 
-        // Pre-compute all lines for all entries so we can apply scroll_offset
-        // as a line-level offset (not entry-level).
-        //
-        // The blinking cursor only appears on the last Streaming entry AND
-        // only when that entry is the very last transcript entry.  This
-        // prevents a stale cursor from lingering above tool-call / router
-        // entries that were pushed after `start_streaming()`.
-        let last_entry_idx = self.entries.len().checked_sub(1);
-        let cursor_idx = last_entry_idx
-            .filter(|&idx| matches!(self.entries[idx], TranscriptEntry::Streaming(_)));
+        let mut all_lines = compute_all_lines(self.entries, self.theme, width, self.show_cursor);
 
-        let all_lines: Vec<Line<'_>> = self
-            .entries
-            .iter()
-            .enumerate()
-            .flat_map(|(i, entry)| {
-                let cursor = self.show_cursor && Some(i) == cursor_idx;
-                entry_lines(entry, self.theme, width, cursor)
-            })
-            .collect();
+        // Apply copy-mode highlighting by visual line index.
+        if self.copy_mode.active {
+            use ratatui::style::{Modifier, Style};
+            let cursor_col = self.copy_mode.cursor.col;
+
+            for (line_idx, line) in all_lines.iter_mut().enumerate() {
+                if self.copy_mode.selecting {
+                    // Phase 2: column-aware highlighting based on visual mode.
+                    let line_width: usize = line
+                        .spans
+                        .iter()
+                        .map(|s| unicode_width::UnicodeWidthStr::width(s.content.as_ref()))
+                        .sum();
+                    if let Some((sc, ec)) = self.copy_mode.line_col_range(line_idx, line_width) {
+                        let hl = Style::default()
+                            .bg(self.theme.select)
+                            .add_modifier(Modifier::BOLD);
+                        *line = highlight_line_range(line, sc, ec, hl);
+                    }
+                } else if self.copy_mode.is_cursor_line(line_idx) {
+                    // Phase 1: cursor line indicator — subtle dedicated background.
+                    let hl = Style::default().bg(self.theme.select_cursor);
+                    let spans: Vec<_> = line
+                        .spans
+                        .iter()
+                        .map(|span| {
+                            let mut s = span.clone();
+                            s.style = s.style.patch(hl);
+                            s
+                        })
+                        .collect();
+                    *line = Line::from(spans);
+                }
+
+                // Character cursor: highlight the single cell at (cursor.line, cursor.col)
+                // with REVERSED style so the user can see their exact column position.
+                // Applied after selection highlighting so it overlays on top.
+                if self.copy_mode.is_cursor_line(line_idx) {
+                    let cursor_hl = Style::default().add_modifier(Modifier::REVERSED);
+                    *line = highlight_line_range(line, cursor_col, cursor_col + 1, cursor_hl);
+                }
+            }
+        }
 
         let total_lines = all_lines.len();
 
@@ -103,6 +132,35 @@ impl Widget for TranscriptView<'_> {
             indicator.render(row_area, buf);
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// compute_all_lines — public helper for line-level copy mode
+// ---------------------------------------------------------------------------
+
+/// Compute all visual lines for the transcript entries.
+///
+/// Returns the flat list of rendered lines with no copy-mode highlighting
+/// applied. The blinking cursor only appears on the last `Streaming` entry
+/// when it is the very last transcript entry.
+pub fn compute_all_lines<'a>(
+    entries: &'a [TranscriptEntry],
+    theme: &'a UcodeTheme,
+    width: u16,
+    show_cursor: bool,
+) -> Vec<Line<'a>> {
+    let last_entry_idx = entries.len().checked_sub(1);
+    let cursor_idx =
+        last_entry_idx.filter(|&idx| matches!(entries[idx], TranscriptEntry::Streaming(_)));
+
+    entries
+        .iter()
+        .enumerate()
+        .flat_map(|(i, entry)| {
+            let cursor = show_cursor && Some(i) == cursor_idx;
+            entry_lines(entry, theme, width, cursor)
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -313,23 +371,32 @@ fn render_tool_call<'a>(
         ]));
     }
 
+    // Blank line after tool call for visual separation.
+    lines.push(Line::from(""));
+
     lines
 }
 
 fn render_router_event<'a>(text: &str, theme: &'a UcodeTheme) -> Vec<Line<'a>> {
     // "  ↪ router: {text}"
-    vec![Line::from(vec![
-        Span::styled("  \u{21aa} router: ", theme.warning_style()),
-        Span::styled(text.to_owned(), theme.warning_style()),
-    ])]
+    vec![
+        Line::from(vec![
+            Span::styled("  \u{21aa} router: ", theme.warning_style()),
+            Span::styled(text.to_owned(), theme.warning_style()),
+        ]),
+        Line::from(""),
+    ]
 }
 
 fn render_system_message<'a>(text: &str, theme: &'a UcodeTheme) -> Vec<Line<'a>> {
     // "  ─ {text}"
-    vec![Line::from(vec![
-        Span::styled("  \u{2500} ", theme.muted_style()),
-        Span::styled(text.to_owned(), theme.muted_style()),
-    ])]
+    vec![
+        Line::from(vec![
+            Span::styled("  \u{2500} ", theme.muted_style()),
+            Span::styled(text.to_owned(), theme.muted_style()),
+        ]),
+        Line::from(""),
+    ]
 }
 
 // ---------------------------------------------------------------------------
@@ -340,36 +407,122 @@ fn render_system_message<'a>(text: &str, theme: &'a UcodeTheme) -> Vec<Line<'a>>
 /// width measurement. Words that are wider than `width` are placed on their
 /// own line without splitting.
 fn wrap_text(text: &str, width: u16) -> Vec<String> {
-    if width == 0 {
+    if width == 0 || text.is_empty() {
         return Vec::new();
     }
     let max = width as usize;
     let mut lines: Vec<String> = Vec::new();
-    let mut current = String::new();
-    let mut current_width: usize = 0;
 
-    for word in text.split_whitespace() {
-        let word_w = word.width();
-        if current.is_empty() {
-            current.push_str(word);
-            current_width = word_w;
-        } else if current_width + 1 + word_w <= max {
-            current.push(' ');
-            current.push_str(word);
-            current_width += 1 + word_w;
-        } else {
-            lines.push(current.clone());
-            current.clear();
-            current.push_str(word);
-            current_width = word_w;
+    // Split on explicit newlines first to preserve line breaks,
+    // then word-wrap each paragraph independently.
+    for paragraph in text.split('\n') {
+        let mut current = String::new();
+        let mut current_width: usize = 0;
+
+        for word in paragraph.split_whitespace() {
+            let word_w = word.width();
+            if current.is_empty() {
+                current.push_str(word);
+                current_width = word_w;
+            } else if current_width + 1 + word_w <= max {
+                current.push(' ');
+                current.push_str(word);
+                current_width += 1 + word_w;
+            } else {
+                lines.push(current.clone());
+                current.clear();
+                current.push_str(word);
+                current_width = word_w;
+            }
         }
-    }
 
-    if !current.is_empty() {
+        // Always push the line (even if empty) to preserve blank lines.
         lines.push(current);
     }
 
     lines
+}
+
+// ---------------------------------------------------------------------------
+// highlight_line_range — column-aware span highlighting
+// ---------------------------------------------------------------------------
+
+/// Apply `hl` style to the column range `[start_col, end_col)` within `line`.
+///
+/// Walks spans tracking cumulative column position (Unicode-width-aware),
+/// splits spans at the selection boundaries, and returns a new `Line` with
+/// the selected segment styled.
+pub fn highlight_line_range(
+    line: &Line<'_>,
+    start_col: usize,
+    end_col: usize,
+    hl: ratatui::style::Style,
+) -> Line<'static> {
+    use unicode_width::UnicodeWidthChar;
+
+    if start_col >= end_col {
+        // Nothing to highlight — clone as-is.
+        let spans: Vec<ratatui::text::Span<'static>> = line
+            .spans
+            .iter()
+            .map(|s| ratatui::text::Span::styled(s.content.to_string(), s.style))
+            .collect();
+        return Line::from(spans);
+    }
+
+    let mut result: Vec<ratatui::text::Span<'static>> = Vec::new();
+    let mut col = 0usize;
+
+    for span in &line.spans {
+        let text = span.content.as_ref();
+        let base_style = span.style;
+
+        // Fast path: span is entirely before or after the selection.
+        let span_width: usize = text
+            .chars()
+            .map(|c| UnicodeWidthChar::width(c).unwrap_or(0))
+            .sum();
+        let span_end = col + span_width;
+
+        if span_end <= start_col || col >= end_col {
+            // Entirely outside selection.
+            result.push(ratatui::text::Span::styled(text.to_owned(), base_style));
+            col = span_end;
+            continue;
+        }
+
+        // The span overlaps the selection — split into up to three segments.
+        let mut pre = String::new();
+        let mut selected = String::new();
+        let mut post = String::new();
+        let mut c = col;
+
+        for ch in text.chars() {
+            let w = UnicodeWidthChar::width(ch).unwrap_or(0);
+            if c < start_col {
+                pre.push(ch);
+            } else if c < end_col {
+                selected.push(ch);
+            } else {
+                post.push(ch);
+            }
+            c += w;
+        }
+
+        if !pre.is_empty() {
+            result.push(ratatui::text::Span::styled(pre, base_style));
+        }
+        if !selected.is_empty() {
+            result.push(ratatui::text::Span::styled(selected, base_style.patch(hl)));
+        }
+        if !post.is_empty() {
+            result.push(ratatui::text::Span::styled(post, base_style));
+        }
+
+        col = span_end;
+    }
+
+    Line::from(result)
 }
 
 // ---------------------------------------------------------------------------
@@ -401,10 +554,11 @@ pub fn entry_height(entry: &TranscriptEntry, width: u16) -> usize {
                 + output
                     .as_ref()
                     .map_or(0, |s| if s.is_empty() { 0 } else { 1 })
+                + 1 // blank separator
         }
-        TranscriptEntry::RouterEvent(_) => 1,
-        TranscriptEntry::SystemMessage(_) => 1,
-        TranscriptEntry::PatchProposed { .. } => 1,
+        TranscriptEntry::RouterEvent(_) => 2, // content + blank separator
+        TranscriptEntry::SystemMessage(_) => 2, // content + blank separator
+        TranscriptEntry::PatchProposed { .. } => 2, // content + blank separator
     }
 }
 
@@ -596,7 +750,7 @@ mod tests {
             text.contains('\u{27f3}'),
             "expected ⟳ icon for Running, got: {text:?}"
         );
-        assert_eq!(lines.len(), 1, "tool call should be single line");
+        assert_eq!(lines.len(), 2, "tool call should be 1 content + 1 blank");
     }
 
     // -----------------------------------------------------------------------
@@ -652,10 +806,10 @@ mod tests {
         );
 
         let entry2 = TranscriptEntry::RouterEvent("event".to_owned());
-        assert_eq!(entry_height(&entry2, 80), 1);
+        assert_eq!(entry_height(&entry2, 80), 2);
 
         let entry3 = TranscriptEntry::SystemMessage("sys".to_owned());
-        assert_eq!(entry_height(&entry3, 80), 1);
+        assert_eq!(entry_height(&entry3, 80), 2);
 
         let entry4 = TranscriptEntry::ToolCall {
             name: "read".to_owned(),
@@ -665,7 +819,11 @@ mod tests {
             thinking: None,
             output: None,
         };
-        assert_eq!(entry_height(&entry4, 80), 1, "tool call should be 1 line");
+        assert_eq!(
+            entry_height(&entry4, 80),
+            2,
+            "tool call should be 1 content + 1 blank"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -710,7 +868,8 @@ mod tests {
             TranscriptEntry::SystemMessage("info".to_owned()),
         ];
 
-        let widget = TranscriptView::new(&entries, 0, true, &t, true);
+        let copy_mode = crate::overlays::copy_mode::CopyModeState::new();
+        let widget = TranscriptView::new(&entries, 0, true, &t, true, &copy_mode);
         let area = Rect::new(0, 0, 80, 30);
         let mut buf = Buffer::empty(area);
         widget.render(area, &mut buf);
@@ -770,7 +929,8 @@ mod tests {
             .collect();
 
         // scroll_offset=0, auto_scroll=false → indicator should appear.
-        let widget = TranscriptView::new(&entries, 0, false, &t, false);
+        let copy_mode = crate::overlays::copy_mode::CopyModeState::new();
+        let widget = TranscriptView::new(&entries, 0, false, &t, false, &copy_mode);
         let area = Rect::new(0, 0, 80, 5);
         let mut buf = Buffer::empty(area);
         widget.render(area, &mut buf);
@@ -793,7 +953,8 @@ mod tests {
             .map(|i| TranscriptEntry::UserMessage(format!("message {i}")))
             .collect();
 
-        let widget = TranscriptView::new(&entries, 0, true, &t, false);
+        let copy_mode = crate::overlays::copy_mode::CopyModeState::new();
+        let widget = TranscriptView::new(&entries, 0, true, &t, false, &copy_mode);
         let area = Rect::new(0, 0, 80, 5);
         let mut buf = Buffer::empty(area);
         widget.render(area, &mut buf);
@@ -835,7 +996,11 @@ mod tests {
             text.contains("Let me analyze"),
             "expected thinking content, got: {text:?}"
         );
-        assert_eq!(lines.len(), 2, "tool call with thinking should be 2 lines");
+        assert_eq!(
+            lines.len(),
+            3,
+            "tool call with thinking should be 2 content + 1 blank"
+        );
     }
 
     #[test]
@@ -860,7 +1025,11 @@ mod tests {
             text.contains("# Project Title"),
             "expected output first line, got: {text:?}"
         );
-        assert_eq!(lines.len(), 2, "tool call with output should be 2 lines");
+        assert_eq!(
+            lines.len(),
+            3,
+            "tool call with output should be 2 content + 1 blank"
+        );
     }
 
     #[test]
@@ -878,8 +1047,8 @@ mod tests {
         );
         assert_eq!(
             lines.len(),
-            3,
-            "tool call with both thinking and output should be 3 lines"
+            4,
+            "tool call with both thinking and output should be 3 content + 1 blank"
         );
     }
 
@@ -898,8 +1067,8 @@ mod tests {
         );
         assert_eq!(
             lines.len(),
-            1,
-            "tool call without thinking/output should be 1 line"
+            2,
+            "tool call without thinking/output should be 1 content + 1 blank"
         );
     }
 
@@ -919,8 +1088,8 @@ mod tests {
         };
         assert_eq!(
             entry_height(&entry, 80),
-            3,
-            "1 main + 1 thinking + 1 output"
+            4,
+            "1 main + 1 thinking + 1 output + 1 blank"
         );
     }
 
@@ -942,7 +1111,8 @@ mod tests {
             TranscriptEntry::Streaming(msg),
         ];
 
-        let widget = TranscriptView::new(&entries, 0, true, &t, true);
+        let copy_mode = crate::overlays::copy_mode::CopyModeState::new();
+        let widget = TranscriptView::new(&entries, 0, true, &t, true, &copy_mode);
         let area = Rect::new(0, 0, 80, 40);
         let mut buf = Buffer::empty(area);
         widget.render(area, &mut buf);
@@ -981,7 +1151,8 @@ mod tests {
             },
         ];
 
-        let widget = TranscriptView::new(&entries, 0, true, &t, true);
+        let copy_mode = crate::overlays::copy_mode::CopyModeState::new();
+        let widget = TranscriptView::new(&entries, 0, true, &t, true, &copy_mode);
         let area = Rect::new(0, 0, 80, 40);
         let mut buf = Buffer::empty(area);
         widget.render(area, &mut buf);
